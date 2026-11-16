@@ -13,6 +13,8 @@ task deploy:staging                  # or deploy:prod, or deploy:preview with PU
 
 `PECIA_IDLE_TIMEOUT` (default `2 hours`) sets how long a session may go without a token mint or a land before it is ended.
 
+A stage's first deploy creates its Worker. For some seconds after it, the Worker's URL can answer `error code: 1104` with status 500: Cloudflare has not finished publishing the script.
+
 ## Run a session
 
 The orchestrator holds `PECIA_ORCHESTRATOR_KEY`; the sandbox never sees it.
@@ -66,7 +68,11 @@ A land clones the fork's whole history into the Worker's memory, and what is in 
 
 The last three are read from the pack before anything unpacks it, so a small pack that unpacks to something large is refused too. A fork is the wiki's whole history plus the session's commits, so these are also how large a wiki can grow before landing has to move out of the Worker (docs/mvp.md, "Landing").
 
-The numbers come from measuring `Git.land` in a Node process of its own, on forks just under the limits: prose, incompressible files, many small files, a long history and highly repetitive files. The land added at most 33 MiB of memory still in use, and at most 62 MiB counting garbage not yet collected. Without limits, a fork of five incompressible 8 MiB files added 200 MiB; with them it is refused after 6 MiB of download. These are Node measurements, not workerd's: they have not been repeated on a deployed Worker.
+The numbers come from measuring `Git.land` in a Node process of its own, on forks just under the limits: prose, incompressible files, many small files, a long history and highly repetitive files. The land added at most 33 MiB of memory still in use, and at most 62 MiB counting garbage not yet collected. Without limits, a fork of five incompressible 8 MiB files added 200 MiB; with them it is refused after 6 MiB of download. These are Node measurements.
+
+On a deployed Worker (staging, November 2026) forks of the same shapes landed just under each limit and were refused just over it, and no land ran out of memory. How long a land takes grows with the number of objects: a fork of 9,000 small files took 14 to 19 seconds, 6 to 9 of them CPU time, and a fork of a few large files took 2 to 6 seconds.
+
+History counts for more once it has landed. The Worker pushes to main without delta compression and Artifacts serves a repo as it was pushed, while a sandbox's git pushes its fork with deltas. A fork with 1,500 edits of 4 KiB pages was 5.1 MiB when it landed and 6.4 MiB as the next session's fork, which is over `transferBytes`, so the next land was refused. Read `packBytes` in a `land` event as the size before that land, and expect the wiki to stop landing at about 6 MiB of compressed page and directory versions.
 
 ## Monitor usage
 

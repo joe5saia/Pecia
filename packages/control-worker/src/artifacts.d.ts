@@ -17,7 +17,9 @@ declare global {
   type ArtifactsCreateRepoResult = Workers.ArtifactsCreateRepoResult;
   type ArtifactsCreateTokenResult = Workers.ArtifactsCreateTokenResult;
   type ArtifactsErrorCode = Workers.ArtifactsErrorCode;
-  type ArtifactsRepo = Workers.ArtifactsRepo;
+  // The package's importable `Disposable` is an empty placeholder for old compilers, so the
+  // standard one is added here: a repo handle is an RPC stub that has to be disposed.
+  type ArtifactsRepo = Workers.ArtifactsRepo & Disposable;
   type ArtifactsRepoInfo = Workers.ArtifactsRepoInfo;
   type ArtifactsRepoListResult = Workers.ArtifactsRepoListResult;
   type ArtifactsTokenListResult = Workers.ArtifactsTokenListResult;
