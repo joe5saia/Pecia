@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Orb setup: runs once per fresh orb (and again on a stale snapshot), so every
+# step must be idempotent and cheap when its work is already done.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+step() {
+  local label="$1"
+  shift
+  local start=$SECONDS
+  echo "==> $label"
+  "$@"
+  echo "    done in $((SECONDS - start))s"
+}
+
+# Node and pnpm ship with the orb image. pnpm reads the packageManager pin in
+# package.json and fetches that exact version itself if the image's differs.
+step "node $(node --version), pnpm $(pnpm --version)" true
+
+# The pnpm store and node_modules survive in the snapshot, so a warm run only
+# verifies the lockfile. Install scripts (Task binary, workerd) are cached by
+# pnpm's side-effects cache and do not download again.
+step "pnpm install" pnpm install --frozen-lockfile --prefer-offline --reporter=append-only
+
+# Put the lockfile-pinned Task on PATH as `task`. A wrapper, not a symlink, so
+# pnpm's bin shim resolves its own paths.
+install_task_wrapper() {
+  local bin="$HOME/.local/bin/task"
+  local wrapper
+  wrapper="$(printf '#!/bin/sh\nexec "%s/node_modules/.bin/task" "$@"\n' "$repo_root")"
+  mkdir -p "$(dirname "$bin")"
+  if [ "$(cat "$bin" 2>/dev/null)" != "$wrapper" ]; then
+    printf '%s\n' "$wrapper" >"$bin"
+    chmod +x "$bin"
+  fi
+  task --version
+}
+step "task on PATH" install_task_wrapper

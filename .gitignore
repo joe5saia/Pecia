@@ -147,3 +147,13 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Task checksums
+.task/
+
+# Alchemy local state and dev output
+.alchemy/
+
+# Amp orb files
+.amp/in/
+.amp/portals/*

@@ -1,0 +1,130 @@
+# Every developer and CI command lives here; package.json files have no scripts.
+# Tools run through `pnpm exec` so their versions come from pnpm-lock.yaml.
+version: "3"
+
+set: [errexit, pipefail]
+
+vars:
+  STACK_DIR: packages/control-worker
+
+# Cloudflare credentials for the Alchemy tasks. Alchemy uses them when both are
+# set (CI, orbs) and otherwise falls back to the local `alchemy profile`.
+# CLOUDFLARE_* wins; the SAIAAI_* names select the saiaai account in orbs.
+x-cloudflare-env: &cloudflare-env
+  CLOUDFLARE_ACCOUNT_ID: "{{.CLOUDFLARE_ACCOUNT_ID | default .SAIAAI_CLOUDFLARE_ACCOUNT_ID}}"
+  CLOUDFLARE_API_TOKEN: "{{.CLOUDFLARE_API_TOKEN | default .SAIAAI_CLOUDFLARE_API_TOKEN}}"
+
+# Inputs shared by the checks: Task skips a check when none of them changed.
+x-check-sources: &check-sources
+  - "packages/**/*.ts"
+  - "*.ts"
+  - tsconfig.json
+  - .oxlintrc.json
+  - .oxfmtrc.json
+  - pnpm-lock.yaml
+
+tasks:
+  default:
+    desc: List tasks
+    silent: true
+    cmd: task --list
+
+  install:
+    desc: Install dependencies from the lockfile
+    sources: [pnpm-lock.yaml, pnpm-workspace.yaml, package.json, "packages/*/package.json"]
+    generates: [node_modules/.modules.yaml]
+    cmd: pnpm install --frozen-lockfile
+
+  fmt:
+    desc: Format all files with oxfmt
+    cmd: pnpm exec oxfmt
+
+  fmt:check:
+    desc: Fail if any file is not formatted
+    sources: *check-sources
+    cmd: pnpm exec oxfmt --check
+
+  lint:
+    desc: Lint with oxlint, including type-aware rules
+    sources: *check-sources
+    cmd: pnpm exec oxlint --type-aware --deny-warnings
+
+  lint:fix:
+    desc: Apply oxlint autofixes
+    cmd: pnpm exec oxlint --type-aware --fix
+
+  typecheck:
+    desc: Type-check with tsrs and, until tsrs is stable, the official TypeScript compiler
+    deps: [typecheck:tsrs, typecheck:tsc]
+
+  typecheck:tsrs:
+    sources: *check-sources
+    cmd: pnpm exec tsrs --noEmit
+
+  typecheck:tsc:
+    sources: *check-sources
+    cmd: pnpm exec tsc --noEmit
+
+  test:
+    desc: Run the test suite
+    sources: *check-sources
+    cmd: pnpm exec vitest run
+
+  test:watch:
+    desc: Run tests in watch mode
+    cmd: pnpm exec vitest
+
+  check:
+    desc: Local CI - every check except deploying
+    cmds:
+      - task: fmt:check
+      - task: lint
+      - task: typecheck
+      - task: test
+
+  ci:
+    desc: Full CI - the local checks, then a preview deploy (needs PULL_REQUEST and Cloudflare credentials)
+    cmds:
+      - task: check
+      - task: deploy:preview
+
+  dev:
+    desc: Run the Control Worker and Durable Objects locally with alchemy dev
+    dir: "{{.STACK_DIR}}"
+    env: *cloudflare-env
+    interactive: true
+    cmd: pnpm exec alchemy dev
+
+  plan:
+    desc: Preview changes to a stage (STAGE, default staging) without deploying
+    dir: "{{.STACK_DIR}}"
+    env: *cloudflare-env
+    cmd: pnpm exec alchemy plan --stage {{.STAGE | default "staging"}} --no-input
+
+  deploy:preview:
+    desc: Deploy the pr-<PULL_REQUEST> preview stage
+    requires:
+      vars: [PULL_REQUEST]
+    dir: "{{.STACK_DIR}}"
+    env: *cloudflare-env
+    cmd: pnpm exec alchemy deploy --stage pr-{{.PULL_REQUEST}} --yes --no-input
+
+  destroy:preview:
+    desc: Destroy the pr-<PULL_REQUEST> preview stage
+    requires:
+      vars: [PULL_REQUEST]
+    dir: "{{.STACK_DIR}}"
+    env: *cloudflare-env
+    cmd: pnpm exec alchemy destroy --stage pr-{{.PULL_REQUEST}} --yes --no-input
+
+  deploy:staging:
+    desc: Deploy the staging stage
+    dir: "{{.STACK_DIR}}"
+    env: *cloudflare-env
+    cmd: pnpm exec alchemy deploy --stage staging
+
+  deploy:prod:
+    desc: Deploy the prod stage
+    dir: "{{.STACK_DIR}}"
+    env: *cloudflare-env
+    cmd: pnpm exec alchemy deploy --stage prod

@@ -1,0 +1,17 @@
+packages:
+  - packages/*
+
+# Dependencies whose install scripts may run (pnpm blocks all others).
+allowBuilds:
+  # Downloads the pinned Task binary.
+  "@go-task/cli": true
+  # Fetches the workerd runtime used by `alchemy dev`.
+  workerd: true
+
+# Versions are pinned exactly, so these fast-moving toolchains may use releases
+# newer than pnpm's default minimum release age.
+minimumReleaseAgeExclude:
+  - oxfmt
+  - oxlint
+  - "@oxfmt/*"
+  - "@oxlint/*"
