@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Orb resume: runs when an orb starts and every time it wakes, so it must take
+# seconds and be safe to repeat.
+set -euo pipefail
+
+# oxlint runs this repository's own lint rules (packages/lint-rules) in JS and
+# reserves several GiB of address space to do it, as does the rules' test
+# runner. An orb with less memory than that refuses the reservation unless the
+# kernel may overcommit. This is kernel state, not a file, so it is set here
+# and not in .agents/setup, whose result is a filesystem snapshot.
+if [ "$(cat /proc/sys/vm/overcommit_memory)" != "1" ]; then
+  sudo -n sysctl -qw vm.overcommit_memory=1
+fi

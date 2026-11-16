@@ -1,0 +1,14 @@
+{
+  "name": "@pecia/sandbox-tools",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@effect/platform-node": "4.1.4",
+    "@pecia/wiki-api": "workspace:*",
+    "effect": "4.1.4"
+  },
+  "devDependencies": {
+    "@pecia/control-worker": "workspace:*",
+    "rolldown": "1.2.19"
+  }
+}

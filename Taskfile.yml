@@ -14,9 +14,16 @@ x-cloudflare-env: &cloudflare-env
   CLOUDFLARE_ACCOUNT_ID: "{{.CLOUDFLARE_ACCOUNT_ID | default .SAIAAI_CLOUDFLARE_ACCOUNT_ID}}"
   CLOUDFLARE_API_TOKEN: "{{.CLOUDFLARE_API_TOKEN | default .SAIAAI_CLOUDFLARE_API_TOKEN}}"
 
+# The Control Worker's secrets and settings, read from the environment by every
+# Alchemy task. PECIA_ORCHESTRATOR_KEY is the orchestrator's API key, bound to
+# the Worker as a secret; PECIA_IDLE_TIMEOUT (default "2 hours") is optional.
+x-worker-requires: &worker-requires
+  vars: [PECIA_ORCHESTRATOR_KEY]
+
 # Inputs shared by the checks: Task skips a check when none of them changed.
 x-check-sources: &check-sources
   - "packages/**/*.ts"
+  - "packages/**/*.sh"
   - "*.ts"
   - tsconfig.json
   - .oxlintrc.json
@@ -74,6 +81,18 @@ tasks:
     desc: Run tests in watch mode
     cmd: pnpm exec vitest
 
+  build:tools:
+    desc: Bundle wiki-credential and wiki-land into single Node scripts in packages/sandbox-tools/dist
+    dir: packages/sandbox-tools
+    sources: ["src/**/*.ts", "../wiki-api/src/**/*.ts", rolldown.config.ts, ../../pnpm-lock.yaml]
+    generates: [dist/wiki-credential, dist/wiki-land, dist/package.json]
+    cmds:
+      - pnpm exec rolldown --config rolldown.config.ts
+      - chmod +x dist/wiki-credential dist/wiki-land
+      # The scripts are CommonJS with no extension. This keeps Node from reading
+      # them as ES modules here, under this package's "type": "module".
+      - echo '{"type":"commonjs"}' >dist/package.json
+
   check:
     desc: Local CI - every check except deploying
     cmds:
@@ -83,13 +102,14 @@ tasks:
       - task: test
 
   ci:
-    desc: Full CI - the local checks, then a preview deploy (needs PULL_REQUEST and Cloudflare credentials)
+    desc: Full CI - the local checks, then a preview deploy (needs PULL_REQUEST, PECIA_ORCHESTRATOR_KEY and Cloudflare credentials)
     cmds:
       - task: check
       - task: deploy:preview
 
   dev:
     desc: Run the Control Worker and Durable Objects locally with alchemy dev
+    requires: *worker-requires
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
     interactive: true
@@ -97,6 +117,7 @@ tasks:
 
   plan:
     desc: Preview changes to a stage (STAGE, default staging) without deploying
+    requires: *worker-requires
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
     cmd: pnpm exec alchemy plan --stage {{.STAGE | default "staging"}} --no-input
@@ -104,7 +125,7 @@ tasks:
   deploy:preview:
     desc: Deploy the pr-<PULL_REQUEST> preview stage
     requires:
-      vars: [PULL_REQUEST]
+      vars: [PULL_REQUEST, PECIA_ORCHESTRATOR_KEY]
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
     cmd: pnpm exec alchemy deploy --stage pr-{{.PULL_REQUEST}} --yes --no-input
@@ -119,12 +140,14 @@ tasks:
 
   deploy:staging:
     desc: Deploy the staging stage
+    requires: *worker-requires
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
     cmd: pnpm exec alchemy deploy --stage staging
 
   deploy:prod:
     desc: Deploy the prod stage
+    requires: *worker-requires
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
     cmd: pnpm exec alchemy deploy --stage prod

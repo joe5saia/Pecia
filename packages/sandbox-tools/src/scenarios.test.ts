@@ -1,0 +1,348 @@
+import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
+import { makeSandbox, type Sandbox, startTestService, type TestService } from "@pecia/control-worker/testing";
+import { CreateSessionResponse, ListSessionsResponse, TokenResponse, WorkspaceName } from "@pecia/wiki-api";
+import * as Schema from "effect/Schema";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { build } from "rolldown";
+import { configs, tools } from "../rolldown.config.ts";
+
+// The test scenarios of docs/mvp.md, run end to end: the bundled sandbox tools
+// and setup.sh in sandboxes with real git, against the real API handlers and
+// workspace logic over a local stand-in for Artifacts.
+
+const idleTimeoutMs = 2 * 60 * 60_000;
+const setupScript = fileURLToPath(new URL("../setup.sh", import.meta.url));
+
+let service: TestService;
+let bin: string;
+const sandboxes: Sandbox[] = [];
+
+beforeAll(async () => {
+  service = await startTestService({ idleTimeoutMs });
+  bin = await mkdtemp(join(tmpdir(), "pecia-bin-"));
+  for (const config of configs(bin)) await build(config);
+  for (const tool of Object.keys(tools)) await chmod(join(bin, tool), 0o755);
+}, 60_000);
+
+afterAll(async () => {
+  await Promise.all(sandboxes.map((sandbox) => sandbox.close()));
+  await rm(bin, { recursive: true, force: true });
+  await service.close();
+});
+
+/** Call the API as the orchestrator does. */
+const orchestrator = async (method: string, path: string, body?: unknown, key = service.orchestratorKey) => {
+  const response = await fetch(`${service.url}${path}`, {
+    method,
+    headers: { authorization: `Bearer ${key}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const answer: unknown = await response.json().catch(() => undefined);
+  return { status: response.status, body: answer, challenge: response.headers.get("www-authenticate") };
+};
+
+const decodeSession = Schema.decodeUnknownSync(CreateSessionResponse);
+const decodeSessions = Schema.decodeUnknownSync(ListSessionsResponse);
+const decodeTokens = Schema.decodeUnknownSync(Schema.fromJsonString(TokenResponse));
+
+const createWorkspace = async (name: string) => {
+  const created = await orchestrator("POST", "/workspaces", { name });
+  expect(created.status).toBe(200);
+  return {
+    name,
+    head: () => service.artifacts.git(name, "rev-parse", "refs/heads/main"),
+    show: (path: string) => service.artifacts.git(name, "show", `main:${path}`),
+    sessions: async () => decodeSessions((await orchestrator("GET", `/workspaces/${name}/sessions`)).body),
+  };
+};
+
+/** Create a session and set up a sandbox for it, the way an orchestrator would. */
+const openSandbox = async (workspace: string) => {
+  const created = await orchestrator("POST", `/workspaces/${workspace}/sessions`, {
+    agent: "amp",
+    model: "test-model",
+  });
+  expect(created.status).toBe(200);
+  const session = decodeSession(created.body);
+
+  const sandbox = await makeSandbox({ PATH: `${bin}:${process.env["PATH"]}` });
+  sandboxes.push(sandbox);
+  // Only the setup script sees the session variables; later commands rely on what it left behind.
+  const setup = await sandbox.exec("bash", [setupScript], {
+    WIKI_URL: service.url,
+    SESSION_ID: session.sessionId,
+    SESSION_KEY: session.sessionKey,
+    FORK_REMOTE: session.forkRemote,
+    MAIN_REMOTE: session.mainRemote,
+  });
+  expect(setup.stderr + setup.stdout).not.toContain("fatal");
+  expect(setup.exitCode).toBe(0);
+
+  const commit = async (path: string, content: string) => {
+    await sandbox.write(path, content);
+    await sandbox.git("add", path);
+    await sandbox.git("commit", "--message", `Edit ${path}`);
+    await sandbox.git("push", "origin", "HEAD:main");
+    return sandbox.git("rev-parse", "HEAD");
+  };
+  const land = async () => {
+    const result = await sandbox.exec("wiki-land", []);
+    return { exitCode: result.exitCode, output: result.stdout.trim(), error: result.stderr.trim() };
+  };
+  /** Steps 1, 2 and 4 of the agent instructions. */
+  const mergeUpstream = async () => {
+    await sandbox.git("fetch", "upstream");
+    await sandbox.git("merge", "--no-edit", "upstream/main");
+    await sandbox.git("push", "origin", "HEAD:main");
+  };
+  return { ...session, sandbox, commit, land, mergeUpstream };
+};
+
+const forkName = (session: { forkRemote: string }) =>
+  new URL(session.forkRemote).pathname.slice(1).replace(/\.git$/, "");
+
+describe("the test scenarios of docs/mvp.md", () => {
+  it("1. two agents edit different files at the same time: both land", async () => {
+    const wiki = await createWorkspace("s1");
+    const [a, b] = await Promise.all([openSandbox("s1"), openSandbox("s1")]);
+    const [shaA] = await Promise.all([a.commit("a.md", "from a\n"), b.commit("b.md", "from b\n")]);
+
+    expect(await a.land()).toMatchObject({ exitCode: 0, output: `landed ${shaA}` });
+    expect(await b.land()).toMatchObject({ exitCode: 2, output: "behind" });
+    await b.mergeUpstream();
+    const merge = await b.sandbox.git("rev-parse", "HEAD");
+    expect(await b.land()).toMatchObject({ exitCode: 0, output: `landed ${merge}` });
+
+    expect(await wiki.head()).toBe(merge);
+    expect(await wiki.show("a.md")).toBe("from a");
+    expect(await wiki.show("b.md")).toBe("from b");
+    // main records who landed each head.
+    expect(await service.artifacts.git("s1", "notes", "show", shaA)).toContain(`pecia-session: ${a.sessionId}`);
+    expect(await service.artifacts.git("s1", "notes", "show", merge)).toContain(`pecia-session: ${b.sessionId}`);
+  });
+
+  it("2. two agents edit the same paragraph: the second gets behind, merges, resolves and lands", async () => {
+    const wiki = await createWorkspace("s2");
+    const a = await openSandbox("s2");
+    const b = await openSandbox("s2");
+    await a.commit("page.md", "The deploy takes five minutes.\n");
+    await b.commit("page.md", "The deploy needs a VPN.\n");
+    expect((await a.land()).exitCode).toBe(0);
+    expect(await b.land()).toMatchObject({ exitCode: 2, output: "behind" });
+
+    await b.sandbox.git("fetch", "upstream");
+    const merge = await b.sandbox.exec("git", ["-C", "docs", "merge", "--no-edit", "upstream/main"]);
+    expect(merge.exitCode).not.toBe(0);
+    expect(await b.sandbox.read("page.md")).toContain("<<<<<<<");
+    await b.sandbox.write("page.md", "The deploy takes five minutes.\nThe deploy needs a VPN.\n");
+    await b.sandbox.git("add", "page.md");
+    await b.sandbox.git("commit", "--no-edit");
+    await b.sandbox.git("push", "origin", "HEAD:main");
+
+    expect((await b.land()).exitCode).toBe(0);
+    expect(await wiki.show("page.md")).toBe("The deploy takes five minutes.\nThe deploy needs a VPN.");
+    // Neither agent's commit was lost or rewritten.
+    const history = await service.artifacts.git("s2", "log", "--format=%s", "main");
+    expect(history.split("\n").filter((subject) => subject === "Edit page.md")).toHaveLength(2);
+  });
+
+  it("3. wiki-land without merging after main moved: behind, and main is untouched", async () => {
+    const wiki = await createWorkspace("s3");
+    const a = await openSandbox("s3");
+    const b = await openSandbox("s3");
+    const shaA = await a.commit("a.md", "from a\n");
+    await a.land();
+    await b.commit("b.md", "from b\n");
+
+    expect(await b.land()).toMatchObject({ exitCode: 2, output: "behind" });
+    expect(await b.land()).toMatchObject({ exitCode: 2, output: "behind" });
+    expect(await wiki.head()).toBe(shaA);
+  });
+
+  it("4. a sandbox is killed mid-session: the fork keeps every pushed commit and the idle alarm parks it", async () => {
+    const wiki = await createWorkspace("s4");
+    const a = await openSandbox("s4");
+    const pushed = await a.commit("a.md", "pushed before the sandbox died\n");
+    await a.sandbox.close();
+
+    const workspace = service.workspace(WorkspaceName.make("s4"));
+    expect(workspace.wakeAt()).toBeDefined();
+    workspace.advance(idleTimeoutMs + 1);
+    await workspace.run(workspace.workspace.sweep());
+
+    expect(await wiki.sessions()).toMatchObject([{ sessionId: a.sessionId, agent: "amp", state: "parked" }]);
+    expect(await service.artifacts.git(forkName(a), "rev-parse", "refs/heads/main")).toBe(pushed);
+  });
+
+  it("5. git push upstream fails: the push URL is disabled and the sandbox has no main write token", async () => {
+    const wiki = await createWorkspace("s5");
+    const before = await wiki.head();
+    const a = await openSandbox("s5");
+    await a.commit("a.md", "from a\n");
+
+    const push = await a.sandbox.exec("git", ["-C", "docs", "push", "upstream", "HEAD:main"]);
+    expect(push.exitCode).not.toBe(0);
+    // Even around the disabled push URL, the helper only ever hands out a read token for main.
+    const direct = await a.sandbox.exec("git", ["-C", "docs", "push", a.mainRemote, "HEAD:main"]);
+    expect(direct.exitCode).not.toBe(0);
+    expect(await wiki.head()).toBe(before);
+  });
+
+  it("6. a token expires mid-session: the credential helper re-mints it and git keeps working", async () => {
+    await createWorkspace("s6");
+    const a = await openSandbox("s6");
+    await a.commit("a.md", "first\n");
+    const cache = join(a.sandbox.home, ".config", "pecia", `tokens-${a.sessionId}.json`);
+    const first = decodeTokens(await readFile(cache, "utf8"));
+
+    // Two hours pass: on the service, where the one-hour tokens expire, and in the sandbox.
+    service.workspace(WorkspaceName.make("s6")).advance(2 * 60 * 60_000);
+    await writeFile(cache, JSON.stringify({ ...first, expiresAt: new Date(Date.now() - 60 * 60_000).toISOString() }));
+
+    await a.commit("a.md", "second\n");
+    await a.sandbox.git("fetch", "upstream");
+    const second = decodeTokens(await readFile(cache, "utf8"));
+    expect(second.forkWriteToken).not.toBe(first.forkWriteToken);
+  });
+
+  it("6b. a token rejected early costs one failed command, then git works again", async () => {
+    await createWorkspace("s6b");
+    const a = await openSandbox("s6b");
+    // The service's tokens expire while the sandbox still believes its cache.
+    service.workspace(WorkspaceName.make("s6b")).advance(2 * 60 * 60_000);
+
+    const rejected = await a.sandbox.exec("git", ["-C", "docs", "fetch", "upstream"]);
+    expect(rejected.exitCode).not.toBe(0);
+    await a.sandbox.git("fetch", "upstream");
+  });
+
+  it("7. a session ends with nothing unlanded: its fork is deleted", async () => {
+    const wiki = await createWorkspace("s7");
+    const a = await openSandbox("s7");
+    await a.commit("a.md", "from a\n");
+    expect((await a.land()).exitCode).toBe(0);
+
+    const ended = await orchestrator("DELETE", `/sessions/${a.sessionId}`);
+    expect(ended).toMatchObject({ status: 200, body: { state: "deleted" } });
+    expect(await service.artifacts.exists(forkName(a))).toBe(false);
+    expect(await wiki.sessions()).toMatchObject([{ sessionId: a.sessionId, state: "deleted" }]);
+    expect(await wiki.show("a.md")).toBe("from a");
+  });
+});
+
+describe("the sandbox", () => {
+  it("keeps tokens and the session key out of remote URLs, git config and the wiki checkout", async () => {
+    await createWorkspace("secrets");
+    const a = await openSandbox("secrets");
+    await a.commit("a.md", "from a\n");
+    const cache = join(a.sandbox.home, ".config", "pecia", `tokens-${a.sessionId}.json`);
+    const tokens = decodeTokens(await readFile(cache, "utf8"));
+    const secrets = [tokens.forkWriteToken, tokens.mainReadToken, a.sessionKey].map(
+      (secret) => secret.split("?expires=")[0] ?? secret,
+    );
+
+    const places = [
+      await readFile(join(a.sandbox.home, ".gitconfig"), "utf8"),
+      await readFile(join(a.sandbox.docs, ".git", "config"), "utf8"),
+      await a.sandbox.git("remote", "--verbose"),
+      (await a.sandbox.exec("grep", ["--recursive", "--files-with-matches", "--regexp", secrets.join("\\|"), "docs"]))
+        .stdout,
+    ].join("\n");
+    for (const secret of secrets) expect(places).not.toContain(secret);
+  });
+
+  it("is told that a parked session can no longer land", async () => {
+    await createWorkspace("parked");
+    const a = await openSandbox("parked");
+    await a.commit("a.md", "unlanded\n");
+    expect(await orchestrator("DELETE", `/sessions/${a.sessionId}`)).toMatchObject({
+      status: 200,
+      body: { state: "parked" },
+    });
+
+    const land = await a.land();
+    expect(land.exitCode).toBe(1);
+    expect(land.error).toBe(`wiki-land: session '${a.sessionId}' has ended (parked) and can no longer push or land`);
+    expect((await a.sandbox.exec("git", ["-C", "docs", "push", "origin", "HEAD:main"])).exitCode).not.toBe(0);
+  });
+});
+
+describe("the API", () => {
+  it("answers 401 without the orchestrator key or with a wrong session key", async () => {
+    await createWorkspace("auth");
+    expect(await orchestrator("POST", "/workspaces", { name: "intruder" }, "wrong")).toEqual({
+      status: 401,
+      body: { _tag: "Unauthorized" },
+      challenge: "Bearer",
+    });
+    // The credential is checked before the request: a caller without one learns nothing about the API.
+    expect((await orchestrator("POST", "/workspaces", { name: "Not A Name" }, "wrong")).status).toBe(401);
+    expect((await orchestrator("GET", "/workspaces/auth/sessions", undefined, "")).status).toBe(401);
+    const session = decodeSession(
+      (await orchestrator("POST", "/workspaces/auth/sessions", { agent: "amp", model: "m" })).body,
+    );
+    // The orchestrator key is no session key, and a session key is no orchestrator key.
+    expect((await orchestrator("POST", `/sessions/${session.sessionId}/land`)).status).toBe(401);
+    expect((await orchestrator("POST", `/sessions/${session.sessionId}/token`, undefined, "wrong")).status).toBe(401);
+    expect((await orchestrator("DELETE", `/sessions/${session.sessionId}`, undefined, session.sessionKey)).status).toBe(
+      401,
+    );
+    expect(await service.artifacts.exists("intruder")).toBe(false);
+  });
+
+  it("answers 404 for an unknown workspace or session and 409 for a session that has ended", async () => {
+    await createWorkspace("codes");
+    const missing = await orchestrator("POST", "/workspaces/nowhere/sessions", { agent: "amp", model: "m" });
+    expect(missing).toMatchObject({ status: 404, body: { _tag: "NotFound", resource: "workspace", id: "nowhere" } });
+    expect((await orchestrator("GET", "/workspaces/nowhere/sessions")).status).toBe(404);
+    expect((await orchestrator("DELETE", "/sessions/codes.0000")).status).toBe(404);
+    expect((await orchestrator("DELETE", "/sessions/nowhere.0000")).status).toBe(404);
+
+    const session = decodeSession(
+      (await orchestrator("POST", "/workspaces/codes/sessions", { agent: "amp", model: "m" })).body,
+    );
+    expect((await orchestrator("DELETE", `/sessions/${session.sessionId}`)).status).toBe(200);
+    const again = await orchestrator("DELETE", `/sessions/${session.sessionId}`);
+    expect(again).toMatchObject({ status: 409, body: { _tag: "SessionNotActive", state: "deleted" } });
+    expect(
+      (await orchestrator("POST", `/sessions/${session.sessionId}/token`, undefined, session.sessionKey)).status,
+    ).toBe(409);
+    // Only the holder of the session key learns that the session has ended.
+    expect((await orchestrator("POST", `/sessions/${session.sessionId}/token`, undefined, "wrong")).status).toBe(401);
+  });
+
+  it("answers 404 with a problem for a path or method the API does not have", async () => {
+    const problem = { type: "about:blank", status: 404, title: "Not Found" };
+    expect(await orchestrator("GET", "/nope")).toMatchObject({ status: 404, body: problem });
+    expect(await orchestrator("GET", "/workspaces")).toMatchObject({ status: 404, body: problem });
+  });
+
+  it("answers 400 saying what was wrong with the request, 413 for an oversized one and 502 when Artifacts is down", async () => {
+    await createWorkspace("bad");
+    expect((await orchestrator("POST", "/workspaces", { name: "Not A Name" })).status).toBe(400);
+    expect(await orchestrator("POST", "/workspaces/bad/sessions", { agent: "amp" })).toMatchObject({
+      status: 400,
+      body: {
+        type: "about:blank",
+        status: 400,
+        title: "Bad Request",
+        errors: [{ path: ["payload", "model"], message: "Missing key" }],
+      },
+    });
+    expect((await orchestrator("DELETE", "/sessions/not-a-session-id")).body).toMatchObject({
+      errors: [{ path: ["params", "id"] }],
+    });
+    expect((await orchestrator("POST", "/workspaces", { name: "a".repeat(100_000) })).status).toBe(413);
+
+    service.artifacts.setUnavailable(true);
+    try {
+      const down = await orchestrator("POST", "/workspaces/bad/sessions", { agent: "amp", model: "m" });
+      expect(down).toMatchObject({ status: 502, body: { _tag: "ArtifactsUnavailable" } });
+    } finally {
+      service.artifacts.setUnavailable(false);
+    }
+  });
+});

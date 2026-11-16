@@ -155,7 +155,7 @@ Two kinds of caller, each with its own credential. Neither ever receives a write
 
 Session IDs embed the workspace (e.g. `<ws>.<random>`) so the Worker can route `/sessions/:id` calls to the right Durable Object.
 
-Errors: 401 missing or wrong credential; 404 unknown workspace or session; 409 session not active (parked or deleted); 502 an Artifacts call failed (safe to retry).
+Errors: 400 malformed request; 401 missing or wrong credential; 404 unknown workspace or session; 409 session not active (parked or deleted); 500 a bug in the service; 502 an Artifacts call failed (safe to retry); 503 the workspace is overloaded or restarting (safe to retry). [operations.md](operations.md) has the bodies.
 
 ## Workspace Durable Object
 

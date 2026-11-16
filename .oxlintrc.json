@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["typescript", "unicorn", "oxc", "import", "vitest"],
+  "jsPlugins": ["./packages/lint-rules/src/index.ts"],
   "categories": {
     "correctness": "error",
     "suspicious": "warn"
@@ -21,6 +22,45 @@
       {
         "allow": ["_tag"]
       }
-    ]
-  }
+    ],
+
+    "pecia/no-tacit": "error",
+    "pecia/prefer-data-first": "error",
+    "pecia/prefer-for-each": "error",
+    "pecia/match-unions": "error",
+    "pecia/run-at-the-edge": "error",
+    "no-nested-ternary": "error",
+    "no-console": "error",
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "effect",
+            "importNames": ["flow"],
+            "message": "Write the function out, as in `(x) => g(f(x))`, or use `.pipe`."
+          },
+          {
+            "name": "effect/Function",
+            "importNames": ["flow"],
+            "message": "Write the function out, as in `(x) => g(f(x))`, or use `.pipe`."
+          }
+        ]
+      }
+    ],
+    "no-restricted-properties": [
+      "error",
+      { "object": "process", "property": "stdout", "message": "Print through `Console` from effect." },
+      { "object": "process", "property": "stderr", "message": "Print through `Console` from effect." }
+    ],
+    "typescript/consistent-type-assertions": ["error", { "assertionStyle": "never" }]
+  },
+  "overrides": [
+    {
+      "files": ["**/*.test.ts", "**/testing/**"],
+      "rules": {
+        "pecia/run-at-the-edge": "off"
+      }
+    }
+  ]
 }
