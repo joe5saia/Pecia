@@ -157,6 +157,10 @@ importers:
       isomorphic-git:
         specifier: 1.44.13
         version: 1.44.13
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 5.20261115.1
+        version: 5.20261115.1
 
   packages/lint-rules:
     devDependencies:

@@ -120,11 +120,8 @@ export const make = (
           "revokeToken",
           Effect.gen(function* () {
             const repo = yield* artifacts.get(name);
-            // Alchemy types this result with Cloudflare's ambient Workers types, which this
-            // repository does not load, so it arrives as `any`. Say what is read from it.
-            const listed: { readonly tokens: ReadonlyArray<{ readonly id: string; readonly state: string }> } =
-              yield* repo.listTokens();
-            const active = listed.tokens.filter((token) => token.state === "active");
+            const { tokens } = yield* repo.listTokens();
+            const active = tokens.filter((token) => token.state === "active");
             yield* Effect.forEach(active, (token) => repo.revokeToken(token.id), { discard: true });
           }),
         ),
