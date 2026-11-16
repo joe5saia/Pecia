@@ -6,7 +6,14 @@ import * as HttpApiMiddleware from "effect/http-api/HttpApiMiddleware";
 import * as HttpApiSecurity from "effect/http-api/HttpApiSecurity";
 import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
-import { ArtifactsUnavailable, NotFound, SessionNotActive, Unauthorized, WorkspaceUnavailable } from "./Errors.ts";
+import {
+  ArtifactsUnavailable,
+  ForkTooLarge,
+  NotFound,
+  SessionNotActive,
+  Unauthorized,
+  WorkspaceUnavailable,
+} from "./Errors.ts";
 import {
   CreateSessionRequest,
   CreateSessionResponse,
@@ -84,7 +91,7 @@ export class SandboxGroup extends HttpApiGroup.make("sandbox")
     HttpApiEndpoint.post("land", "/sessions/:id/land", {
       params: SessionParams,
       success: LandResponse,
-      error: [NotFound, SessionNotActive, ArtifactsUnavailable, WorkspaceUnavailable],
+      error: [NotFound, SessionNotActive, ForkTooLarge, ArtifactsUnavailable, WorkspaceUnavailable],
     }),
   )
   .middleware(SessionAuth) {}

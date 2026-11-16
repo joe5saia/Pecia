@@ -29,6 +29,17 @@ interface Token {
   readonly expiresAtMs: number;
 }
 
+/** A call to the Artifacts control plane, as `hold` names it. */
+export type ControlOperation = keyof Repos["Service"];
+
+/** A control-plane call stopped by `hold`. */
+export interface Held {
+  /** Resolves when the call has arrived and is waiting. */
+  readonly reached: Promise<void>;
+  /** Let the call go on. */
+  readonly release: () => void;
+}
+
 export interface FakeArtifacts {
   readonly repos: Repos["Service"];
   /** Run git against a repo's bare directory, e.g. `git("eng-wiki", "log", "main")`. */
@@ -38,6 +49,12 @@ export interface FakeArtifacts {
   readonly advanceClock: (ms: number) => void;
   /** Make every call to the Artifacts control plane fail, as an outage would. */
   readonly setUnavailable: (unavailable: boolean) => void;
+  /**
+   * Stop the next `operation` on `repo` until it is released: `before` it does
+   * anything, or `after` it has done its work and before it answers. Tests use
+   * it to put something else in the middle of a workspace call.
+   */
+  readonly hold: (operation: ControlOperation, repo: string, when: "before" | "after") => Held;
   readonly close: () => Promise<void>;
 }
 
@@ -46,6 +63,13 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
   const tokens = new Map<string, Token>();
   let clockOffsetMs = 0;
   let unavailable = false;
+  const holds: Array<{
+    readonly operation: ControlOperation;
+    readonly repo: string;
+    readonly when: "before" | "after";
+    readonly reach: () => void;
+    readonly released: Promise<void>;
+  }> = [];
   const now = () => Date.now() + clockOffsetMs;
   const repoDir = (repo: string) => join(root, `${repo}.git`);
 
@@ -113,6 +137,8 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
         }
         response.writeHead(status, headers).end(raw.subarray(split + 4));
       });
+      // A backend that exits without reading its input still answers on stdout.
+      backend.stdin.on("error", () => {});
       backend.stdin.end(body);
     });
   };
@@ -122,38 +148,55 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
   const origin = `http://127.0.0.1:${portOf(server)}`;
   const remoteOf = (repo: string) => `${origin}/${repo}.git`;
 
-  const control = <A>(operation: string, action: () => Promise<A>): Effect.Effect<A, ArtifactsUnavailable> =>
+  const control = <A>(
+    operation: ControlOperation,
+    repo: string,
+    action: () => Promise<A>,
+  ): Effect.Effect<A, ArtifactsUnavailable> =>
     Effect.tryPromise({
-      try: () => (unavailable ? Promise.reject(new Error("Artifacts is unavailable")) : action()),
+      try: async () => {
+        if (unavailable) throw new Error("Artifacts is unavailable");
+        const index = holds.findIndex((hold) => hold.operation === operation && hold.repo === repo);
+        const [hold] = index === -1 ? [] : holds.splice(index, 1);
+        const wait = async (when: "before" | "after") => {
+          if (hold?.when !== when) return;
+          hold.reach();
+          await hold.released;
+        };
+        await wait("before");
+        const result = await action();
+        await wait("after");
+        return result;
+      },
       catch: (cause) => new ArtifactsUnavailable({ message: `${operation}: ${String(cause)}` }),
     });
 
   const repos: Repos["Service"] = {
     ensure: (name) =>
-      control("ensure", async () => {
+      control("ensure", name, async () => {
         if (!(await exists(name))) await run("git", ["init", "--bare", "--initial-branch", "main", repoDir(name)]);
         return remoteOf(name);
       }),
     fork: (source, name) =>
-      control("fork", async () => {
+      control("fork", name, async () => {
         // Like `fork(name, { defaultBranchOnly: true })`: main only, so no notes.
         await run("git", ["clone", "--bare", "--single-branch", "--branch", "main", repoDir(source), repoDir(name)]);
         return remoteOf(name);
       }),
     delete: (name) =>
-      control("delete", async () => {
+      control("delete", name, async () => {
         await rm(repoDir(name), { recursive: true, force: true });
         for (const token of tokens.values()) if (token.repo === name) tokens.delete(token.id);
       }),
     head: (name) =>
-      control("head", () =>
+      control("head", name, () =>
         run("git", ["--git-dir", repoDir(name), "rev-parse", "--verify", "--quiet", "refs/heads/main"]).then(
           ({ stdout }) => CommitSha.make(stdout.trim()),
           () => undefined,
         ),
       ),
     mintToken: (name, scope, ttlSeconds) =>
-      control("mintToken", async (): Promise<RepoToken> => {
+      control("mintToken", name, async (): Promise<RepoToken> => {
         if (!(await exists(name))) throw new Error(`repo '${name}' not found`);
         const expiresAtMs = now() + ttlSeconds * 1000;
         const plaintext = `art_v1_${randomBytes(20).toString("hex")}?expires=${Math.floor(expiresAtMs / 1000)}`;
@@ -167,9 +210,9 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
         tokens.set(token.id, token);
         return { id: token.id, plaintext, expiresAt: new Date(expiresAtMs).toISOString() };
       }),
-    revokeToken: (_name, tokenId) => control("revokeToken", async () => void tokens.delete(tokenId)),
+    revokeToken: (name, tokenId) => control("revokeToken", name, async () => void tokens.delete(tokenId)),
     revokeAllTokens: (name) =>
-      control("revokeAllTokens", async () => {
+      control("revokeAllTokens", name, async () => {
         for (const token of tokens.values()) if (token.repo === name) tokens.delete(token.id);
       }),
   };
@@ -183,6 +226,12 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
     },
     setUnavailable: (value) => {
       unavailable = value;
+    },
+    hold: (operation, repo, when) => {
+      const reached = Promise.withResolvers<void>();
+      const released = Promise.withResolvers<void>();
+      holds.push({ operation, repo, when, reach: reached.resolve, released: released.promise });
+      return { reached: reached.promise, release: released.resolve };
     },
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));

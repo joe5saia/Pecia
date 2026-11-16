@@ -20,7 +20,7 @@ describe("WikiApi", () => {
       "GET /workspaces/{ws}/sessions": "200 400 401 404 500 503",
       "DELETE /sessions/{id}": "200 400 401 404 409 500 502 503",
       "POST /sessions/{id}/token": "200 400 401 404 409 500 502 503",
-      "POST /sessions/{id}/land": "200 400 401 404 409 500 502 503",
+      "POST /sessions/{id}/land": "200 400 401 404 409 422 500 502 503",
     });
   });
 });

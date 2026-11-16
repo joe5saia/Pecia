@@ -17,6 +17,26 @@ const isTransient = (error: ArtifactsError): boolean =>
   error.code === "CREATE_IN_PROGRESS" ||
   error.code === "FORK_IN_PROGRESS";
 
+/** `listTokens` answers one page at a time and takes no page to ask for, so revoking is repeated this often at most. */
+const revokePasses = 20;
+
+/**
+ * Revoke the repo's active tokens, and list again until a listing shows none.
+ * Answers whether it got there within `passes` listings.
+ */
+const revokeActive = (
+  repo: Cloudflare.Artifacts.RepoClient,
+  passes: number,
+): Effect.Effect<boolean, ArtifactsError, RuntimeContext> =>
+  Effect.gen(function* () {
+    const { tokens } = yield* repo.listTokens();
+    const active = tokens.filter((token) => token.state === "active");
+    if (active.length === 0) return true;
+    if (passes === 0) return false;
+    yield* Effect.forEach(active, (token) => repo.revokeToken(token.id), { discard: true });
+    return yield* revokeActive(repo, passes - 1);
+  });
+
 export const make = (
   artifacts: Cloudflare.Artifacts.ReadWriteNamespaceClient,
 ): Effect.Effect<Repos["Service"], never, RuntimeContext> => {
@@ -116,14 +136,26 @@ export const make = (
           ),
         ),
       revokeAllTokens: (name) =>
-        call(
-          "revokeToken",
-          Effect.gen(function* () {
-            const repo = yield* artifacts.get(name);
-            const { tokens } = yield* repo.listTokens();
-            const active = tokens.filter((token) => token.state === "active");
-            yield* Effect.forEach(active, (token) => repo.revokeToken(token.id), { discard: true });
-          }),
+        Effect.flatMap(
+          call(
+            "revokeToken",
+            artifacts.get(name).pipe(
+              Effect.flatMap((repo) => revokeActive(repo, revokePasses)),
+              // A repo that is gone, or was never created, has no tokens.
+              Effect.catchIf(
+                (error) => error.code === "NOT_FOUND",
+                () => Effect.succeed(true),
+              ),
+            ),
+          ),
+          (revoked) =>
+            revoked
+              ? Effect.void
+              : Effect.fail(
+                  new ArtifactsUnavailable({
+                    message: `Artifacts revokeToken failed: '${name}' still lists active tokens after ${revokePasses} passes`,
+                  }),
+                ),
         ),
     };
   });

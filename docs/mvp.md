@@ -91,7 +91,7 @@ Everything is TypeScript: built on Effect, deployed with Alchemy, checked, linte
 3. **Work.** The agent edits, commits and pushes to `origin` (its fork) as often as it likes. Nothing is shared yet, but nothing is lost if the sandbox dies.
 4. **Merge.** The agent fetches upstream, runs `git merge upstream/main`, resolves any conflicts, commits and pushes to origin.
 5. **Land.** The agent runs `wiki-land`. The Worker checks that current main is an ancestor of the fork's head. If so, it moves main to that head. If main moved in the meantime, it answers `behind` and the agent repeats step 4.
-6. **End.** When the orchestrator closes the session, or an idle alarm fires: a fork with nothing unlanded is deleted; a fork with unlanded commits is kept as a parked session for a human or another agent to pick up.
+6. **End.** When the orchestrator closes the session, or an idle alarm fires: a fork with nothing unlanded is closed and, ten minutes later, deleted; a fork with unlanded commits is kept as a parked session for a human or another agent to pick up. Either way its tokens are revoked first.
 
 ## Sandbox setup
 
@@ -150,12 +150,12 @@ Two kinds of caller, each with its own credential. Neither ever receives a write
 | `POST /workspaces/:ws/sessions` | Orchestrator | `{ "agent", "model" }` | `{ "sessionId", "sessionKey", "forkRemote", "mainRemote" }` |
 | `POST /sessions/:id/token` | Sandbox | none | `{ "forkWriteToken", "mainReadToken", "expiresAt" }` |
 | `POST /sessions/:id/land` | Sandbox | none | `{ "status": "landed", "sha" }`, `{ "status": "behind", "mainSha" }` or `{ "status": "nothing_to_land" }` |
-| `DELETE /sessions/:id` | Orchestrator | none | `{ "state": "deleted" }` or `{ "state": "parked" }` |
+| `DELETE /sessions/:id` | Orchestrator | none | `{ "state": "closed" }` or `{ "state": "parked" }` |
 | `GET /workspaces/:ws/sessions` | Orchestrator | none | `[{ "sessionId", "agent", "state", "createdAt", "lastActiveAt" }]` |
 
 Session IDs embed the workspace (e.g. `<ws>.<random>`) so the Worker can route `/sessions/:id` calls to the right Durable Object.
 
-Errors: 400 malformed request; 401 missing or wrong credential; 404 unknown workspace or session; 409 session not active (parked or deleted); 500 a bug in the service; 502 an Artifacts call failed (safe to retry); 503 the workspace is overloaded or restarting (safe to retry). [operations.md](operations.md) has the bodies.
+Errors: 400 malformed request; 401 missing or wrong credential; 404 unknown workspace or session; 409 session not active (closed, parked or deleted); 422 the fork is too large to land; 500 a bug in the service; 502 an Artifacts call failed (safe to retry); 503 the workspace is overloaded or restarting (safe to retry). [operations.md](operations.md) has the bodies.
 
 ## Workspace Durable Object
 
@@ -163,10 +163,10 @@ One per workspace, addressed by workspace name. Every land for the workspace run
 
 | Table | Columns |
 | --- | --- |
-| `sessions` | `session_id`, `fork_name`, `session_key_hash`, `agent`, `model`, `state` (active, parked, deleted), `created_at`, `last_active_at` |
+| `sessions` | `session_id`, `fork_name`, `session_key_hash`, `agent`, `model`, `state` (active, closed, parked, deleted), `created_at`, `last_active_at`, `ended_at` |
 | `lands` | `session_id`, `from_sha`, `to_sha`, `landed_at` |
 
-Its alarm wakes periodically, ends sessions idle longer than a configurable timeout (deleted if nothing is unlanded, otherwise parked), and reschedules itself. Only a hash of each session key is stored.
+Its alarm wakes periodically, ends sessions idle longer than a configurable timeout (closed if nothing is unlanded, otherwise parked), deletes closed forks ten minutes after they were closed, and reschedules itself. A fork is not deleted when its session ends: Artifacts cannot make a repo read-only or delete it only if its head is unchanged, so a push already under way could finish after the head was read. If one did, the fork is parked instead. Only a hash of each session key is stored.
 
 ## Landing
 
@@ -183,7 +183,7 @@ Its alarm wakes periodically, ends sessions idle longer than a configurable time
 9. Record the land in `lands`, update `last_active_at`, and return `landed` with the new head.
 
 - **History is kept as the agent wrote it.** main moves by fast-forward, so the agent's commits and merge commits appear in main unchanged.
-- **Repo size.** The in-memory clone is fine for markdown-sized repos. If a wiki outgrows Worker memory, move steps 4–8 into a container with real git.
+- **Repo size.** The in-memory clone is fine for markdown-sized repos. A fork over the landing limits ([operations.md](operations.md), "Landing limits") is refused with 422 before it is downloaded or unpacked that far. If a wiki outgrows them, move steps 4–8 into a container with real git.
 
 ## Naming, tokens and cleanup
 
@@ -231,7 +231,7 @@ Answered from the Artifacts and Workers documentation as of November 2026. Where
 4. A sandbox is killed mid-session: the fork keeps every pushed commit, and the idle alarm parks it.
 5. An agent runs `git push upstream`: it fails, because the push URL is disabled and the sandbox holds no main write token.
 6. A token expires mid-session: the credential helper re-mints it and git keeps working.
-7. A session ends with nothing unlanded: its fork is deleted.
+7. A session ends with nothing unlanded: its fork is closed, then deleted.
 
 ## Build plan
 

@@ -25,14 +25,42 @@ export class NotFound extends Schema.TaggedError<NotFound>()(
   }
 }
 
-/** 409: the session was parked or deleted. It stays that way, so the call is not worth repeating. */
+/** 409: the session has ended. It does not become active again, so the call is not worth repeating. */
 export class SessionNotActive extends Schema.TaggedError<SessionNotActive>()(
   "SessionNotActive",
-  { sessionId: SessionId, state: Schema.Literals(["parked", "deleted"]) },
+  { sessionId: SessionId, state: Schema.Literals(["closed", "parked", "deleted"]) },
   { httpApiStatus: 409 },
 ) {
   override get message(): string {
     return `session '${this.sessionId}' has ended (${this.state}) and can no longer push or land`;
+  }
+}
+
+/**
+ * 422: the session's fork is larger than the service lands. A land clones the
+ * fork into the memory of a Worker, so its size has a ceiling
+ * (docs/operations.md, "Landing limits"). Repeating the call does not help: the
+ * fork has to get smaller, or the wiki has outgrown landing in a Worker.
+ */
+export class ForkTooLarge extends Schema.TaggedError<ForkTooLarge>()(
+  "ForkTooLarge",
+  {
+    /** The limit the fork exceeds. */
+    limit: Schema.Literals(["transferBytes", "objects", "objectBytes", "inflatedBytes"]),
+    /** The most the limit allows. */
+    max: Schema.Number,
+  },
+  { httpApiStatus: 422 },
+) {
+  override get message(): string {
+    const what = {
+      transferBytes: "its packed history is more than",
+      objects: "its history has more objects than",
+      objectBytes: "one of its files is more than",
+      inflatedBytes: "its unpacked history is more than",
+    } as const satisfies Record<ForkTooLarge["limit"], string>;
+    const unit = this.limit === "objects" ? "" : " bytes";
+    return `the fork is too large to land: ${what[this.limit]} ${this.max}${unit}`;
   }
 }
 

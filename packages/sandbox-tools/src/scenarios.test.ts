@@ -1,5 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
-import { makeSandbox, type Sandbox, startTestService, type TestService } from "@pecia/control-worker/testing";
+import {
+  forkSettleMs,
+  makeSandbox,
+  type Sandbox,
+  startTestService,
+  type TestService,
+} from "@pecia/control-worker/testing";
 import { CreateSessionResponse, ListSessionsResponse, TokenResponse, WorkspaceName } from "@pecia/wiki-api";
 import * as Schema from "effect/Schema";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -219,14 +225,20 @@ describe("the test scenarios of docs/mvp.md", () => {
     await a.sandbox.git("fetch", "upstream");
   });
 
-  it("7. a session ends with nothing unlanded: its fork is deleted", async () => {
+  it("7. a session ends with nothing unlanded: its fork is closed, then deleted", async () => {
     const wiki = await createWorkspace("s7");
     const a = await openSandbox("s7");
     await a.commit("a.md", "from a\n");
     expect((await a.land()).exitCode).toBe(0);
 
     const ended = await orchestrator("DELETE", `/sessions/${a.sessionId}`);
-    expect(ended).toMatchObject({ status: 200, body: { state: "deleted" } });
+    expect(ended).toMatchObject({ status: 200, body: { state: "closed" } });
+    expect(await wiki.sessions()).toMatchObject([{ sessionId: a.sessionId, state: "closed" }]);
+
+    // The alarm deletes the fork once a push that was in flight must have finished.
+    const workspace = service.workspace(WorkspaceName.make("s7"));
+    workspace.advance(forkSettleMs);
+    await workspace.run(workspace.workspace.sweep());
     expect(await service.artifacts.exists(forkName(a))).toBe(false);
     expect(await wiki.sessions()).toMatchObject([{ sessionId: a.sessionId, state: "deleted" }]);
     expect(await wiki.show("a.md")).toBe("from a");
@@ -268,6 +280,23 @@ describe("the sandbox", () => {
     expect(land.error).toBe(`wiki-land: session '${a.sessionId}' has ended (parked) and can no longer push or land`);
     expect((await a.sandbox.exec("git", ["-C", "docs", "push", "origin", "HEAD:main"])).exitCode).not.toBe(0);
   });
+
+  it("is told that its fork is too large to land", async () => {
+    const wiki = await createWorkspace("large");
+    const a = await openSandbox("large");
+    const base = await wiki.head();
+    // One page over the size of a file a land unpacks; it packs to a few kilobytes.
+    await a.commit("big.md", "a".repeat(5 * 1024 * 1024));
+
+    const land = await a.land();
+    expect(land.exitCode).toBe(1);
+    expect(land.error).toBe("wiki-land: the fork is too large to land: one of its files is more than 4194304 bytes");
+    expect(await wiki.head()).toBe(base);
+    expect(await orchestrator("POST", `/sessions/${a.sessionId}/land`, undefined, a.sessionKey)).toMatchObject({
+      status: 422,
+      body: { _tag: "ForkTooLarge", limit: "objectBytes", max: 4_194_304 },
+    });
+  });
 });
 
 describe("the API", () => {
@@ -306,7 +335,7 @@ describe("the API", () => {
     );
     expect((await orchestrator("DELETE", `/sessions/${session.sessionId}`)).status).toBe(200);
     const again = await orchestrator("DELETE", `/sessions/${session.sessionId}`);
-    expect(again).toMatchObject({ status: 409, body: { _tag: "SessionNotActive", state: "deleted" } });
+    expect(again).toMatchObject({ status: 409, body: { _tag: "SessionNotActive", state: "closed" } });
     expect(
       (await orchestrator("POST", `/sessions/${session.sessionId}/token`, undefined, session.sessionKey)).status,
     ).toBe(409);

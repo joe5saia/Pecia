@@ -23,6 +23,11 @@ The orchestrator holds `PECIA_ORCHESTRATOR_KEY`; the sandbox never sees it.
 4. Give the agent `packages/sandbox-tools/agent-instructions.md`.
 5. When the sandbox ends, call `DELETE /sessions/<id>`. If it never does, the idle alarm ends the session.
 
+Ending a session revokes its fork's tokens and answers one of two states:
+
+- `parked`: the fork has unlanded commits. It is kept for a person or another agent to pick up.
+- `closed`: the fork has nothing unlanded. It is kept for ten more minutes, because a push that was already under way when the tokens were revoked may still finish. Then the alarm looks again: it deletes the fork (`deleted`), or parks it if such a push brought commits.
+
 ## API statuses
 
 `packages/wiki-api` declares every status below, so a client derived from it gets each error as a typed failure. A test pins the list per endpoint.
@@ -34,7 +39,8 @@ The orchestrator holds `PECIA_ORCHESTRATOR_KEY`; the sandbox never sees it.
 | 401 | `{ "_tag": "Unauthorized" }`, with `WWW-Authenticate: Bearer` | The bearer credential is missing or wrong. It is checked before anything else, so a wrong credential never gets a 400, 404 or 409. | No |
 | 404 | `{ "_tag": "NotFound", "resource", "id" }` | The workspace or session does not exist. | No |
 | 404 | Problem | The API has no such path and method. | No |
-| 409 | `{ "_tag": "SessionNotActive", "sessionId", "state" }` | The session was parked or deleted. It stays that way. | No |
+| 409 | `{ "_tag": "SessionNotActive", "sessionId", "state" }` | The session has ended: it is `closed`, `parked` or `deleted`. It does not become active again. | No |
+| 422 | `{ "_tag": "ForkTooLarge", "limit", "max" }` | `land` only: the fork is over a landing limit (see "Landing limits"). | No |
 | 413 | Empty | The request body is over 64 kB. | No |
 | 415 | Text | The request body is not `application/json`. | No |
 | 500 | Problem | A bug in the service. The cause is in Workers Logs under `request failed with a defect`. | No |
@@ -47,6 +53,21 @@ After a 502 or 503 the call may or may not have been applied. Repeating it does 
 
 `wiki-land` and `wiki-credential` print the error's message to stderr and exit 1; neither retries.
 
+## Landing limits
+
+A land clones the fork's whole history into the Worker's memory, and what is in a fork is up to the sandbox. A Worker isolate has 128 MB for everything it serves. So a land refuses, with 422 `ForkTooLarge`, a fork over any of these (`landLimits` in `packages/control-worker/src/Git.ts`):
+
+| `limit` | `max` | What it bounds |
+| --- | --- | --- |
+| `transferBytes` | 6 MiB | The packed history as the fork sends it. The download stops at this size. |
+| `objects` | 10,000 | Commits, trees and file versions in the history. |
+| `objectBytes` | 4 MiB | One file version once unpacked. |
+| `inflatedBytes` | 12 MiB | The whole history once unpacked. |
+
+The last three are read from the pack before anything unpacks it, so a small pack that unpacks to something large is refused too. A fork is the wiki's whole history plus the session's commits, so these are also how large a wiki can grow before landing has to move out of the Worker (docs/mvp.md, "Landing").
+
+The numbers come from measuring `Git.land` in a Node process of its own, on forks just under the limits: prose, incompressible files, many small files, a long history and highly repetitive files. The land added at most 33 MiB of memory still in use, and at most 62 MiB counting garbage not yet collected. Without limits, a fork of five incompressible 8 MiB files added 200 MiB; with them it is refused after 6 MiB of download. These are Node measurements, not workerd's: they have not been repeated on a deployed Worker.
+
 ## Monitor usage
 
 There are three records of what happened, from the most to the least detailed.
@@ -58,14 +79,18 @@ There are three records of what happened, from the most to the least detailed.
 | `workspace.created` | A workspace is first created | `workspace`, `baseSha` |
 | `session.created` | A session and its fork are created | `workspace`, `sessionId`, `agent`, `model` |
 | `tokens.minted` | A sandbox mints tokens, about once every 55 minutes of git use | `workspace`, `sessionId` |
-| `land` | Every `wiki-land` call | `workspace`, `sessionId`, `agent`, `model`, `status` (`landed`, `behind`, `nothing_to_land`), `mainSha`, `forkHead` |
-| `session.ended` | A session is closed or times out | `workspace`, `sessionId`, `agent`, `model`, `state` (`deleted`, `parked`), `reason` (`closed`, `idle`), `forkHead` |
+| `land` | Every `wiki-land` call that gets an answer | `workspace`, `sessionId`, `agent`, `model`, `status` (`landed`, `behind`, `nothing_to_land`), `mainSha`, `forkHead`; for `landed` and `behind` also `packBytes`, `objects` and `inflatedBytes`, the size of the fork it fetched |
+| `land.refused` | A land is refused because the fork is over a landing limit | `workspace`, `sessionId`, `agent`, `model`, `limit`, `max`, `mainSha`, `forkHead` |
+| `session.ended` | A session is closed or times out | `workspace`, `sessionId`, `agent`, `model`, `state` (`closed`, `parked`), `reason` (`closed`, `idle`), `forkHead` |
+| `session.settled` | A closed fork's ten minutes are over | `workspace`, `sessionId`, `agent`, `model`, `state` (`deleted`, `parked`), `forkHead` |
 
 An entry can take up to ten minutes to show up in Workers Logs after the call that wrote it.
 
 The questions these answer: how many `land` calls come back `behind` (agents hitting conflicts), how many sessions end `parked` (work that never landed) and how many end with `reason: idle` (sandboxes that died or orchestrators that did not clean up).
 
-Warnings are logged the same way: `land: note not recorded` and `sweep: session not ended`.
+Compare `packBytes`, `objects` and `inflatedBytes` of `land` events with the landing limits to see how close a wiki is to them; a `land.refused` means one got there. A `session.settled` with `state: parked` means a push finished after its session had ended.
+
+Warnings are logged the same way: `land: note not recorded`, `sweep: session not ended`, `sweep: session not settled`, `service token not revoked` and `session.create: fork not cleaned up`.
 
 `alchemy logs --stage <stage>` (run in `packages/control-worker`) prints each entry's message, which is the event name, without its fields. Use the Workers Observability query builder or its API for the fields.
 

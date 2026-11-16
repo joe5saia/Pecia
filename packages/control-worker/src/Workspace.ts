@@ -5,6 +5,7 @@ import {
   type CreateSessionResponse,
   type CreateWorkspaceResponse,
   type EndSessionResponse,
+  ForkTooLarge,
   type LandResponse,
   type ListSessionsResponse,
   NotFound,
@@ -31,7 +32,7 @@ import { schema, Sql, type SqlValue } from "./Sql.ts";
 // Object in WorkspaceObject.ts hosts one of these per workspace name.
 
 /** The errors a workspace call can fail with. The Durable Object declares them so they survive RPC. */
-export const WorkspaceErrors = [Unauthorized, NotFound, SessionNotActive, ArtifactsUnavailable] as const;
+export const WorkspaceErrors = [Unauthorized, NotFound, SessionNotActive, ForkTooLarge, ArtifactsUnavailable] as const;
 
 export interface Workspace {
   /** Create the main repo and its first commit. Safe to repeat. */
@@ -55,8 +56,11 @@ export interface Workspace {
   readonly land: (
     sessionId: SessionId,
     sessionKey: string,
-  ) => Effect.Effect<LandResponse, Unauthorized | NotFound | SessionNotActive | ArtifactsUnavailable>;
-  /** End every session idle longer than the timeout. The Durable Object's alarm calls it. */
+  ) => Effect.Effect<LandResponse, Unauthorized | NotFound | SessionNotActive | ForkTooLarge | ArtifactsUnavailable>;
+  /**
+   * End every session idle longer than the timeout, and delete or park every
+   * closed fork whose settle period is over. The Durable Object's alarm calls it.
+   */
   readonly sweep: () => Effect.Effect<void>;
 }
 
@@ -74,8 +78,18 @@ export class WorkspaceConfig extends Context.Service<
 const sandboxTokenTtlSeconds = 3600;
 /** The tokens a land uses are revoked when it finishes; this bounds them if that fails. */
 const landTokenTtlSeconds = 300;
-/** A sweep that could not end a session tries again after this long. */
+/** A sweep that could not end or settle a session tries again after this long. */
 const sweepRetryMs = 5 * 60_000;
+/**
+ * How long a closed fork is kept before it is looked at again and deleted.
+ * Revoking a fork's tokens stops new pushes, but Artifacts does not say what
+ * happens to a push that was already authorized, and it has no way to make a
+ * repo read-only or to delete it only if its head is unchanged. So a fork is
+ * never deleted on the strength of a head read while such a push could still
+ * finish. Ten minutes is far longer than a push within Artifacts' 64 MiB limit
+ * should take.
+ */
+export const forkSettleMs = 10 * 60_000;
 
 const WorkspaceRow = Schema.Struct({
   name: WorkspaceName,
@@ -94,10 +108,11 @@ const SessionRow = Schema.Struct({
   state: SessionState,
   created_at: Schema.Number,
   last_active_at: Schema.Number,
+  ended_at: Schema.NullOr(Schema.Number),
 });
 type SessionRow = typeof SessionRow.Type;
 
-const OldestRow = Schema.Struct({ oldest: Schema.NullOr(Schema.Number) });
+const NextRow = Schema.Struct({ next: Schema.NullOr(Schema.Number) });
 
 const hex = (bytes: Uint8Array): string => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
@@ -143,6 +158,12 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
   // Anything that reads main's head and then acts on it runs under this lock,
   // so only one land moves main at a time and a session doesn't end mid-land.
   const lock = yield* Semaphore.make(1);
+  // Handing a sandbox its tokens and cutting a sandbox off exclude each other,
+  // so a token is never issued to a session that is ending: the mint finishes
+  // first and its token is revoked with the rest, or it starts afterwards and
+  // finds the session ended. It is a lock of its own so that a mint does not
+  // wait for another session's land. Where both are held, `lock` is taken first.
+  const access = yield* Semaphore.make(1);
 
   /** Run a query and decode its rows. SQLite returns them untyped; one that doesn't match its table is a defect. */
   const select = <S extends Schema.Top>(row: S, query: string, ...bindings: ReadonlyArray<SqlValue>) =>
@@ -194,15 +215,18 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
       sql.exec("UPDATE sessions SET last_active_at = ? WHERE session_id = ?", now, sessionId),
     );
 
-  /** Ask to be woken when the session that has been idle longest reaches the timeout. */
+  /** Ask to be woken when the first active session reaches the idle timeout or the first closed fork has settled. */
   const scheduleSweep = (notBefore = 0): Effect.Effect<void> =>
     Effect.gen(function* () {
       const rows = yield* select(
-        OldestRow,
-        "SELECT MIN(last_active_at) AS oldest FROM sessions WHERE state = 'active'",
+        NextRow,
+        `SELECT MIN(CASE state WHEN 'active' THEN last_active_at + ? ELSE ended_at + ? END) AS next
+          FROM sessions WHERE state IN ('active', 'closed')`,
+        config.idleTimeoutMs,
+        forkSettleMs,
       );
-      const oldest = rows[0]?.oldest ?? null;
-      yield* config.wakeAt(oldest === null ? undefined : Math.max(oldest + config.idleTimeoutMs, notBefore));
+      const next = rows[0]?.next ?? null;
+      yield* config.wakeAt(next === null ? undefined : Math.max(next, notBefore));
     });
 
   /** A token for the service's own git calls, revoked when the enclosing scope closes. */
@@ -235,7 +259,7 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     session: SessionRow,
     base: WorkspaceRow,
     mainHead: CommitSha,
-  ): Effect.Effect<Git.LandOutcome, ArtifactsUnavailable> =>
+  ): Effect.Effect<Git.LandOutcome, ForkTooLarge | ArtifactsUnavailable> =>
     Effect.gen(function* () {
       const forkToken = yield* scopedToken(session.fork_name, "read");
       const mainToken = yield* scopedToken(base.name, "write");
@@ -244,6 +268,7 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
         main: { url: base.main_remote, token: mainToken.plaintext },
         mainHead,
         note: landNote(session),
+        limits: Git.landLimits,
       });
     }).pipe(
       Effect.scoped,
@@ -251,35 +276,72 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     );
 
   /**
-   * Delete the session's fork if main has everything in it, park it otherwise.
-   * Main only ever points at its first commit or at a landed head, so a fork
-   * whose head is one of those has nothing unlanded. Any other head parks.
+   * Whether main has everything a fork with this head has. Main only ever
+   * points at its first commit or at a landed head, so a fork whose head is one
+   * of those has nothing unlanded. So does a fork that does not exist.
+   */
+  const isLanded = (forkHead: CommitSha | undefined, base: WorkspaceRow): Effect.Effect<boolean> =>
+    forkHead === undefined || forkHead === base.base_sha
+      ? Effect.succeed(true)
+      : Effect.map(sql.exec("SELECT 1 FROM lands WHERE to_sha = ? LIMIT 1", forkHead), (rows) => rows.length > 0);
+
+  /**
+   * End an active session: cut the sandbox off, then park the fork if it has
+   * unlanded commits and close it otherwise.
+   *
+   * The tokens are revoked before the fork is looked at, so no push that starts
+   * afterwards is accepted. Nothing is deleted here: a push that was already
+   * under way can still finish after the head was read, and `settle` looks
+   * again once it must have.
    */
   const end = (
     session: SessionRow,
     base: WorkspaceRow,
     reason: "closed" | "idle",
   ): Effect.Effect<EndSessionResponse, ArtifactsUnavailable> =>
+    access.withPermit(
+      Effect.gen(function* () {
+        yield* repos.revokeAllTokens(session.fork_name);
+        const forkHead = yield* repos.head(session.fork_name);
+        const state = (yield* isLanded(forkHead, base)) ? "closed" : "parked";
+        yield* sql.exec(
+          "UPDATE sessions SET state = ?, ended_at = ? WHERE session_id = ?",
+          state,
+          yield* Clock.currentTimeMillis,
+          session.session_id,
+        );
+        yield* record("session.ended", {
+          workspace: base.name,
+          sessionId: session.session_id,
+          agent: session.agent,
+          model: session.model,
+          state,
+          reason,
+          forkHead,
+        });
+        return { state };
+      }),
+    );
+
+  /**
+   * Finish a closed session whose settle period is over: delete the fork if
+   * main still has everything in it, park it if a late push brought commits.
+   */
+  const settle = (session: SessionRow, base: WorkspaceRow): Effect.Effect<void, ArtifactsUnavailable> =>
     Effect.gen(function* () {
       const forkHead = yield* repos.head(session.fork_name);
-      const landed =
-        forkHead === undefined ||
-        forkHead === base.base_sha ||
-        (yield* sql.exec("SELECT 1 FROM lands WHERE to_sha = ? LIMIT 1", forkHead)).length > 0;
+      const landed = yield* isLanded(forkHead, base);
+      if (landed) yield* repos.delete(session.fork_name);
       const state = landed ? "deleted" : "parked";
-      // Either way the sandbox can no longer push: no repo, or no valid token.
-      yield* landed ? repos.delete(session.fork_name) : repos.revokeAllTokens(session.fork_name);
       yield* sql.exec("UPDATE sessions SET state = ? WHERE session_id = ?", state, session.session_id);
-      yield* record("session.ended", {
+      yield* record("session.settled", {
         workspace: base.name,
         sessionId: session.session_id,
         agent: session.agent,
         model: session.model,
         state,
-        reason,
         forkHead,
       });
-      return { state };
     });
 
   const create: Workspace["create"] = (name) =>
@@ -365,24 +427,27 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     );
 
   const mintTokens: Workspace["mintTokens"] = (sessionId, sessionKey) =>
-    Effect.gen(function* () {
-      const { session, base } = yield* authorize(sessionId, sessionKey);
-      // The only tokens a sandbox ever holds: write to its fork, read from main.
-      const [fork, main] = yield* Effect.all(
-        [
-          repos.mintToken(session.fork_name, "write", sandboxTokenTtlSeconds),
-          repos.mintToken(base.name, "read", sandboxTokenTtlSeconds),
-        ],
-        { concurrency: 2 },
-      );
-      yield* touch(sessionId);
-      yield* record("tokens.minted", { workspace: base.name, sessionId });
-      return {
-        forkWriteToken: fork.plaintext,
-        mainReadToken: main.plaintext,
-        expiresAt: fork.expiresAt < main.expiresAt ? fork.expiresAt : main.expiresAt,
-      };
-    });
+    // The session is checked and the tokens are created in one step that `end` cannot interleave with.
+    access.withPermit(
+      Effect.gen(function* () {
+        const { session, base } = yield* authorize(sessionId, sessionKey);
+        // The only tokens a sandbox ever holds: write to its fork, read from main.
+        const [fork, main] = yield* Effect.all(
+          [
+            repos.mintToken(session.fork_name, "write", sandboxTokenTtlSeconds),
+            repos.mintToken(base.name, "read", sandboxTokenTtlSeconds),
+          ],
+          { concurrency: 2 },
+        );
+        yield* touch(sessionId);
+        yield* record("tokens.minted", { workspace: base.name, sessionId });
+        return {
+          forkWriteToken: fork.plaintext,
+          mainReadToken: main.plaintext,
+          expiresAt: fork.expiresAt < main.expiresAt ? fork.expiresAt : main.expiresAt,
+        };
+      }),
+    );
 
   const land: Workspace["land"] = (sessionId, sessionKey) =>
     lock.withPermit(
@@ -395,10 +460,14 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
         if (mainHead === undefined) {
           return yield* new ArtifactsUnavailable({ message: `main repo '${base.name}' has no commits` });
         }
+        const who = { workspace: base.name, sessionId, agent: session.agent, model: session.model };
         const outcome: Git.LandOutcome =
           forkHead === undefined || forkHead === mainHead
             ? { _tag: "NothingToLand" }
-            : yield* publish(session, base, mainHead);
+            : yield* Effect.tapErrorTag(publish(session, base, mainHead), "ForkTooLarge", (error) =>
+                // Worth an event of its own: it says a wiki is reaching what a Worker can land.
+                record("land.refused", { ...who, limit: error.limit, max: error.max, mainSha: mainHead, forkHead }),
+              );
 
         if (outcome._tag === "Landed") {
           yield* sql.exec(
@@ -415,14 +484,13 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
           NothingToLand: (): LandResponse => ({ status: "nothing_to_land" }),
         });
         yield* record("land", {
-          workspace: base.name,
-          sessionId,
-          agent: session.agent,
-          model: session.model,
+          ...who,
           status: response.status,
           // Where main was before the call, and what the session asked to land.
           mainSha: mainHead,
           forkHead,
+          // How much the land held in memory, to compare with `Git.landLimits`.
+          ...("fetched" in outcome ? outcome.fetched : {}),
         });
         return response;
       }),
@@ -435,24 +503,33 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
         // A workspace nobody created has no sessions to end.
         if (base === undefined) return;
         const now = yield* Clock.currentTimeMillis;
+        // Each session reports whether its step was done; one that failed is tried again later.
+        const attempt = (step: string, session: SessionRow, effect: Effect.Effect<unknown, ArtifactsUnavailable>) =>
+          effect.pipe(
+            Effect.as(true),
+            Effect.catch((error) =>
+              Effect.as(
+                Effect.logWarning(`sweep: session not ${step}`, {
+                  sessionId: session.session_id,
+                  error: error.message,
+                }),
+                false,
+              ),
+            ),
+          );
+        const closed = yield* select(
+          SessionRow,
+          "SELECT * FROM sessions WHERE state = 'closed' AND ended_at <= ? ORDER BY ended_at, session_id",
+          now - forkSettleMs,
+        );
+        const settled = yield* Effect.forEach(closed, (session) => attempt("settled", session, settle(session, base)));
         const idle = yield* select(
           SessionRow,
           "SELECT * FROM sessions WHERE state = 'active' AND last_active_at <= ?",
           now - config.idleTimeoutMs,
         );
-        // Each session reports whether it was ended; one that could not be is tried again later.
-        const ended = yield* Effect.forEach(idle, (session) =>
-          end(session, base, "idle").pipe(
-            Effect.as(true),
-            Effect.catch((error) =>
-              Effect.as(
-                Effect.logWarning("sweep: session not ended", { sessionId: session.session_id, error: error.message }),
-                false,
-              ),
-            ),
-          ),
-        );
-        yield* scheduleSweep(ended.includes(false) ? now + sweepRetryMs : 0);
+        const ended = yield* Effect.forEach(idle, (session) => attempt("ended", session, end(session, base, "idle")));
+        yield* scheduleSweep([...settled, ...ended].includes(false) ? now + sweepRetryMs : 0);
       }),
     );
 

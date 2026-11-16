@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
 import { type CreateSessionResponse, SessionId, WorkspaceName } from "@pecia/wiki-api";
+import { landLimits } from "./Git.ts";
 import { tokenSecret } from "./Repos.ts";
 import { type FakeArtifacts, startFakeArtifacts } from "./testing/FakeArtifacts.ts";
 import { makeSandbox, type Sandbox } from "./testing/Sandbox.ts";
 import { makeTestWorkspace, type TestWorkspace } from "./testing/TestWorkspace.ts";
+import { forkSettleMs } from "./Workspace.ts";
 
 const idleTimeoutMs = 60 * 60_000;
 
@@ -48,6 +50,10 @@ const openSession = async (wiki: TestWorkspace & { readonly id: WorkspaceName })
 };
 
 const forkOf = (session: CreateSessionResponse) => new URL(session.forkRemote).pathname.slice(1).replace(/\.git$/, "");
+
+const stateOf = async (wiki: TestWorkspace & { readonly id: WorkspaceName }, session: CreateSessionResponse) =>
+  (await wiki.run(wiki.workspace.listSessions(wiki.id))).find((listed) => listed.sessionId === session.sessionId)
+    ?.state;
 
 describe("create", () => {
   it("creates main with a first commit and does not touch it when repeated", async () => {
@@ -127,7 +133,42 @@ describe("sessions", () => {
     expect(await wiki.run(wiki.workspace.listSessions(wiki.id))).toMatchObject([{ state: "active" }]);
     wiki.advance(idleTimeoutMs);
     await wiki.run(wiki.workspace.sweep());
+    wiki.advance(forkSettleMs);
+    await wiki.run(wiki.workspace.sweep());
     expect(await wiki.run(wiki.workspace.listSessions(wiki.id))).toMatchObject([{ state: "deleted" }]);
+  });
+
+  it("issues no token that outlives the session when a mint and the end overlap", async () => {
+    const wiki = await makeWiki("mint-race");
+    const a = await openSession(wiki);
+    const unlanded = await a.commit("a.md", "unlanded\n");
+
+    // The mint has checked the session and is about to create the fork token.
+    const held = artifacts.hold("mintToken", forkOf(a), "before");
+    const minting = wiki.run(wiki.workspace.mintTokens(a.sessionId, a.sessionKey));
+    await held.reached;
+    const ending = wiki.run(wiki.workspace.endSession(a.sessionId));
+    // Long enough for the end to finish, if nothing makes it wait for the mint.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    held.release();
+
+    const tokens = await minting;
+    expect(await ending).toEqual({ state: "parked" });
+    await a.sandbox.write("a.md", "after the end\n");
+    await a.sandbox.git("commit", "--all", "--message", "After the end");
+    const push = await a.sandbox.exec("git", [
+      "-C",
+      "docs",
+      "push",
+      withToken(a.forkRemote, tokens.forkWriteToken),
+      "HEAD:main",
+    ]);
+    expect(push.exitCode).not.toBe(0);
+    expect(await artifacts.git(forkOf(a), "rev-parse", "refs/heads/main")).toBe(unlanded);
+    expect(await wiki.fail(wiki.workspace.mintTokens(a.sessionId, a.sessionKey))).toMatchObject({
+      _tag: "SessionNotActive",
+      state: "parked",
+    });
   });
 });
 
@@ -168,6 +209,31 @@ describe("land", () => {
     expect(wiki.rows("SELECT * FROM lands")).toHaveLength(0);
   });
 
+  it("refuses a fork over the landing limits, says so in an event and leaves main and the session alone", async () => {
+    const wiki = await makeWiki("too-large");
+    const a = await openSession(wiki);
+    const base = await wiki.head();
+    // Small on the wire and in the fork, large once unpacked.
+    const unlanded = await a.commit("big.md", "a".repeat(landLimits.objectBytes + 1));
+
+    expect(await wiki.fail(wiki.workspace.land(a.sessionId, a.sessionKey))).toMatchObject({
+      _tag: "ForkTooLarge",
+      limit: "objectBytes",
+      max: landLimits.objectBytes,
+    });
+    expect(await wiki.head()).toBe(base);
+    expect(wiki.events().at(-1)).toMatchObject({
+      event: "land.refused",
+      sessionId: a.sessionId,
+      limit: "objectBytes",
+      max: landLimits.objectBytes,
+      mainSha: base,
+      forkHead: unlanded,
+    });
+    expect(wiki.rows("SELECT * FROM lands")).toHaveLength(0);
+    expect(await stateOf(wiki, a)).toBe("active");
+  });
+
   it("lands concurrent calls one at a time, so exactly one of two unmerged forks wins", async () => {
     const wiki = await makeWiki("race");
     const a = await openSession(wiki);
@@ -202,32 +268,100 @@ describe("usage events", () => {
     });
     const base = await artifacts.git("usage", "rev-list", "--max-parents=0", "main");
     const unlanded = await b.sandbox.git("rev-parse", "HEAD");
-    expect(wiki.events()).toEqual([
+    // A land also says how much it fetched from the fork: the first commit and one more, each
+    // with a tree and a file. The byte counts depend on git's packing, so they are checked apart.
+    const fetched = { objects: 6 };
+    const sizes = wiki.events().flatMap((event) => [event["packBytes"], event["inflatedBytes"]]);
+    expect(sizes.filter((size) => size !== undefined)).toHaveLength(4);
+    expect(sizes.every((size) => size === undefined || (typeof size === "number" && size > 0))).toBe(true);
+    const events = wiki.events().map(({ packBytes: _packBytes, inflatedBytes: _inflatedBytes, ...event }) => event);
+    expect(events).toEqual([
       { event: "workspace.created", workspace: "usage", baseSha: base },
       { event: "session.created", ...who(a) },
       { event: "tokens.minted", workspace: "usage", sessionId: a.sessionId },
       { event: "session.created", ...who(b) },
       { event: "tokens.minted", workspace: "usage", sessionId: b.sessionId },
-      { event: "land", ...who(a), status: "landed", mainSha: base, forkHead: sha },
-      { event: "land", ...who(b), status: "behind", mainSha: sha, forkHead: unlanded },
-      { event: "session.ended", ...who(a), state: "deleted", reason: "closed", forkHead: sha },
+      { event: "land", ...who(a), status: "landed", mainSha: base, forkHead: sha, ...fetched },
+      { event: "land", ...who(b), status: "behind", mainSha: sha, forkHead: unlanded, ...fetched },
+      { event: "session.ended", ...who(a), state: "closed", reason: "closed", forkHead: sha },
       { event: "session.ended", ...who(b), state: "parked", reason: "closed", forkHead: unlanded },
     ]);
   });
 });
 
 describe("endSession", () => {
-  it("deletes a fork with nothing unlanded", async () => {
+  it("closes a fork with nothing unlanded and deletes it once pushes in flight have settled", async () => {
     const wiki = await makeWiki("end-clean");
     const untouched = await openSession(wiki);
     const landed = await openSession(wiki);
     await landed.commit("a.md", "from a\n");
     await landed.land();
 
-    expect(await wiki.run(wiki.workspace.endSession(untouched.sessionId))).toEqual({ state: "deleted" });
-    expect(await wiki.run(wiki.workspace.endSession(landed.sessionId))).toEqual({ state: "deleted" });
+    expect(await wiki.run(wiki.workspace.endSession(untouched.sessionId))).toEqual({ state: "closed" });
+    expect(await wiki.run(wiki.workspace.endSession(landed.sessionId))).toEqual({ state: "closed" });
+    const [row] = wiki.rows(`SELECT ended_at FROM sessions WHERE session_id = '${landed.sessionId}'`);
+    expect(wiki.wakeAt()).toBe(Number(row?.["ended_at"]) + forkSettleMs);
+
+    // Too early: a push that was under way when the tokens were revoked could still finish.
+    wiki.advance(forkSettleMs - 1);
+    await wiki.run(wiki.workspace.sweep());
+    expect(await artifacts.exists(forkOf(untouched))).toBe(true);
+    expect(await stateOf(wiki, untouched)).toBe("closed");
+
+    wiki.advance(1);
+    await wiki.run(wiki.workspace.sweep());
     expect(await artifacts.exists(forkOf(untouched))).toBe(false);
     expect(await artifacts.exists(forkOf(landed))).toBe(false);
+    expect(await stateOf(wiki, untouched)).toBe("deleted");
+    expect(await stateOf(wiki, landed)).toBe("deleted");
+    expect(wiki.wakeAt()).toBeUndefined();
+    // Both ended in the same millisecond of the test clock, so either may be settled first.
+    expect(wiki.events().slice(-2)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ event: "session.settled", sessionId: untouched.sessionId, state: "deleted" }),
+        expect.objectContaining({ event: "session.settled", sessionId: landed.sessionId, state: "deleted" }),
+      ]),
+    );
+  });
+
+  it("refuses a push that races the end, so no acknowledged push is deleted", async () => {
+    const wiki = await makeWiki("end-race");
+    const a = await openSession(wiki);
+    const base = await wiki.head();
+
+    // The end has just read the head of the untouched fork.
+    const held = artifacts.hold("head", forkOf(a), "after");
+    const ending = wiki.run(wiki.workspace.endSession(a.sessionId));
+    await held.reached;
+    await a.sandbox.write("a.md", "pushed while the session was ending\n");
+    await a.sandbox.git("add", "a.md");
+    await a.sandbox.git("commit", "--message", "Late");
+    const push = await a.sandbox.exec("git", ["-C", "docs", "push", "origin", "HEAD:main"]);
+    held.release();
+
+    const ended = await ending;
+    expect(push.exitCode).not.toBe(0);
+    expect(ended).toEqual({ state: "closed" });
+    expect(await artifacts.git(forkOf(a), "rev-parse", "refs/heads/main")).toBe(base);
+  });
+
+  it("parks a closed fork when a push that was in flight brought a commit", async () => {
+    const wiki = await makeWiki("end-inflight");
+    const a = await openSession(wiki);
+    expect(await wiki.run(wiki.workspace.endSession(a.sessionId))).toEqual({ state: "closed" });
+
+    // A push authorized before the tokens were revoked finishes after the end looked at the fork.
+    await a.sandbox.write("a.md", "in flight\n");
+    await a.sandbox.git("add", "a.md");
+    await a.sandbox.git("commit", "--message", "In flight");
+    const sha = await a.sandbox.git("rev-parse", "HEAD");
+    await artifacts.git(forkOf(a), "fetch", a.sandbox.docs, "HEAD:refs/heads/main");
+
+    wiki.advance(forkSettleMs);
+    await wiki.run(wiki.workspace.sweep());
+    expect(await stateOf(wiki, a)).toBe("parked");
+    expect(await artifacts.git(forkOf(a), "rev-parse", "refs/heads/main")).toBe(sha);
+    expect(wiki.events().at(-1)).toMatchObject({ event: "session.settled", state: "parked", forkHead: sha });
     expect(wiki.wakeAt()).toBeUndefined();
   });
 
@@ -247,6 +381,21 @@ describe("endSession", () => {
     expect(land).toMatchObject({ _tag: "SessionNotActive", state: "parked" });
     const again = await wiki.fail(wiki.workspace.endSession(a.sessionId));
     expect(again).toMatchObject({ _tag: "SessionNotActive", state: "parked" });
+    // A parked fork is kept: no sweep deletes it.
+    wiki.advance(forkSettleMs);
+    await wiki.run(wiki.workspace.sweep());
+    expect(await artifacts.git(forkOf(a), "rev-parse", "refs/heads/main")).toBe(sha);
+  });
+
+  it("refuses every call of a closed session", async () => {
+    const wiki = await makeWiki("end-closed");
+    const a = await openSession(wiki);
+    await wiki.run(wiki.workspace.endSession(a.sessionId));
+
+    const closed = { _tag: "SessionNotActive", state: "closed" };
+    expect(await wiki.fail(wiki.workspace.mintTokens(a.sessionId, a.sessionKey))).toMatchObject(closed);
+    expect(await wiki.fail(wiki.workspace.land(a.sessionId, a.sessionKey))).toMatchObject(closed);
+    expect(await wiki.fail(wiki.workspace.endSession(a.sessionId))).toMatchObject(closed);
   });
 });
 
@@ -268,16 +417,21 @@ describe("sweep", () => {
 
     wiki.advance(60_000);
     await wiki.run(wiki.workspace.sweep());
-    const states = new Map(
-      (await wiki.run(wiki.workspace.listSessions(wiki.id))).map((session) => [session.sessionId, session.state]),
-    );
-    expect(states.get(abandoned.sessionId)).toBe("parked");
-    expect(states.get(clean.sessionId)).toBe("deleted");
-    expect(states.get(busy.sessionId)).toBe("active");
+    expect(await stateOf(wiki, abandoned)).toBe("parked");
+    expect(await stateOf(wiki, clean)).toBe("closed");
+    expect(await stateOf(wiki, busy)).toBe("active");
     expect(await artifacts.git(forkOf(abandoned), "rev-parse", "refs/heads/main")).toBe(sha);
-    expect(await artifacts.exists(forkOf(clean))).toBe(false);
 
-    // The next wake is when the remaining session reaches the timeout.
+    // The next wake is for whichever comes first: here, settling the closed fork.
+    const [closed] = wiki.rows(`SELECT ended_at FROM sessions WHERE session_id = '${clean.sessionId}'`);
+    expect(wiki.wakeAt()).toBe(Number(closed?.["ended_at"]) + forkSettleMs);
+
+    wiki.advance(forkSettleMs);
+    await wiki.run(wiki.workspace.sweep());
+    expect(await stateOf(wiki, clean)).toBe("deleted");
+    expect(await artifacts.exists(forkOf(clean))).toBe(false);
+    expect(await stateOf(wiki, busy)).toBe("active");
+    // Then it is for the remaining session reaching the timeout.
     const [row] = wiki.rows(`SELECT last_active_at FROM sessions WHERE session_id = '${busy.sessionId}'`);
     expect(wiki.wakeAt()).toBe(Number(row?.["last_active_at"]) + idleTimeoutMs);
   });
@@ -298,8 +452,26 @@ describe("sweep", () => {
     expect(wiki.wakeAt()).toBeGreaterThan(before + idleTimeoutMs);
 
     await wiki.run(wiki.workspace.sweep());
-    expect(await wiki.run(wiki.workspace.listSessions(wiki.id))).toMatchObject([
-      { sessionId: a.sessionId, state: "deleted" },
-    ]);
+    expect(await stateOf(wiki, a)).toBe("closed");
+  });
+
+  it("keeps a closed session it could not settle and tries again later", async () => {
+    const wiki = await makeWiki("settle-outage");
+    const a = await openSession(wiki);
+    await wiki.run(wiki.workspace.endSession(a.sessionId));
+    wiki.advance(forkSettleMs);
+
+    artifacts.setUnavailable(true);
+    try {
+      await wiki.run(wiki.workspace.sweep());
+    } finally {
+      artifacts.setUnavailable(false);
+    }
+    expect(await stateOf(wiki, a)).toBe("closed");
+    expect(wiki.wakeAt()).toBeDefined();
+
+    await wiki.run(wiki.workspace.sweep());
+    expect(await stateOf(wiki, a)).toBe("deleted");
+    expect(await artifacts.exists(forkOf(a))).toBe(false);
   });
 });

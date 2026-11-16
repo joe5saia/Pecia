@@ -51,6 +51,16 @@ const wantsText = (options: Encoding): boolean =>
 
 export class MemoryFs {
   readonly #entries = new Map<string, Entry>([["/", { kind: "dir", children: new Set(), mtimeMs: Date.now() }]]);
+  readonly #admit: (path: string, data: Uint8Array) => void;
+
+  /**
+   * `admit` sees every file before it is stored and refuses one by throwing.
+   * isomorphic-git writes a file again when the first write fails, so a refused
+   * file is seen twice.
+   */
+  constructor(options: { readonly admit?: (path: string, data: Uint8Array) => void } = {}) {
+    this.#admit = options.admit ?? (() => {});
+  }
 
   /** The promise API isomorphic-git looks for on an `fs` client. */
   readonly promises = {
@@ -63,7 +73,10 @@ export class MemoryFs {
       const target = normalize(path);
       const existing = this.#entries.get(target);
       if (existing?.kind === "dir") throw new FsError("EISDIR", path);
-      const bytes = typeof data === "string" ? new TextEncoder().encode(data) : new Uint8Array(data);
+      // The bytes are kept, not copied: the largest file is the fetched pack, and a copy of it is
+      // memory a land does not have to spare. isomorphic-git does not change a buffer after writing it.
+      const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+      this.#admit(target, bytes);
       this.#attach(target, { kind: "file", data: bytes, mtimeMs: Date.now() });
     },
     unlink: async (path: string): Promise<void> => {

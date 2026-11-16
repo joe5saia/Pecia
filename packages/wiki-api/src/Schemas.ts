@@ -39,7 +39,16 @@ export const workspaceOfSession = (sessionId: SessionId): WorkspaceName =>
 export const CommitSha = Schema.String.pipe(Schema.brand("CommitSha"));
 export type CommitSha = typeof CommitSha.Type;
 
-export const SessionState = Schema.Literals(["active", "parked", "deleted"]);
+/**
+ * - `active`: the sandbox can push to its fork and land.
+ * - `closed`: ended with nothing unlanded. The sandbox is cut off and the fork
+ *   is still there: a push that was under way when the session ended may yet
+ *   finish. After a settle period the fork is deleted, or parked if such a push
+ *   brought commits.
+ * - `parked`: ended with unlanded commits. The fork is kept for someone to pick up.
+ * - `deleted`: ended and the fork is gone.
+ */
+export const SessionState = Schema.Literals(["active", "closed", "parked", "deleted"]);
 export type SessionState = typeof SessionState.Type;
 
 export const CreateWorkspaceRequest = Schema.Struct({ name: WorkspaceName });
@@ -81,7 +90,8 @@ export const LandResponse = Schema.Union([
 ]);
 export type LandResponse = typeof LandResponse.Type;
 
-export const EndSessionResponse = Schema.Struct({ state: Schema.Literals(["deleted", "parked"]) });
+/** Ending a session leaves it `closed` or `parked`; a closed one becomes `deleted` later (see `SessionState`). */
+export const EndSessionResponse = Schema.Struct({ state: Schema.Literals(["closed", "parked"]) });
 export type EndSessionResponse = typeof EndSessionResponse.Type;
 
 export const SessionSummary = Schema.Struct({

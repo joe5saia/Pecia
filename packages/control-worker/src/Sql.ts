@@ -32,9 +32,11 @@ export const schema: ReadonlyArray<string> = [
     session_key_hash TEXT NOT NULL,
     agent TEXT NOT NULL,
     model TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('active', 'parked', 'deleted')),
+    state TEXT NOT NULL CHECK (state IN ('active', 'closed', 'parked', 'deleted')),
     created_at INTEGER NOT NULL,
-    last_active_at INTEGER NOT NULL
+    last_active_at INTEGER NOT NULL,
+    -- When the session ended: its fork's tokens were revoked and none is issued since.
+    ended_at INTEGER
   )`,
   `CREATE TABLE IF NOT EXISTS lands (
     session_id TEXT NOT NULL,
