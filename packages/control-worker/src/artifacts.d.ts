@@ -2,14 +2,15 @@ import type * as Workers from "@cloudflare/workers-types";
 
 // Alchemy types the Artifacts binding with Cloudflare's ambient Workers types
 // (`ArtifactsRepoInfo` and the rest), which it expects the program to load.
-// Without them the results of the binding's calls are `any`, and nothing says
-// so. Loading all of the ambient types (`types` in tsconfig.json) is not an
-// option here: they replace globals such as `URL`, which the Node code in this
-// repository uses with Node's types.
+// Without them the results of the binding's calls are `any`, which the type
+// checkers accept. Loading all of the ambient types (`types` in tsconfig.json)
+// is not an option here: they replace globals such as `URL`, which the Node
+// code in this repository uses with Node's types.
 //
 // So this file declares only the names Alchemy's Artifacts types use, from the
-// same package's importable types. When Alchemy starts using another one, add
-// it here.
+// same package's importable types. When Alchemy starts using another one, the
+// `typescript/no-unsafe-*` lint rules report the `any` where it is used: add
+// the name here.
 
 declare global {
   type ArtifactsCommitMetadata = Workers.ArtifactsCommitMetadata;

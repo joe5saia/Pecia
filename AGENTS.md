@@ -43,6 +43,7 @@ The code follows the Effect v4 code style pages, starting at https://effect.webs
 - `pecia/match-unions`: `switch`, and an `else if` chain that compares one value with string literals.
 - `pecia/run-at-the-edge`: `Effect.run*` outside tests and `src/testing`.
 - Built-in rules: no `flow`, no nested ternary, no `as` assertion (`as const` is fine), no `console` and no `process.stdout` or `process.stderr`.
+- `typescript/no-unsafe-*`: no use of a value typed `any`. A dependency whose types do not resolve yields `any` without a compiler error; these rules are what reports it (see `packages/control-worker/src/artifacts.d.ts`).
 
 Fix what a rule reports instead of disabling it. A rule that reports good code has a bug: fix the rule and add the case to `packages/lint-rules/src/index.test.ts`. Branded identifiers, `Effect.gen` over nested callbacks and `Effect.acquireRelease` are not checked; review for them.
 

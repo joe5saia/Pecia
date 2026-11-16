@@ -53,7 +53,13 @@
       { "object": "process", "property": "stdout", "message": "Print through `Console` from effect." },
       { "object": "process", "property": "stderr", "message": "Print through `Console` from effect." }
     ],
-    "typescript/consistent-type-assertions": ["error", { "assertionStyle": "never" }]
+    "typescript/consistent-type-assertions": ["error", { "assertionStyle": "never" }],
+
+    "typescript/no-unsafe-argument": "error",
+    "typescript/no-unsafe-assignment": "error",
+    "typescript/no-unsafe-call": "error",
+    "typescript/no-unsafe-member-access": "error",
+    "typescript/no-unsafe-return": "error"
   },
   "overrides": [
     {
