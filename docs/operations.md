@@ -12,7 +12,7 @@ export PECIA_ORCHESTRATOR_KEY_PROD=...      # prod's orchestrator API key
 task deploy:staging                         # or deploy:prod, or deploy:preview with PULL_REQUEST set
 ```
 
-Each stage has its own key, so a staging key never opens prod. The deploy task binds its stage's key to the Worker as the secret `PECIA_ORCHESTRATOR_KEY`. In Amp orbs both are project secrets.
+Each stage has its own key, so a staging key never opens prod. The deploy task binds its stage's key to the Worker as the secret `PECIA_ORCHESTRATOR_KEY`. In Amp orbs both are Joe's personal secrets.
 
 `PECIA_IDLE_TIMEOUT` (default `2 hours`) sets how long a session may go without a token mint or a land before it is ended.
 
@@ -27,6 +27,8 @@ The orchestrator holds the stage's orchestrator key and sends it as `Authorizati
 3. In the sandbox, install `wiki-credential` and `wiki-land` (built by `task build:tools`, they need only Node) and run `packages/sandbox-tools/setup.sh` with `WIKI_URL`, `SESSION_ID`, `SESSION_KEY`, `FORK_REMOTE` and `MAIN_REMOTE` set from the response. It clones the fork to `./docs`.
 4. Give the agent `packages/sandbox-tools/agent-instructions.md`.
 5. When the sandbox ends, call `DELETE /sessions/<id>`. If it never does, the idle alarm ends the session.
+
+An Amp thread in this repository is its own orchestrator: the project skill `using-pecia-wiki` (`.agents/skills/using-pecia-wiki`) runs steps 2, 3 and 5 with `scripts/wiki-session` and gives the agent the publish flow.
 
 Ending a session revokes its fork's tokens and answers one of two states:
 

@@ -7,6 +7,7 @@ Agent wiki on Cloudflare Artifacts. The design is in `docs/mvp.md`.
 - `packages/wiki-api`: the shared Effect Schema contract for the Control Worker API.
 - `packages/control-worker`: the Control Worker, the workspace Durable Object and its Alchemy stack (`alchemy.run.ts`). `src/Workspace.ts` holds the session and landing logic; `src/testing` holds the fakes the tests run it on.
 - `packages/sandbox-tools`: what runs in a sandbox: `wiki-credential`, `wiki-land`, `setup.sh` and `agent-instructions.md`.
+- `.agents/skills/using-pecia-wiki`: the project skill that lets an Amp thread read and publish to a deployed wiki.
 - `packages/lint-rules`: the oxlint plugin `pecia`, which enforces the Effect style below. `.oxlintrc.json` loads it.
 
 `docs/operations.md` covers deploying, running a session and monitoring usage.

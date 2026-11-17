@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Starts and ends a pecia wiki session on this machine, as the orchestrator
+# would for a sandbox (docs/operations.md, "Run a session").
+#
+#   wiki-session start <staging|prod> <workspace> <model> [--create-workspace]
+#   wiki-session end
+#
+# The stage's orchestrator key comes from PECIA_ORCHESTRATOR_KEY_STAGING or
+# PECIA_ORCHESTRATOR_KEY_PROD. Neither it nor the session key is ever printed.
+set -euo pipefail
+
+repo_root="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
+tools="$repo_root/packages/sandbox-tools"
+state_dir="${PECIA_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/pecia}"
+session_file="$state_dir/session.env"
+
+staging_url=https://pecia-controlworker-staging-5psyjyjp2wm6ohvr.joe-9a0.workers.dev
+prod_url=https://pecia-controlworker-prod-3qj2wdcevov3iq5y.joe-9a0.workers.dev
+
+die() {
+  echo "wiki-session: $*" >&2
+  exit 1
+}
+
+# Sets url and key for a stage.
+use_stage() {
+  case "$1" in
+    staging) url="$staging_url" key_var=PECIA_ORCHESTRATOR_KEY_STAGING ;;
+    prod) url="$prod_url" key_var=PECIA_ORCHESTRATOR_KEY_PROD ;;
+    *) die "unknown stage '$1': use staging or prod" ;;
+  esac
+  key="${!key_var:-}"
+  [ -n "$key" ] || die "$key_var is not set"
+}
+
+# call METHOD PATH [JSON]: prints the response body, then its status on the last line.
+call() {
+  curl -sS -X "$1" -H "Authorization: Bearer $key" -H 'content-type: application/json' \
+    ${3:+--data "$3"} -w '\n%{http_code}' "$url$2"
+}
+
+start() {
+  [ $# -ge 3 ] || die "usage: wiki-session start <staging|prod> <workspace> <model> [--create-workspace]"
+  local stage="$1" workspace="$2" model="$3" create="${4:-}"
+  use_stage "$stage"
+  [ ! -e "$session_file" ] || die "a session is already set up on this machine ($session_file). Run 'wiki-session end' first."
+
+  (cd "$repo_root" && node_modules/.bin/task --silent build:tools)
+
+  local response status
+  if [ "$create" = --create-workspace ]; then
+    response="$(call POST /workspaces "$(jq -nc --arg name "$workspace" '{name: $name}')")"
+    status="$(tail -n1 <<<"$response")"
+    [ "$status" = 200 ] || die "creating workspace '$workspace' answered $status: $(sed '$d' <<<"$response")"
+  fi
+
+  local agent="amp"
+  [ -z "${AMP_THREAD_ID:-}" ] || agent="amp ${AMP_URL:-https://ampcode.com}/threads/$AMP_THREAD_ID"
+  response="$(call POST "/workspaces/$workspace/sessions" "$(jq -nc --arg agent "$agent" --arg model "$model" '{agent: $agent, model: $model}')")"
+  status="$(tail -n1 <<<"$response")"
+  local body
+  body="$(sed '$d' <<<"$response")"
+  if [ "$status" = 404 ]; then
+    die "workspace '$workspace' does not exist on $stage. Add --create-workspace only if the user asked for a new wiki."
+  fi
+  [ "$status" = 200 ] || die "creating a session answered $status: $body"
+
+  local session_id
+  session_id="$(jq -r .sessionId <<<"$body")"
+  local wiki_dir="$HOME/pecia/$session_id"
+  # A session that could not be set up would otherwise wait for the idle timeout.
+  if ! WIKI_URL="$url" SESSION_ID="$session_id" SESSION_KEY="$(jq -r .sessionKey <<<"$body")" \
+    FORK_REMOTE="$(jq -r .forkRemote <<<"$body")" MAIN_REMOTE="$(jq -r .mainRemote <<<"$body")" \
+    WIKI_CREDENTIAL="$tools/dist/wiki-credential" WIKI_DIR="$wiki_dir" "$tools/setup.sh" >&2; then
+    call DELETE "/sessions/$session_id" >/dev/null || true
+    rm -f "$session_file"
+    die "setup failed; session $session_id was ended"
+  fi
+
+  echo "session:   $session_id ($stage)"
+  echo "wiki:      $wiki_dir"
+  echo "wiki-land: $tools/dist/wiki-land"
+}
+
+end() {
+  [ -f "$session_file" ] || die "no session is set up on this machine"
+  local wiki_url session_id
+  wiki_url="$(sed -n 's/^WIKI_URL=//p' "$session_file")"
+  session_id="$(sed -n 's/^SESSION_ID=//p' "$session_file")"
+  case "$wiki_url" in
+    "$staging_url") use_stage staging ;;
+    "$prod_url") use_stage prod ;;
+    *) die "$session_file names an unknown Worker: $wiki_url" ;;
+  esac
+
+  local response status body
+  response="$(call DELETE "/sessions/$session_id")"
+  status="$(tail -n1 <<<"$response")"
+  body="$(sed '$d' <<<"$response")"
+  case "$status" in
+    200) echo "session $session_id ended: $(jq -r .state <<<"$body")" ;;
+    404 | 409) echo "session $session_id had already ended: $body" ;;
+    *) die "ending session $session_id answered $status: $body" ;;
+  esac
+  rm -f "$session_file" "$state_dir/tokens-$session_id.json"
+}
+
+case "${1:-}" in
+  start) shift && start "$@" ;;
+  end) end ;;
+  *) die "usage: wiki-session start <staging|prod> <workspace> <model> [--create-workspace] | wiki-session end" ;;
+esac
