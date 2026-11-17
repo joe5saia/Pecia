@@ -13,14 +13,17 @@ import {
   SessionId,
   SessionNotActive,
   SessionState,
+  timestampOf,
   type TokenResponse,
   Unauthorized,
   WorkspaceName,
 } from "@pecia/wiki-api";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Match from "effect/Match";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -121,9 +124,10 @@ const SessionRow = Schema.Struct({
 });
 type SessionRow = typeof SessionRow.Type;
 
+// The tokens are text in the table and redacted everywhere between it and the answer to the sandbox.
 const TokensRow = Schema.Struct({
-  fork_write_token: Schema.String,
-  main_read_token: Schema.String,
+  fork_write_token: Schema.RedactedFromValue(Schema.String),
+  main_read_token: Schema.RedactedFromValue(Schema.String),
   expires_at: Schema.Number,
 });
 type TokensRow = typeof TokensRow.Type;
@@ -254,7 +258,7 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     ): Effect.fn.Return<CommitSha, Git.GitError | ArtifactsUnavailable, Scope.Scope> {
       const token = yield* scopedToken(name, "write");
       return yield* Git.seed(
-        { url: mainRemote, token: token.plaintext },
+        { url: mainRemote, token: token.token },
         { "README.md": `# ${name}\n\nA shared wiki for agents.\n` },
       );
     },
@@ -272,8 +276,8 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
       const forkToken = yield* scopedToken(session.fork_name, "read");
       const mainToken = yield* scopedToken(base.name, "write");
       return yield* Git.land({
-        fork: { url: session.fork_remote, token: forkToken.plaintext },
-        main: { url: base.main_remote, token: mainToken.plaintext },
+        fork: { url: session.fork_remote, token: forkToken.token },
+        main: { url: base.main_remote, token: mainToken.token },
         mainHead,
         note: landNote(session),
         limits: Git.landLimits,
@@ -422,8 +426,8 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
       sessionId: row.session_id,
       agent: row.agent,
       state: row.state,
-      createdAt: new Date(row.created_at).toISOString(),
-      lastActiveAt: new Date(row.last_active_at).toISOString(),
+      createdAt: timestampOf(DateTime.makeUnsafe(row.created_at)),
+      lastActiveAt: timestampOf(DateTime.makeUnsafe(row.last_active_at)),
     }));
   });
 
@@ -452,8 +456,8 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
       { concurrency: 2 },
     );
     const tokens = {
-      fork_write_token: fork.plaintext,
-      main_read_token: main.plaintext,
+      fork_write_token: fork.token,
+      main_read_token: main.token,
       // By the service's clock, which also decides when to replace them; the
       // replacement margin covers a difference from Artifacts' clock.
       expires_at: (yield* Clock.currentTimeMillis) + sandboxTokenTtlSeconds * 1000,
@@ -464,8 +468,8 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
         ON CONFLICT (session_id) DO UPDATE SET fork_write_token = excluded.fork_write_token,
           main_read_token = excluded.main_read_token, expires_at = excluded.expires_at`,
       session.session_id,
-      tokens.fork_write_token,
-      tokens.main_read_token,
+      Redacted.value(tokens.fork_write_token),
+      Redacted.value(tokens.main_read_token),
       tokens.expires_at,
     );
     yield* record("tokens.minted", { workspace: base.name, sessionId: session.session_id });
@@ -487,9 +491,10 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
           ? stored
           : yield* mintSandboxTokens(session, base);
       return {
-        forkWriteToken: tokens.fork_write_token,
-        mainReadToken: tokens.main_read_token,
-        expiresAt: new Date(tokens.expires_at).toISOString(),
+        // In the clear from here on: the answer crosses the Durable Object's RPC and then the wire.
+        forkWriteToken: Redacted.value(tokens.fork_write_token),
+        mainReadToken: Redacted.value(tokens.main_read_token),
+        expiresAt: timestampOf(DateTime.makeUnsafe(tokens.expires_at)),
       };
     },
     // The session is checked and its tokens are read or created in one step

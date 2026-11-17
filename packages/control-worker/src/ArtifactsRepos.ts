@@ -1,9 +1,11 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
-import { ArtifactsUnavailable, CommitSha, RemoteUrl } from "@pecia/wiki-api";
+import { ArtifactsUnavailable, CommitSha, RemoteUrl, type Timestamp, timestampOf } from "@pecia/wiki-api";
 import type { RuntimeContext } from "alchemy/RuntimeContext";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
-import { type RepoName, type RepoSummary, type Repos, TokenId } from "./Repos.ts";
+import { type RepoName, type RepoSummary, type Repos, TokenId, treeEntry, TreeSha } from "./Repos.ts";
 
 // Repos over the Cloudflare Artifacts Worker binding.
 //
@@ -21,6 +23,13 @@ const isTransient = (error: ArtifactsError): boolean =>
   error.code === "UPSTREAM_UNAVAILABLE" ||
   error.code === "CREATE_IN_PROGRESS" ||
   error.code === "FORK_IN_PROGRESS";
+
+/**
+ * A time as Artifacts gives it, an ISO 8601 string or Unix seconds, as the API writes times.
+ * One that is not a time breaks what Artifacts documents, so it is a defect.
+ */
+const timeOf = (time: string | number): Timestamp =>
+  timestampOf(DateTime.makeUnsafe(typeof time === "number" ? time * 1000 : time));
 
 const isDisposable = (value: unknown): value is Disposable =>
   typeof value === "object" && value !== null && Symbol.dispose in value && typeof value[Symbol.dispose] === "function";
@@ -73,8 +82,8 @@ const listFrom: (
       (listed) => ({
         repos: listed.repos.map((repo): RepoSummary => ({
           name: repo.name,
-          createdAt: repo.createdAt,
-          lastPushAt: repo.lastPushAt ?? undefined,
+          createdAt: timeOf(repo.createdAt),
+          lastPushAt: repo.lastPushAt === null ? undefined : timeOf(repo.lastPushAt),
         })),
         next: listed.cursor,
       }),
@@ -189,8 +198,8 @@ export const make = (
           withRepo(name, (repo) =>
             taking(repo.createToken(scope, ttlSeconds), (token) => ({
               id: TokenId.make(token.id),
-              plaintext: token.plaintext,
-              expiresAt: token.expiresAt,
+              token: Redacted.make(token.plaintext),
+              expiresAt: timeOf(token.expiresAt),
             })),
           ),
         ),
@@ -203,10 +212,10 @@ export const make = (
               taking(repo.log({ ref, limit }), (commits) =>
                 commits.map((commit) => ({
                   sha: CommitSha.make(commit.hash),
-                  treeSha: commit.treeHash,
+                  treeSha: TreeSha.make(commit.treeHash),
                   message: commit.message,
                   author: commit.author.name,
-                  committedAt: new Date(commit.committedAt * 1000).toISOString(),
+                  committedAt: timeOf(commit.committedAt),
                 })),
               ),
             ),
@@ -219,7 +228,7 @@ export const make = (
           orMissing(
             withRepo(name, (repo) =>
               taking(repo.readTree(treeSha), (entries) =>
-                entries?.map((entry) => ({ name: entry.name, sha: entry.hash, type: entry.type })),
+                entries?.map((entry) => treeEntry(entry.name, entry.type, entry.hash)),
               ),
             ),
             undefined,

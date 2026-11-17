@@ -1,5 +1,7 @@
-import { ArtifactsUnavailable, CommitSha, RemoteUrl, tokenSecret } from "@pecia/wiki-api";
+import { ArtifactsUnavailable, CommitSha, RemoteUrl, timestampOf, tokenSecret } from "@pecia/wiki-api";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
@@ -7,7 +9,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { type RepoToken, type Repos, TokenId, type TokenScope, type TreeEntry } from "../Repos.ts";
+import { type RepoToken, type Repos, TokenId, type TokenScope, type TreeEntry, treeEntry, TreeSha } from "../Repos.ts";
 
 // A stand-in for Cloudflare Artifacts in tests: bare repos on disk, served over
 // HTTP by `git http-backend`, behind the same repo-scoped Basic-auth tokens.
@@ -236,7 +238,11 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
           expiresAtMs,
         };
         tokens.set(token.id, token);
-        return { id: token.id, plaintext, expiresAt: new Date(expiresAtMs).toISOString() };
+        return {
+          id: token.id,
+          token: Redacted.make(plaintext),
+          expiresAt: timestampOf(DateTime.makeUnsafe(expiresAtMs)),
+        };
       }),
     revokeToken: (name, tokenId) => control("revokeToken", name, async () => revoke(tokenId)),
     list: () =>
@@ -246,7 +252,7 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
             .filter((entry) => entry.endsWith(".git"))
             .map(async (entry) => ({
               name: entry.slice(0, -".git".length),
-              createdAt: (await stat(join(root, entry))).birthtime.toISOString(),
+              createdAt: timestampOf(DateTime.makeUnsafe((await stat(join(root, entry))).birthtime)),
               lastPushAt: undefined,
             })),
         ),
@@ -273,9 +279,9 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
                   .split("\0");
                 return {
                   sha: CommitSha.make(sha),
-                  treeSha,
+                  treeSha: TreeSha.make(treeSha),
                   author,
-                  committedAt: new Date(committedAt).toISOString(),
+                  committedAt: timestampOf(DateTime.makeUnsafe(committedAt)),
                   message: message.replace(/\n$/, ""),
                 };
               }),
@@ -292,7 +298,7 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
               .map((line): TreeEntry => {
                 const [meta = "", entryName = ""] = line.split("\t");
                 const [mode = "", , sha = ""] = meta.split(" ");
-                return { name: entryName, sha, type: entryTypes[mode] ?? "blob" };
+                return treeEntry(entryName, entryTypes[mode] ?? "blob", sha);
               }),
           () => undefined,
         ),

@@ -1,4 +1,5 @@
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import { sameText } from "./Secrets.ts";
@@ -27,10 +28,10 @@ const signature = (key: string, expires: number): Effect.Effect<string> =>
 /** A cookie value that is valid until `cookieLifetime` from now. */
 export const issue = Effect.fnUntraced(function* (
   key: string,
-): Effect.fn.Return<{ readonly value: string; readonly expiresAt: Date }> {
+): Effect.fn.Return<{ readonly value: string; readonly expiresAt: DateTime.Utc }> {
   const now = yield* Clock.currentTimeMillis;
   const expires = Math.floor((now + Duration.toMillis(cookieLifetime)) / 1000);
-  return { value: `${expires}.${yield* signature(key, expires)}`, expiresAt: new Date(expires * 1000) };
+  return { value: `${expires}.${yield* signature(key, expires)}`, expiresAt: DateTime.makeUnsafe(expires * 1000) };
 });
 
 /** Whether `value` is a cookie `issue` made under `key` that has not expired. */

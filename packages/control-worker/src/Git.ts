@@ -2,6 +2,7 @@ import { CommitSha, ForkTooLarge, type RemoteUrl, tokenSecret } from "@pecia/wik
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Match from "effect/Match";
+import * as Redacted from "effect/Redacted";
 import * as git from "isomorphic-git";
 import http from "isomorphic-git/http/web";
 import { MemoryFs } from "./MemoryFs.ts";
@@ -37,7 +38,7 @@ const describe = (cause: unknown): string => {
 /** A repo's git remote and a token that grants the access the operation needs. */
 export interface Remote {
   readonly url: RemoteUrl;
-  readonly token: string;
+  readonly token: Redacted.Redacted;
 }
 
 /** How much a land fetched from the fork: the commits main lacks. Compare with `landLimits`. */
@@ -59,9 +60,18 @@ const dir = "/repo";
 const notesRef = "refs/notes/commits";
 const service = { name: "pecia", email: "pecia@users.noreply.github.com" };
 
-const auth = (remote: Remote) => ({ username: "x", password: tokenSecret(remote.token) });
+/** Git Basic auth: any username, and the token's secret as the password. */
+const username = "x";
+const password = (remote: Remote): string => tokenSecret(Redacted.value(remote.token));
 
-const endpoint = (remote: Remote): SmartHttp.Endpoint => ({ url: remote.url, ...auth(remote) });
+/** The credentials as isomorphic-git's `onAuth` takes them, which is in the clear. */
+const auth = (remote: Remote) => ({ username, password: password(remote) });
+
+const endpoint = (remote: Remote): SmartHttp.Endpoint => ({
+  url: remote.url,
+  username,
+  password: Redacted.make(password(remote)),
+});
 
 /** Make one of the land's own git calls, reporting its failure as a `GitError`. */
 const smart = <A>(effect: Effect.Effect<A, SmartHttp.SmartHttpError>): Effect.Effect<A, GitError> =>

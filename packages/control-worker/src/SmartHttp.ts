@@ -1,5 +1,6 @@
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 
 // The three calls of git's smart HTTP protocol that a land makes itself: read a
 // ref, fetch the pack of what one commit has and another lacks, and push a pack.
@@ -20,7 +21,7 @@ export class SmartHttpError extends Data.TaggedError("SmartHttpError")<{
 export interface Endpoint {
   readonly url: string;
   readonly username: string;
-  readonly password: string;
+  readonly password: Redacted.Redacted;
 }
 
 export type FetchedPack =
@@ -99,7 +100,8 @@ const pktLines = async function* (body: ReadableStream<Uint8Array>): AsyncGenera
 
 const textOf = (payload: Uint8Array): string => decoder.decode(payload).replace(/\n$/, "");
 
-const authorization = (endpoint: Endpoint): string => `Basic ${btoa(`${endpoint.username}:${endpoint.password}`)}`;
+const authorization = (endpoint: Endpoint): string =>
+  `Basic ${btoa(`${endpoint.username}:${Redacted.value(endpoint.password)}`)}`;
 
 /** Send one request of `service` and hand its response to `read`. Every way it can fail becomes a `SmartHttpError`. */
 const request = <A>(

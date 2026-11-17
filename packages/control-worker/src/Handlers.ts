@@ -7,6 +7,7 @@ import {
   Unauthorized,
   ViewerCookie,
   WikiApi,
+  timestampOf,
   workspaceOfSession,
   type WorkspaceName,
   type WorkspaceUnavailable,
@@ -15,6 +16,7 @@ import * as Http from "alchemy/Http";
 import * as ByteSize from "effect/ByteSize";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as HttpEffect from "effect/http/HttpEffect";
 import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
@@ -201,9 +203,9 @@ const ViewerLive = HttpApiBuilder.group(WikiApi, "viewer", (handlers) =>
           const cookie = yield* Login.issue(key);
           yield* HttpApiBuilder.securitySetCookie(ViewerCookie, cookie.value, {
             ...cookieOptions,
-            expires: cookie.expiresAt,
+            expires: DateTime.toDateUtc(cookie.expiresAt),
           });
-          return { expiresAt: cookie.expiresAt.toISOString() };
+          return { expiresAt: timestampOf(cookie.expiresAt) };
         }),
       )
       .handle("logout", () => HttpApiBuilder.securitySetCookie(ViewerCookie, "", { ...cookieOptions, maxAge: 0 }));

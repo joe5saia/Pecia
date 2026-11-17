@@ -12,7 +12,7 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { Repos } from "./Repos.ts";
+import { Repos, type TreeSha } from "./Repos.ts";
 
 // Read-only access to the wikis (docs/viewer.md). Reads go straight to the
 // main repos: they need nothing a workspace's Durable Object serializes, so
@@ -51,7 +51,7 @@ export const make: Effect.Effect<Reader, never, Repos> = Effect.gen(function* ()
   /** The files under `treeSha`, with paths under `prefix`, until `budget` runs out. */
   const walk: (
     ws: WorkspaceName,
-    treeSha: string,
+    treeSha: TreeSha,
     prefix: string,
     budget: { remaining: number; truncated: boolean },
   ) => Effect.Effect<ReadonlyArray<FileEntry>, ArtifactsUnavailable> = Effect.fnUntraced(

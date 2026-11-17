@@ -1,3 +1,4 @@
+import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 
 // Request and response bodies of the Control Worker API (docs/mvp.md).
@@ -38,6 +39,26 @@ export const workspaceOfSession = (sessionId: SessionId): WorkspaceName =>
 /** A git commit hash. The brand only tells it apart from other strings; it adds no check. */
 export const CommitSha = Schema.String.pipe(Schema.brand("CommitSha"));
 export type CommitSha = typeof CommitSha.Type;
+
+/** The hash of a file's content in git. Like `CommitSha`, the brand adds no check. */
+export const BlobSha = Schema.String.pipe(Schema.brand("BlobSha"));
+export type BlobSha = typeof BlobSha.Type;
+
+/**
+ * A time in UTC as ISO 8601 with milliseconds, `2026-11-17T19:46:42.518Z`. Every time the API
+ * answers with has this one form, so a client can compare two as text and parse any of them.
+ * It stays a string because a workspace's answers cross Durable Object RPC, which a `DateTime` does not survive.
+ */
+export const Timestamp = Schema.String.check(
+  Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, {
+    description: "a UTC time as ISO 8601 with milliseconds, such as 2026-11-17T19:46:42.518Z",
+  }),
+).pipe(Schema.brand("Timestamp"));
+export type Timestamp = typeof Timestamp.Type;
+
+/** `time` as the API writes it. */
+export const timestampOf = (time: DateTime.DateTime): Timestamp =>
+  Timestamp.make(DateTime.formatIso(DateTime.toUtc(time)));
 
 /** The HTTPS git remote of an Artifacts repo. The brand only tells it apart from other strings; it adds no check. */
 export const RemoteUrl = Schema.String.pipe(Schema.brand("RemoteUrl"));
@@ -92,8 +113,8 @@ export const TokenResponse = Schema.Struct({
   /** Artifacts tokens, `art_v1_<secret>?expires=<unix_seconds>`. */
   forkWriteToken: Schema.String,
   mainReadToken: Schema.String,
-  /** ISO 8601 time at which the first of the two tokens expires. */
-  expiresAt: Schema.String,
+  /** When the first of the two tokens expires. */
+  expiresAt: Timestamp,
 });
 export type TokenResponse = typeof TokenResponse.Type;
 
@@ -112,9 +133,8 @@ export const SessionSummary = Schema.Struct({
   sessionId: SessionId,
   agent: Schema.String,
   state: SessionState,
-  /** ISO 8601. */
-  createdAt: Schema.String,
-  lastActiveAt: Schema.String,
+  createdAt: Timestamp,
+  lastActiveAt: Timestamp,
 });
 export type SessionSummary = typeof SessionSummary.Type;
 
@@ -143,22 +163,21 @@ export const Commit = Schema.Struct({
   sha: CommitSha,
   message: Schema.String,
   author: Schema.String,
-  /** ISO 8601. */
-  committedAt: Schema.String,
+  committedAt: Timestamp,
 });
 export type Commit = typeof Commit.Type;
 
 export const WorkspaceSummary = Schema.Struct({
   name: WorkspaceName,
-  /** ISO 8601 time of the last push to main, or of its creation if nothing was pushed. */
-  updatedAt: Schema.String,
+  /** The time of the last push to main, or of its creation if nothing was pushed. */
+  updatedAt: Timestamp,
 });
 export type WorkspaceSummary = typeof WorkspaceSummary.Type;
 
 export const ListWorkspacesResponse = Schema.Array(WorkspaceSummary);
 export type ListWorkspacesResponse = typeof ListWorkspacesResponse.Type;
 
-export const FileEntry = Schema.Struct({ path: FilePath, sha: Schema.String });
+export const FileEntry = Schema.Struct({ path: FilePath, sha: BlobSha });
 export type FileEntry = typeof FileEntry.Type;
 
 export const TreeResponse = Schema.Struct({
@@ -179,7 +198,7 @@ export const LoginRequest = Schema.Struct({ key: Schema.Redacted(Schema.String) 
 export type LoginRequest = typeof LoginRequest.Type;
 
 export const LoginResponse = Schema.Struct({
-  /** ISO 8601 time at which the login cookie expires. */
-  expiresAt: Schema.String,
+  /** When the login cookie expires. */
+  expiresAt: Timestamp,
 });
 export type LoginResponse = typeof LoginResponse.Type;

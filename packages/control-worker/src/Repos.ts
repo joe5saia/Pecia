@@ -1,14 +1,18 @@
 import {
   type ArtifactsUnavailable,
+  BlobSha,
   type Commit,
-  type CommitSha,
+  CommitSha,
   type RemoteUrl,
   type SessionId,
+  type Timestamp,
   type WorkspaceName,
   workspaceOfSession,
 } from "@pecia/wiki-api";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import * as Match from "effect/Match";
+import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
 // What the service needs from Cloudflare Artifacts (docs/mvp.md, "Background:
@@ -37,27 +41,42 @@ export type TokenId = typeof TokenId.Type;
 
 export interface RepoToken {
   readonly id: TokenId;
-  /** `art_v1_<secret>?expires=<unix_seconds>`. */
-  readonly plaintext: string;
-  /** ISO 8601. */
-  readonly expiresAt: string;
+  /** `art_v1_<secret>?expires=<unix_seconds>`. Redacted, so a token that is logged or printed by mistake shows nothing. */
+  readonly token: Redacted.Redacted;
+  readonly expiresAt: Timestamp;
 }
 
 export interface RepoSummary {
   /** As Artifacts lists it: a workspace name, a fork name or anything else in the namespace. */
   readonly name: string;
-  /** ISO 8601. */
-  readonly createdAt: string;
-  /** ISO 8601, or `undefined` if nothing was ever pushed. */
-  readonly lastPushAt: string | undefined;
+  readonly createdAt: Timestamp;
+  /** `undefined` if nothing was ever pushed. */
+  readonly lastPushAt: Timestamp | undefined;
 }
 
-/** An entry of a git tree. `tree` is a directory; `exec` is an executable file. */
-export interface TreeEntry {
-  readonly name: string;
-  readonly sha: string;
-  readonly type: "tree" | "blob" | "exec" | "symlink" | "gitlink";
-}
+/** The hash of a directory in git. Like `CommitSha`, the brand adds no check. */
+export const TreeSha = Schema.String.pipe(Schema.brand("TreeSha"));
+export type TreeSha = typeof TreeSha.Type;
+
+/**
+ * An entry of a git tree. Its type says what its hash names: `tree` is a
+ * directory; `blob`, `exec` (an executable file) and `symlink` are content;
+ * `gitlink` is a submodule, which names a commit of another repo.
+ */
+export type TreeEntry =
+  | { readonly name: string; readonly type: "tree"; readonly sha: TreeSha }
+  | { readonly name: string; readonly type: "blob" | "exec" | "symlink"; readonly sha: BlobSha }
+  | { readonly name: string; readonly type: "gitlink"; readonly sha: CommitSha };
+
+/** The entry `name` of a tree, with the hash a git tree lists for it. */
+export const treeEntry = (name: string, type: TreeEntry["type"], sha: string): TreeEntry =>
+  Match.value(type).pipe(
+    Match.withReturnType<TreeEntry>(),
+    Match.when("tree", (tree) => ({ name, type: tree, sha: TreeSha.make(sha) })),
+    Match.when("gitlink", (gitlink) => ({ name, type: gitlink, sha: CommitSha.make(sha) })),
+    Match.whenOr("blob", "exec", "symlink", (content) => ({ name, type: content, sha: BlobSha.make(sha) })),
+    Match.exhaustive,
+  );
 
 export class Repos extends Context.Service<
   Repos,
@@ -87,11 +106,11 @@ export class Repos extends Context.Service<
     readonly log: (
       name: RepoName,
       options: { readonly ref: string; readonly limit: number },
-    ) => Effect.Effect<ReadonlyArray<Commit & { readonly treeSha: string }>, ArtifactsUnavailable>;
+    ) => Effect.Effect<ReadonlyArray<Commit & { readonly treeSha: TreeSha }>, ArtifactsUnavailable>;
     /** The entries of a tree, or `undefined` when the repo or the tree does not exist. */
     readonly readTree: (
       name: RepoName,
-      treeSha: string,
+      treeSha: TreeSha,
     ) => Effect.Effect<ReadonlyArray<TreeEntry> | undefined, ArtifactsUnavailable>;
     /** A file's bytes at `ref`, or `undefined` when the repo, the ref or the file does not exist. */
     readonly readFile: (

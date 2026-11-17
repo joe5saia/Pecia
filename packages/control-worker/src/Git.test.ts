@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
 import { CommitSha, tokenSecret, WorkspaceName } from "@pecia/wiki-api";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import * as Git from "./Git.ts";
 import { ForkName, type RepoName, type TokenScope } from "./Repos.ts";
 import { type FakeArtifacts, startFakeArtifacts } from "./testing/FakeArtifacts.ts";
@@ -24,7 +25,7 @@ const git = (repo: string, ...args: string[]) => Effect.promise(() => artifacts.
 const remote = Effect.fnUntraced(function* (repo: RepoName, scope: TokenScope) {
   const url = yield* artifacts.repos.ensure(repo);
   const token = yield* artifacts.repos.mintToken(repo, scope, 600);
-  return { url, token: token.plaintext };
+  return { url, token: token.token };
 });
 
 /** How many objects the history of a repo's main has, leaving out those `since` has. */
@@ -80,7 +81,11 @@ const forkInto = Effect.fnUntraced(function* (wiki: { readonly id: WorkspaceName
     git: (...args: string[]) => Effect.promise(() => home.git(...args)),
     exec: (command: string, args: readonly string[]) => Effect.promise(() => home.exec(command, args)),
   };
-  const clone = yield* sandbox.exec("git", ["clone", url.replace("://", `://x:${tokenSecret(token)}@`), "docs"]);
+  const clone = yield* sandbox.exec("git", [
+    "clone",
+    url.replace("://", `://x:${tokenSecret(Redacted.value(token))}@`),
+    "docs",
+  ]);
   if (clone.stderr.includes("fatal")) return yield* Effect.die(new Error(`the fork was not cloned: ${clone.stderr}`));
   const commit = Effect.fnUntraced(function* (path: string, content: string) {
     yield* Effect.promise(() => home.write(path, content));
@@ -215,7 +220,7 @@ describe("land", () => {
         "pull",
         "--no-rebase",
         "--no-edit",
-        wiki.main.url.replace("://", `://x:${tokenSecret(wiki.main.token)}@`),
+        wiki.main.url.replace("://", `://x:${tokenSecret(Redacted.value(wiki.main.token))}@`),
         "main",
       );
       yield* b.sandbox.git("push", "origin", "HEAD:main");
