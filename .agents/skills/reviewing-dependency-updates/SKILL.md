@@ -43,7 +43,7 @@ Run all of these on the branch and read the output:
 - `task build:tools`, which bundles the sandbox tools with rolldown and is not part of `task check`
 - For an npm update, a smoke test of a preview deploy:
   1. `task deploy:preview PULL_REQUEST=<n>`. It prints the stack output `url: 'https://pecia-controlworker-pr-<n>-….workers.dev'`.
-  2. `task smoke STAGE=pr-<n> URL=<that url>`. Its first attempt can fail with Cloudflare's `error code: 1042` or `1104` while the new Worker is published; it retries for a minute.
+  2. `task smoke STAGE=pr-<n> URL=<that url>`. Its first attempts can fail while Cloudflare publishes the new Worker, with a 500 or `error code: 1042` or `1104`; it retries for a minute.
   3. `task destroy:preview PULL_REQUEST=<n>`, also when the deploy or smoke failed, so no preview stage outlives the thread.
 - For a GitHub Actions update, the pull request's own CI run is the smoke test: its `check` job uses every action the deploy jobs use.
 
@@ -55,7 +55,7 @@ Merge only when all of these hold:
 
 - Every check in step 4 passed on the head commit you will merge.
 - Each change from step 2 either does not reach code pecia uses, which you showed with a search, or is handled by a fix that `task check` or the smoke test exercises.
-- The branch contains the current `origin/main` (`git fetch origin && git merge-base --is-ancestor origin/main HEAD`). If it does not, rebase onto `origin/main`. When `pnpm-lock.yaml` conflicts, take main's version and run `pnpm install` to regenerate it. Push with `git push --force-with-lease`, then repeat step 4. Other Dependabot pull requests are reviewed at the same time, and whichever merges first moves main for the others.
+- The branch contains the current `origin/main` (`git fetch origin && git merge-base --is-ancestor origin/main HEAD`). If it does not, look at the pull request's branch on `origin` first: Dependabot rebases its own branch when main moves, as long as nobody else committed to it, so the branch may already contain main. Then check out that commit and repeat step 4. Otherwise rebase onto `origin/main`. When `pnpm-lock.yaml` conflicts, take main's version and run `pnpm install` to regenerate it. Push with `git push --force-with-lease`, then repeat step 4. Other Dependabot pull requests are reviewed at the same time, and whichever merges first moves main for the others.
 
 If any condition fails and you cannot fix it, ask Joe instead of merging.
 
