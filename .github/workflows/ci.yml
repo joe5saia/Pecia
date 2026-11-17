@@ -35,7 +35,7 @@ jobs:
       name: staging
       url: https://pecia-controlworker-staging-5psyjyjp2wm6ohvr.joe-9a0.workers.dev
     env:
-      CLOUDFLARE_ACCOUNT_ID: 9a0a3a6cd60ff88c05b497a3c9809757 # saiaai, as in alchemy.run.ts
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       PECIA_ORCHESTRATOR_KEY_STAGING: ${{ secrets.PECIA_ORCHESTRATOR_KEY_STAGING }}
     steps:
@@ -51,7 +51,7 @@ jobs:
       name: production
       url: https://pecia-controlworker-prod-3qj2wdcevov3iq5y.joe-9a0.workers.dev
     env:
-      CLOUDFLARE_ACCOUNT_ID: 9a0a3a6cd60ff88c05b497a3c9809757 # saiaai, as in alchemy.run.ts
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       PECIA_ORCHESTRATOR_KEY_PROD: ${{ secrets.PECIA_ORCHESTRATOR_KEY_PROD }}
     steps:
