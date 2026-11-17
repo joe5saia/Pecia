@@ -26,7 +26,7 @@ Every command runs through Task (`Taskfile.yml`); package.json files have no `sc
 - `task dev:viewer`: serve the viewer with hot reload against a deployed Worker's API (`PECIA_VIEWER_API`, default staging). It runs until stopped; in an orb start it as a service (see "Running the viewer").
 - `task build:tools`: bundle `wiki-credential` and `wiki-land` into `packages/sandbox-tools/dist`.
 - `task dev`: `alchemy dev` for the Control Worker.
-- `task ci`: `task check`, then `task deploy:preview` (needs `PULL_REQUEST` and a Cloudflare profile).
+- `task ci`: `task check`, then `task deploy:preview` (needs `PULL_REQUEST`, the number that names the preview stage, and a Cloudflare profile). GitHub Actions does not run it.
 
 oxlint runs the `pecia` rules in JS and reserves about 6 GiB of address space for it, as does the rules' test. On Linux with less memory than that, lint panics in `oxc_allocator` and the test fails with `Array buffer allocation failed` until `sudo sysctl -w vm.overcommit_memory=1`; orbs set it in `.agents/resume`.
 
@@ -44,10 +44,16 @@ The portal link opens `/__dev/log-me-in?returnTo=<path>`, a route of the Vite de
 - Secrets come from Amp settings, never from a file in the repository. `PECIA_ORCHESTRATOR_KEY_STAGING`, `PECIA_ORCHESTRATOR_KEY_PROD` and the `SAIAAI_CLOUDFLARE_*` credentials are Joe's personal secrets: a thread he owns has them, `.agents/setup` and other people's threads do not. `task check` and the viewer service need none of them.
 - `.pecia/` holds wiki session checkouts (`using-pecia-wiki`) and `.amp/in/` holds scratch files; both are ignored by git.
 
+## Landing changes
+
+Pecia uses trunk-based development. A change is committed on `main` and pushed straight to `origin/main`: no feature branch, no pull request and no review step before it lands. Run `task check`, rebase onto `origin/main` (`git pull --rebase`), then push. The Amp project's Ship button does the same (merge to main).
+
+The one exception is Dependabot: its pull requests are reviewed and merged by the `reviewing-dependency-updates` skill, under that skill's conditions. They are the only pull requests in this repository.
+
 ## Do not
 
-- Do not push to `main` or merge a pull request without Joe's say: the push deploys staging and then prod. The one exception is the `reviewing-dependency-updates` skill, under its own conditions.
-- Do not run `task deploy:prod`, or `task deploy:staging` outside that CI run. Try a change on a preview stage (`task deploy:preview PULL_REQUEST=<n>`) and destroy it afterwards (`task destroy:preview`).
+- Do not push to `main` without Joe's say: the push deploys staging and then prod (`.github/workflows/ci.yml`). The one exception is the `reviewing-dependency-updates` skill, under its own conditions.
+- Do not run `task deploy:prod`, or `task deploy:staging` outside that CI run. Try a change on a preview stage (`task deploy:preview PULL_REQUEST=<n>`, where `<n>` is any unused number; there is no pull request to take it from) and destroy it afterwards (`task destroy:preview`).
 - Do not print or commit a key or token, and do not write one into the wiki.
 - Do not disable a lint rule or weaken a check to get `task check` to pass.
 
@@ -78,7 +84,7 @@ The code follows the Effect v4 code style pages, starting at https://effect.webs
 - Built-in rules: no `flow`, no nested ternary, no `as` assertion (`as const` is fine), no `console`, and none of `process.stdout`, `process.stderr`, `process.stdin`, `process.argv`, `process.exitCode` or `process.exit`.
 - `typescript/no-unsafe-*`: no use of a value typed `any`. A dependency whose types do not resolve yields `any` without a compiler error; these rules are what reports it (see `packages/control-worker/src/artifacts.d.ts`).
 
-Fix what a rule reports instead of disabling it. A rule that reports good code has a bug: fix the rule and add the case to `packages/lint-rules/src/index.test.ts`. Branded identifiers, `Effect.gen` over nested callbacks, `Effect.acquireRelease` and `Config` over `process.env` are not checked; review for them.
+Fix what a rule reports instead of disabling it. A rule that reports good code has a bug: fix the rule and add the case to `packages/lint-rules/src/index.test.ts`. Branded identifiers, `Effect.gen` over nested callbacks, `Effect.acquireRelease` and `Config` over `process.env` are not checked; check your change for them before you push it, since nothing reviews it in between.
 
 ## Errors
 

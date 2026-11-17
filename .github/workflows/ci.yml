@@ -1,5 +1,6 @@
-# Pull requests run the checks. A push to main runs them, deploys staging,
-# checks that staging answers, then does the same for prod.
+# Changes are pushed straight to main (AGENTS.md, "Landing changes"). A push to
+# main runs the checks, deploys staging, checks that staging answers, then does
+# the same for prod. Pull requests, which only Dependabot opens, run the checks.
 name: CI
 
 on:

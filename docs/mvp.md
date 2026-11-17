@@ -64,7 +64,7 @@ Everything is TypeScript: built on Effect, deployed with Alchemy, checked, linte
 | Choice | Used for | Why it fits |
 | --- | --- | --- |
 | Effect | All Control Worker and Durable Object code, the sandbox tools, and the API Schemas they share | Typed errors map directly onto the API's error responses and land outcomes; retries and timeouts around Artifacts calls are declarative; services and Layers let tests swap in a fake Artifacts binding. Effect lists Cloudflare Workers among its supported runtimes. |
-| Alchemy | Infrastructure as code for the Control Worker, the workspace Durable Object, the Artifacts binding and secrets; local dev; per-PR preview stages | Infrastructure is declared in the same Effect program as the Worker. Its docs cover Artifacts, Durable Objects, Effect HTTP APIs, secrets and CI previews, and `alchemy dev` runs Workers and Durable Objects locally. |
+| Alchemy | Infrastructure as code for the Control Worker, the workspace Durable Object, the Artifacts binding and secrets; local dev; numbered preview stages | Infrastructure is declared in the same Effect program as the Worker. Its docs cover Artifacts, Durable Objects, Effect HTTP APIs, secrets and CI previews, and `alchemy dev` runs Workers and Durable Objects locally. |
 | tsrs | Type checking in CI and the editor (`tsrs --noEmit`, plus its language server) | A Rust drop-in replacement for the TypeScript 7 compiler and language server, aiming at 100% conformance with lower memory use and faster checks. |
 | Oxlint | Linting, including type-aware rules | ESLint-compatible and much faster; part of the same oxc toolchain. |
 | Oxfmt | Formatting | Prettier-compatible formatter from the same toolchain. |
@@ -80,8 +80,8 @@ Everything is TypeScript: built on Effect, deployed with Alchemy, checked, linte
 
 - **One shared contract:** a `wiki-api` package defines every request and response with Effect Schema. The Worker validates with it and the sandbox tools encode and decode with it, so client and server can't drift.
 - **Sandbox tools:** `wiki-credential` and `wiki-land` are small Effect programs bundled into single Node scripts for the sandbox image.
-- **Stages:** the Alchemy stack defines staging and prod stages that map to Artifacts namespaces of the same names, plus a preview stage per pull request.
-- **Commands and CI:** CI runs `task ci`, which runs `task fmt:check`, `task lint`, `task typecheck`, `task test` and `task deploy:preview` in order. These wrap `oxfmt --check`, `oxlint`, `tsrs --noEmit`, the tests and `pnpm exec alchemy deploy`; `task dev` wraps `alchemy dev`. Tools are invoked through `pnpm exec` so versions come from the lockfile.
+- **Stages:** the Alchemy stack defines staging and prod stages that map to Artifacts namespaces of the same names, plus numbered preview stages for trying a change before it is pushed to main.
+- **Commands and CI:** changes are pushed straight to main (trunk-based; Dependabot's pull requests are the only exception). `task ci` runs `task fmt:check`, `task lint`, `task typecheck`, `task test` and `task deploy:preview` in order. These wrap `oxfmt --check`, `oxlint`, `tsrs --noEmit`, the tests and `pnpm exec alchemy deploy`; `task dev` wraps `alchemy dev`. Tools are invoked through `pnpm exec` so versions come from the lockfile.
 - **Versions:** pin exact versions. Effect 4.0 is in beta; Alchemy v2 is the Effect-based release; Oxfmt is in beta; tsrs targets a stable release against TypeScript 7.1. Until tsrs is stable, run the official TypeScript compiler as a second check in CI and drop it once the two agree on the codebase.
 
 ## Session lifecycle

@@ -10,7 +10,9 @@ Each stage is a separate Worker with its own Artifacts namespace, `pecia-<stage>
 | --- | --- |
 | prod | https://pecia.joesaia.trade |
 | staging | https://staging.pecia.joesaia.trade |
-| `pr-<n>` | The `url` the deploy prints, on workers.dev |
+| `pr-<n>` | A preview: the `url` the deploy prints, on workers.dev |
+
+A preview stage is named by `PULL_REQUEST=<n>`: a Dependabot pull request's number, or any unused number for a change that will be pushed to main.
 
 Prod's and staging's hostnames are custom domains in the `joesaia.trade` zone of the saiaai account. The deploy task passes its stage's hostname to Alchemy as `PECIA_DOMAIN` (`PROD_DOMAIN` and `STAGING_DOMAIN` in Taskfile.yml), which attaches it to the Worker with its DNS record and certificate. A deploy without `PECIA_DOMAIN` leaves the Worker's custom domains as they are. Both Workers still answer on their workers.dev URLs too, which sessions created before the custom domains recorded.
 
@@ -30,7 +32,7 @@ Each deploy builds the viewer first (`task build:viewer`) and uploads it with th
 
 ### GitHub Actions
 
-`.github/workflows/ci.yml` runs `task check` on every pull request and push to main. A push to main then deploys staging, runs the smoke check on it, and does the same for prod. A failed check or smoke check stops the run before the next stage.
+Changes are committed on main and pushed straight to it, with no feature branch or pull request (AGENTS.md, "Landing changes"). `.github/workflows/ci.yml` runs `task check` on every push to main, then deploys staging, runs the smoke check on it, and does the same for prod. A failed check or smoke check stops the run before the next stage. It also runs `task check` on pull requests, which only Dependabot opens ("Dependency updates" below).
 
 The deploy jobs read from GitHub:
 

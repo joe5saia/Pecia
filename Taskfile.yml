@@ -155,6 +155,9 @@ tasks:
     env: *cloudflare-env
     cmd: PECIA_ORCHESTRATOR_KEY="${{.KEY_VAR}}" PECIA_DOMAIN="{{if eq .STAGE "prod"}}{{.PROD_DOMAIN}}{{else if eq .STAGE "staging"}}{{.STAGING_DOMAIN}}{{end}}" pnpm exec alchemy plan --stage {{.STAGE}} --no-input
 
+  # PULL_REQUEST only numbers the preview stage: a Dependabot pull request's
+  # number, or any unused number. Other changes have no pull request; they are
+  # pushed straight to main (AGENTS.md, "Landing changes").
   deploy:preview:
     deps: [build:viewer]
     desc: Deploy the pr-<PULL_REQUEST> preview stage
