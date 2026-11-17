@@ -1,0 +1,16 @@
+name: Set up
+description: Install Node, pnpm and the locked dependencies, which include Task (run as `pnpm exec task`)
+runs:
+  using: composite
+  steps:
+    # pnpm's version comes from packageManager in package.json.
+    - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      with:
+        cache: true
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        # The lowest version package.json's engines allows, as in orbs.
+        node-version: 26.13.1
+        package-manager-cache: false
+    - shell: bash
+      run: pnpm install --frozen-lockfile

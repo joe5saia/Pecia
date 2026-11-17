@@ -16,6 +16,23 @@ Each stage has its own key, so a staging key never opens prod. The deploy task b
 
 `PECIA_IDLE_TIMEOUT` (default `2 hours`) sets how long a session may go without a git operation (each one asks for tokens) or a land before it is ended.
 
+`task smoke STAGE=staging` (or `prod`) checks that a deployed stage answers: 401 without its key, and the Durable Object's 404 for a workspace that does not exist with it.
+
+### GitHub Actions
+
+`.github/workflows/ci.yml` runs `task check` on every pull request and push to main. A push to main then deploys staging, runs the smoke check on it, and does the same for prod. A failed check or smoke check stops the run before the next stage.
+
+The deploy jobs read from GitHub:
+
+| Name | Kind | Where |
+| --- | --- | --- |
+| `CLOUDFLARE_ACCOUNT_ID` | Variable | Repository |
+| `CLOUDFLARE_API_TOKEN` | Secret | Repository |
+| `PECIA_ORCHESTRATOR_KEY_STAGING` | Secret | Environment `staging` |
+| `PECIA_ORCHESTRATOR_KEY_PROD` | Secret | Environment `production` |
+
+`CLOUDFLARE_API_TOKEN` is the account token "Pecia GitHub Actions deploy", with Workers Scripts Write, Artifacts Write, Secrets Store Write (Alchemy keeps its state store's credentials there) and Account Settings Read. `CLOUDFLARE_ACCOUNT_ID` is the saiaai account, the one `alchemy.run.ts` pins the state store to. The Alchemy state is in the `pecia-state` Worker, so a deploy from CI and one from an orb see the same state.
+
 A stage's first deploy creates its Worker. For some seconds after it, the Worker's URL can answer `error code: 1104` with status 500: Cloudflare has not finished publishing the script.
 
 ## Run a session

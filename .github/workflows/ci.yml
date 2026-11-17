@@ -1,0 +1,61 @@
+# Pull requests run the checks. A push to main runs them, deploys staging,
+# checks that staging answers, then does the same for prod.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One run per branch at a time. A newer pull request run cancels the older one;
+# on main a deploy is never cancelled halfway, and a newer push waits for it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # oxlint and the lint rules' test reserve several GiB of address space
+      # (AGENTS.md); let the kernel overcommit, as .agents/resume does in orbs.
+      - run: sudo sysctl -w vm.overcommit_memory=1
+      - uses: ./.github/actions/setup
+      - run: pnpm exec task check
+
+  deploy-staging:
+    needs: check
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://pecia-controlworker-staging-5psyjyjp2wm6ohvr.joe-9a0.workers.dev
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PECIA_ORCHESTRATOR_KEY_STAGING: ${{ secrets.PECIA_ORCHESTRATOR_KEY_STAGING }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+      - run: pnpm exec task deploy:staging
+      - run: pnpm exec task smoke STAGE=staging
+
+  deploy-prod:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://pecia-controlworker-prod-3qj2wdcevov3iq5y.joe-9a0.workers.dev
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PECIA_ORCHESTRATOR_KEY_PROD: ${{ secrets.PECIA_ORCHESTRATOR_KEY_PROD }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+      - run: pnpm exec task deploy:prod
+      - run: pnpm exec task smoke STAGE=prod
