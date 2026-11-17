@@ -1,9 +1,9 @@
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+import * as NodeStdio from "@effect/platform-node/NodeStdio";
 import { RemoteUrl, SessionId, WikiApi } from "@pecia/wiki-api";
 import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
-import * as Console from "effect/Console";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -12,7 +12,11 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import * as Layer from "effect/Layer";
+import type { PlatformError } from "effect/PlatformError";
 import type * as Redacted from "effect/Redacted";
+import * as Runtime from "effect/Runtime";
+import * as Stdio from "effect/Stdio";
+import * as Stream from "effect/Stream";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -93,23 +97,48 @@ export const sandboxClient = (session: Session) =>
   );
 
 /**
+ * One line on the tool's stdout, which is the tool's answer: git reads `wiki-credential`'s and an agent reads
+ * `wiki-land`'s. It returns once the line is written, so a tool that then exits with a code loses nothing.
+ */
+export const printLine = (line: string): Effect.Effect<void, PlatformError, Stdio.Stdio> =>
+  Effect.flatMap(Stdio.Stdio, (stdio) => Stream.run(Stream.succeed(`${line}\n`), stdio.stdout()));
+
+/** How a tool ends with an exit code other than 0: `runMain` exits with the code of the error it failed with. */
+class ExitCode extends Data.TaggedError("ExitCode")<{ readonly code: number }> {
+  override get [Runtime.errorExitCode](): number {
+    return this.code;
+  }
+}
+
+/**
  * Run a tool whose result is its exit code. A failure prints one line to stderr
  * and exits 1. Every error a tool can fail with says what went wrong in its
- * `message`: the API's errors, the HTTP client's and the tool's own.
+ * `message`: the API's errors, the HTTP client's, the platform's and the tool's own.
+ *
+ * A tool reads its arguments and stdin and writes its output through `Stdio`, never through `process`.
  */
 export const runTool = (
   name: string,
-  program: Effect.Effect<number, { readonly message: string }, FileSystem.FileSystem | HttpClient.HttpClient>,
+  program: Effect.Effect<
+    number,
+    { readonly message: string },
+    FileSystem.FileSystem | HttpClient.HttpClient | Stdio.Stdio
+  >,
 ): void =>
   NodeRuntime.runMain(
     program.pipe(
-      Effect.catch((error) => Effect.as(Console.error(`${name}: ${error.message}`), 1)),
-      Effect.flatMap((code) =>
-        Effect.sync(() => {
-          process.exitCode = code;
-        }),
+      Effect.catch((error) =>
+        Effect.flatMap(Stdio.Stdio, (stdio) =>
+          Stream.run(Stream.succeed(`${name}: ${error.message}\n`), stdio.stderr()).pipe(
+            // With stderr gone there is nowhere left to say so; the defect still exits 1.
+            Effect.orDie,
+            Effect.as(1),
+          ),
+        ),
       ),
-      Effect.provide(Layer.mergeAll(NodeFileSystem.layer, FetchHttpClient.layer)),
+      Effect.flatMap((code) => (code === 0 ? Effect.void : Effect.fail(new ExitCode({ code })))),
+      Effect.provide(Layer.mergeAll(NodeFileSystem.layer, FetchHttpClient.layer, NodeStdio.layer)),
     ),
+    // The tool has printed its own line, so `runMain` logs nothing.
     { disableErrorReporting: true },
   );

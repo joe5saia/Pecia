@@ -1,8 +1,7 @@
 import type { LandResponse } from "@pecia/wiki-api";
-import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Match from "effect/Match";
-import { loadSession, runTool, sandboxClient } from "./Session.ts";
+import { loadSession, printLine, runTool, sandboxClient } from "./Session.ts";
 
 // wiki-land: ask the Control Worker to publish this session's fork (docs/mvp.md,
 // "Sandbox setup"). Prints `landed <sha>`, `behind` or `nothing to land`, and
@@ -24,7 +23,7 @@ runTool(
     const session = yield* loadSession;
     const client = yield* sandboxClient(session);
     const [line, exitCode] = report(yield* client.land({ params: { id: session.sessionId } }));
-    yield* Console.log(line);
+    yield* printLine(line);
     return exitCode;
   }),
 );

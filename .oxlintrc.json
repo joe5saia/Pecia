@@ -51,8 +51,20 @@
     ],
     "no-restricted-properties": [
       "error",
-      { "object": "process", "property": "stdout", "message": "Print through `Console` from effect." },
-      { "object": "process", "property": "stderr", "message": "Print through `Console` from effect." }
+      { "object": "process", "property": "stdout", "message": "Write through `Stdio` from effect." },
+      { "object": "process", "property": "stderr", "message": "Write through `Stdio` from effect." },
+      { "object": "process", "property": "stdin", "message": "Read through `Stdio` from effect." },
+      { "object": "process", "property": "argv", "message": "Read the arguments through `Stdio` from effect." },
+      {
+        "object": "process",
+        "property": "exitCode",
+        "message": "Fail with an error that has `[Runtime.errorExitCode]`; `runMain` exits with it."
+      },
+      {
+        "object": "process",
+        "property": "exit",
+        "message": "Fail with an error that has `[Runtime.errorExitCode]`; `runMain` exits with it."
+      }
     ],
     "typescript/consistent-type-assertions": ["error", { "assertionStyle": "never" }],
 
