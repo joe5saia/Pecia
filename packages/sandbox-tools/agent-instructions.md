@@ -12,4 +12,4 @@ To publish your changes:
 5. Run wiki-land.
    - "landed <sha>" means you are done.
    - "behind" means someone published first: repeat from step 1.
-   - An error that the fork is too large to land means a file or the history is over the wiki's size limits. Running wiki-land again does not help: stop and report it.
+   - An error that the fork is too large to land means a file, or everything you committed since the last landing, is over the wiki's size limits. Running wiki-land again does not help: stop and report it.

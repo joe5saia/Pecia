@@ -3,13 +3,16 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Match from "effect/Match";
 import * as git from "isomorphic-git";
-import http, { request as httpRequest } from "isomorphic-git/http/web";
+import http from "isomorphic-git/http/web";
 import { MemoryFs } from "./MemoryFs.ts";
 import * as Pack from "./Pack.ts";
 import { tokenSecret } from "./Repos.ts";
+import * as SmartHttp from "./SmartHttp.ts";
 
-// The git operations the service runs itself, with isomorphic-git over an
-// in-memory filesystem: seeding a new wiki and landing (docs/mvp.md, "Landing").
+// The git operations the service runs itself: seeding a new wiki and landing
+// (docs/mvp.md, "Landing"). A land relays the fork's new commits to main with
+// SmartHttp.ts; isomorphic-git, over an in-memory filesystem, reads those
+// commits and writes the first commit and the notes.
 
 export class GitError extends Data.TaggedError("GitError")<{
   readonly operation: string;
@@ -38,7 +41,7 @@ export interface Remote {
   readonly token: string;
 }
 
-/** How much of the fork a land fetched, to see how close a wiki is to `landLimits`. */
+/** How much a land fetched from the fork: the commits main lacks. Compare with `landLimits`. */
 export interface Fetched {
   /** Bytes of the pack the fork sent. */
   readonly packBytes: number;
@@ -49,7 +52,8 @@ export interface Fetched {
 
 export type LandOutcome =
   | { readonly _tag: "Landed"; readonly sha: CommitSha; readonly fetched: Fetched }
-  | { readonly _tag: "Behind"; readonly fetched: Fetched }
+  /** `fetched` is `undefined` when the fork does not have main's head: then nothing is fetched to find out. */
+  | { readonly _tag: "Behind"; readonly fetched: Fetched | undefined }
   | { readonly _tag: "NothingToLand" };
 
 const dir = "/repo";
@@ -57,6 +61,12 @@ const notesRef = "refs/notes/commits";
 const service = { name: "pecia", email: "pecia@users.noreply.github.com" };
 
 const auth = (remote: Remote) => ({ username: "x", password: tokenSecret(remote.token) });
+
+const endpoint = (remote: Remote): SmartHttp.Endpoint => ({ url: remote.url, ...auth(remote) });
+
+/** Make one of the land's own git calls, reporting its failure as a `GitError`. */
+const smart = <A>(effect: Effect.Effect<A, SmartHttp.SmartHttpError>): Effect.Effect<A, GitError> =>
+  Effect.mapError(effect, (error) => new GitError({ operation: error.operation, cause: error.reason }));
 
 const attempt = <A>(operation: string, run: () => Promise<A>): Effect.Effect<A, GitError> =>
   Effect.tryPromise({ try: () => run(), catch: (cause) => new GitError({ operation, cause }) });
@@ -78,9 +88,9 @@ const pushRef = (fs: MemoryFs, remote: Remote, ref: string): Effect.Effect<void,
     }),
   );
 
-/** What a land is willing to hold in memory. A fork over any of these is not landed. */
+/** What a land is willing to hold in memory. A fork that adds more than any of these to main is not landed. */
 export interface LandLimits extends Pack.PackLimits {
-  /** Bytes of the fork's packed history as the remote sends it. */
+  /** Bytes of the pack of the fork's new commits, as the remote sends it. */
   readonly transferBytes: number;
 }
 
@@ -88,11 +98,11 @@ const MiB = 1024 * 1024;
 
 /**
  * The limits the Worker lands with. A Worker isolate has 128 MB for everything
- * it serves, and workspaces can share one. Measured in Node, a land of a fork at
- * these limits adds at most 33 MiB of memory still in use, and 62 MiB counting
- * garbage not yet collected (docs/operations.md, "Landing limits"). A fork is
- * the whole history of the wiki, so these are also the size a wiki can grow to
- * before landing has to move out of the Worker.
+ * it serves, and workspaces can share one. Measured in Node, cloning a whole
+ * fork at these limits added at most 33 MiB of memory still in use, and 62 MiB
+ * counting garbage not yet collected (docs/operations.md, "Landing limits").
+ * They bound what one land adds to main, not the wiki: a land fetches only the
+ * commits main lacks.
  */
 export const landLimits: LandLimits = {
   transferBytes: 6 * MiB,
@@ -105,31 +115,9 @@ export const landLimits: LandLimits = {
 const tooLarge = (limits: LandLimits, limit: keyof LandLimits) => new ForkTooLarge({ limit, max: limits[limit] });
 
 /**
- * An HTTP client that stops reading a response after `limits.transferBytes`.
- * isomorphic-git collects the whole response in memory, so this is what keeps a
- * large fork from being downloaded at all.
- */
-const limitedHttp = (limits: LandLimits): git.HttpClient => ({
-  request: async (request) => {
-    const response = await httpRequest(request);
-    const body = response.body;
-    if (body === undefined) return response;
-    let received = 0;
-    const counted = (async function* () {
-      for await (const chunk of body) {
-        received += chunk.byteLength;
-        if (received > limits.transferBytes) throw tooLarge(limits, "transferBytes");
-        yield chunk;
-      }
-    })();
-    return { ...response, body: counted };
-  },
-});
-
-/**
- * A filesystem that refuses a packfile over `limits`. isomorphic-git stores the
- * pack it fetched before it unpacks it, so this is where the size of what
- * unpacking will hold in memory is known in time.
+ * A filesystem that refuses a packfile over `limits`. Every pack of a land goes
+ * through it before anything unpacks it: the fork's new commits, which the land
+ * stores itself, and main's notes, which isomorphic-git fetches.
  */
 const limitedFs = (limits: LandLimits, onFits: (fetched: Fetched) => void): MemoryFs =>
   new MemoryFs({
@@ -168,14 +156,57 @@ export const seed = (main: Remote, files: Readonly<Record<string, string>>): Eff
     return CommitSha.make(sha);
   });
 
+const packPath = ".git/objects/pack/pack-fork.pack";
+
 /**
- * Land a session fork (docs/mvp.md, "Landing", steps 4-8): clone the fork's
- * `main`, check that it descends from `mainHead`, fast-forward `main` to it,
- * and attach `note` to the new head.
+ * What isomorphic-git has parsed of the repo's packs. Without one it parses a pack's index again on
+ * every call, which for a land of many commits is more CPU time than a Durable Object gets.
+ */
+type Cache = object;
+
+/** The parents of a commit in the repo, or none if the repo does not have the commit. */
+const parentsOf = async (fs: MemoryFs, cache: Cache, oid: string): Promise<ReadonlyArray<string>> => {
+  try {
+    const { commit } = await git.readCommit({ fs, dir, oid, cache });
+    return commit.parent;
+  } catch (cause) {
+    if (cause instanceof git.Errors.NotFoundError) return [];
+    throw cause;
+  }
+};
+
+/**
+ * Whether `head` descends from `ancestor`, read from a repo that holds only the
+ * commits `head` has and `ancestor` lacks. A commit the repo does not hold is an
+ * ancestor of `ancestor`, or `ancestor` itself, so the walk stops there. If
+ * `head` descends from `ancestor`, the path between them ends in a held commit
+ * whose parent is `ancestor`.
+ */
+const descendsFrom = async (fs: MemoryFs, cache: Cache, head: string, ancestor: string): Promise<boolean> => {
+  const seen = new Set([head]);
+  const queue = [head];
+  for (let oid = queue.pop(); oid !== undefined; oid = queue.pop()) {
+    const parents = await parentsOf(fs, cache, oid);
+    if (parents.includes(ancestor)) return true;
+    for (const parent of parents) {
+      if (seen.has(parent)) continue;
+      seen.add(parent);
+      queue.push(parent);
+    }
+  }
+  return false;
+};
+
+/**
+ * Land a session fork (docs/mvp.md, "Landing", steps 4-8): fetch the commits
+ * the fork's `main` has and `mainHead` lacks, check that they lead back to
+ * `mainHead`, push them to `main` as they came, and attach `note` to the new
+ * head.
  *
- * The clone lives in memory, and what is in the fork is up to the sandbox. A
- * fork over `limits` fails with `ForkTooLarge` before it is downloaded or
- * unpacked that far.
+ * Only those commits are fetched, however large the wiki is. They are held in
+ * memory, and what is in them is up to the sandbox, so a fork that adds more
+ * than `limits` fails with `ForkTooLarge` before it is downloaded or unpacked
+ * that far.
  */
 export const land = (options: {
   readonly fork: Remote;
@@ -187,63 +218,71 @@ export const land = (options: {
 }): Effect.Effect<LandOutcome, ForkTooLarge | GitError> =>
   Effect.gen(function* () {
     const { fork, main, mainHead, limits } = options;
-    const packs: Fetched[] = [];
-    const fs = limitedFs(limits, (pack) => void packs.push(pack));
-    yield* attempt("init", async () => {
-      await git.init({ fs, dir, defaultBranch: "main" });
-      // `fetch` needs a configured remote to know where to record what it fetched.
-      await git.addRemote({ fs, dir, remote: "fork", url: fork.url });
-      await git.addRemote({ fs, dir, remote: "main", url: main.url });
-    });
-    const result = yield* Effect.tryPromise({
-      try: () =>
-        git.fetch({
-          fs,
-          http: limitedHttp(limits),
-          dir,
-          remote: "fork",
-          ref: "main",
-          remoteRef: "main",
-          singleBranch: true,
-          onAuth: () => auth(fork),
-        }),
-      // The refusals of `limitedHttp` and `limitedFs` come back out of isomorphic-git as they were thrown.
-      catch: (cause) => (cause instanceof ForkTooLarge ? cause : new GitError({ operation: "fetch fork", cause })),
-    });
-    // Land the head that was cloned: the agent may have pushed again since the caller looked.
-    if (result.fetchHead === null) {
+    // Land the head the fork has now: the agent may have pushed again since the caller looked.
+    const forkHead = yield* smart(SmartHttp.advertised(endpoint(fork), "refs/heads/main"));
+    if (forkHead === undefined) {
       return yield* new GitError({ operation: "fetch fork", cause: "the fork has no main branch" });
     }
-    const head = CommitSha.make(result.fetchHead);
-    // The only pack so far is the fork's; main's notes are fetched later.
-    const fetched = packs[0] ?? { packBytes: 0, objects: 0, inflatedBytes: 0 };
+    const head = CommitSha.make(forkHead);
     if (head === mainHead) return { _tag: "NothingToLand" };
+
+    const fetched = yield* smart(
+      SmartHttp.fetchPack(endpoint(fork), { want: head, have: mainHead, maxBytes: limits.transferBytes }),
+    );
+    // A fork without main's head has not merged it. Its whole history is not downloaded to find that out.
+    if (fetched._tag === "NoCommonCommit") return { _tag: "Behind", fetched: undefined };
+    if (fetched._tag === "TooLarge") return yield* tooLarge(limits, "transferBytes");
+    const { pack } = fetched;
+
+    const packs: Fetched[] = [];
+    const fs = limitedFs(limits, (admitted) => void packs.push(admitted));
+    const cache: Cache = {};
+    yield* Effect.tryPromise({
+      try: async () => {
+        await git.init({ fs, dir, defaultBranch: "main" });
+        // `fetch` needs a configured remote to know where to record what it fetched.
+        await git.addRemote({ fs, dir, remote: "main", url: main.url });
+        await fs.promises.writeFile(`${dir}/${packPath}`, pack);
+        await git.indexPack({ fs, dir, filepath: packPath, cache });
+      },
+      // The refusal of `limitedFs` comes back out as it was thrown.
+      catch: (cause) => (cause instanceof ForkTooLarge ? cause : new GitError({ operation: "index fork", cause })),
+    });
+    const size = packs[0] ?? { packBytes: pack.byteLength, objects: 0, inflatedBytes: 0 };
+    const behind: LandOutcome = { _tag: "Behind", fetched: size };
 
     // Not the binding's `log`: it follows first parents only, and after
     // `git merge upstream/main` the old main head is usually a second parent.
-    const descends = yield* attempt("isDescendent", () =>
-      git.isDescendent({ fs, dir, oid: head, ancestor: mainHead, depth: -1 }),
-    );
-    const behind: LandOutcome = { _tag: "Behind", fetched };
+    const descends = yield* attempt("read fork commits", () => descendsFrom(fs, cache, head, mainHead));
     if (!descends) return behind;
 
-    yield* attempt("writeRef", () => git.writeRef({ fs, dir, ref: "refs/heads/main", value: head, force: true }));
-    return yield* pushRef(fs, main, "refs/heads/main").pipe(
-      Effect.andThen(
-        // A failed note doesn't undo the land.
-        Effect.catch(addNote(fs, main, head, options.note), (error) =>
-          Effect.logWarning("land: note not recorded", { sha: head, error: error.message }),
-        ),
-      ),
-      Effect.as<LandOutcome>({ _tag: "Landed", sha: head, fetched }),
-      // Main moved between the check above and the push.
-      Effect.catchTag("PushRejected", () => Effect.succeed(behind)),
+    // The pack goes to main as the fork sent it, deltas and all, and main moves only if it is still at `mainHead`.
+    const pushed = yield* smart(
+      SmartHttp.pushPack(endpoint(main), { ref: "refs/heads/main", from: mainHead, to: head, pack }),
     );
+    // Main moved between the caller's look and the push.
+    if (pushed._tag === "Rejected") return behind;
+
+    // A failed note doesn't undo the land.
+    yield* Effect.catch(addNote(fs, cache, main, head, options.note), (error) =>
+      Effect.logWarning("land: note not recorded", { sha: head, error: error.message }),
+    );
+    return { _tag: "Landed", sha: head, fetched: size };
   });
 
-const addNote = (fs: MemoryFs, main: Remote, sha: CommitSha, note: string): Effect.Effect<void, GitError> =>
+/** The old value of a ref that a push creates. */
+const noCommit = "0".repeat(40);
+
+const addNote = (
+  fs: MemoryFs,
+  cache: Cache,
+  main: Remote,
+  sha: CommitSha,
+  note: string,
+): Effect.Effect<void, GitError> =>
   Effect.gen(function* () {
-    // Fetch main's notes first, so the push adds to them instead of replacing them.
+    // Fetch main's newest notes commit, so the push adds to the notes instead of replacing them. Only
+    // the newest: its tree lists every note, and the history behind it has one such tree per land.
     const existing = yield* Effect.tryPromise({
       try: () =>
         git.fetch({
@@ -254,6 +293,8 @@ const addNote = (fs: MemoryFs, main: Remote, sha: CommitSha, note: string): Effe
           ref: notesRef,
           remoteRef: notesRef,
           singleBranch: true,
+          depth: 1,
+          cache,
           onAuth: () => auth(main),
         }),
       catch: (cause) =>
@@ -268,10 +309,24 @@ const addNote = (fs: MemoryFs, main: Remote, sha: CommitSha, note: string): Effe
     if (existing !== null) {
       yield* attempt("writeRef notes", () => git.writeRef({ fs, dir, ref: notesRef, value: existing, force: true }));
     }
-    yield* attempt("addNote", () =>
-      git.addNote({ fs, dir, ref: notesRef, oid: sha, note, author: service, force: true }),
+    const commit = yield* attempt("addNote", () =>
+      git.addNote({ fs, dir, ref: notesRef, oid: sha, note, author: service, force: true, cache }),
     );
-    yield* Effect.catchTag(pushRef(fs, main, notesRef), "PushRejected", () =>
-      Effect.fail(new GitError({ operation: "push notes", cause: "not a fast-forward" })),
+    // Push what the note added and nothing else: its commit, the new list of notes and the note.
+    const pack = yield* attempt("pack note", async () => {
+      const { tree } = await git.readTree({ fs, dir, oid: commit, cache });
+      const added = tree.find((entry) => entry.path === sha);
+      if (added === undefined) throw new Error(`the notes have no entry for ${sha}`);
+      const { commit: written } = await git.readCommit({ fs, dir, oid: commit, cache });
+      const packed = await git.packObjects({ fs, dir, oids: [commit, written.tree, added.oid], write: false, cache });
+      if (packed.packfile === undefined) throw new Error("no pack was built");
+      return packed.packfile;
+    });
+    const pushed = yield* smart(
+      SmartHttp.pushPack(endpoint(main), { ref: notesRef, from: existing ?? noCommit, to: commit, pack }),
     );
+    yield* Match.valueTags(pushed, {
+      Updated: () => Effect.void,
+      Rejected: ({ reason }) => Effect.fail(new GitError({ operation: "push notes", cause: reason })),
+    });
   });

@@ -42,7 +42,7 @@ Ending a session revokes its fork's tokens and answers one of two states:
 | 404 | `{ "_tag": "NotFound", "resource", "id" }` | The workspace or session does not exist. | No |
 | 404 | Problem | The API has no such path and method. | No |
 | 409 | `{ "_tag": "SessionNotActive", "sessionId", "state" }` | The session has ended: it is `closed`, `parked` or `deleted`. It does not become active again. | No |
-| 422 | `{ "_tag": "ForkTooLarge", "limit", "max" }` | `land` only: the fork is over a landing limit (see "Landing limits"). | No |
+| 422 | `{ "_tag": "ForkTooLarge", "limit", "max" }` | `land` only: the fork's new commits are over a landing limit (see "Landing limits"). | No |
 | 413 | Empty | The request body is over 64 kB. | No |
 | 415 | Text | The request body is not `application/json`. | No |
 | 500 | Problem | A bug in the service. The cause is in Workers Logs under `request failed with a defect`. | No |
@@ -57,22 +57,28 @@ After a 502 or 503 the call may or may not have been applied. Repeating it does 
 
 ## Landing limits
 
-A land clones the fork's whole history into the Worker's memory, and what is in a fork is up to the sandbox. A Worker isolate has 128 MB for everything it serves. So a land refuses, with 422 `ForkTooLarge`, a fork over any of these (`landLimits` in `packages/control-worker/src/Git.ts`):
+A land fetches the commits the fork has and main lacks into the Worker's memory, and what is in them is up to the sandbox. A Worker isolate has 128 MB for everything it serves. So a land refuses, with 422 `ForkTooLarge`, a fork whose new commits are over any of these (`landLimits` in `packages/control-worker/src/Git.ts`):
 
 | `limit` | `max` | What it bounds |
 | --- | --- | --- |
-| `transferBytes` | 6 MiB | The packed history as the fork sends it. The download stops at this size. |
-| `objects` | 10,000 | Commits, trees and file versions in the history. |
+| `transferBytes` | 6 MiB | The pack of the new commits as the fork sends it. The download stops at this size. |
+| `objects` | 10,000 | Commits, directories and file versions in the new commits. |
 | `objectBytes` | 4 MiB | One file version once unpacked. |
-| `inflatedBytes` | 12 MiB | The whole history once unpacked. |
+| `inflatedBytes` | 12 MiB | The new commits once unpacked. |
 
-The last three are read from the pack before anything unpacks it, so a small pack that unpacks to something large is refused too. A fork is the wiki's whole history plus the session's commits, so these are also how large a wiki can grow before landing has to move out of the Worker (docs/mvp.md, "Landing").
+The last three are read from the pack before anything unpacks it, so a small pack that unpacks to something large is refused too.
 
-The numbers come from measuring `Git.land` in a Node process of its own, on forks just under the limits: prose, incompressible files, many small files, a long history and highly repetitive files. The land added at most 33 MiB of memory still in use, and at most 62 MiB counting garbage not yet collected. Without limits, a fork of five incompressible 8 MiB files added 200 MiB; with them it is refused after 6 MiB of download. These are Node measurements.
+The limits bound one land, not the wiki. What main already has is never downloaded, so a wiki can grow to what Artifacts allows a repo (docs/mvp.md, "Limits and cost"). A session over a limit has to land in smaller steps: the commits of one land cannot be split, so that means a new session that makes smaller commits and lands between them.
 
-On a deployed Worker (staging, November 2026) forks of the same shapes landed just under each limit and were refused just over it, and no land ran out of memory. How long a land takes grows with the number of objects: a fork of 9,000 small files took 14 to 19 seconds, 6 to 9 of them CPU time, and a fork of a few large files took 2 to 6 seconds.
+The land sends the fork's pack on to main as it came, so main keeps the delta compression the sandbox's git gave it. A history of 300 one-sentence edits to 4 KiB pages took 0.43 MiB on main this way and 1.27 MiB pushed without deltas.
 
-History counts for more once it has landed. The Worker pushes to main without delta compression and Artifacts serves a repo as it was pushed, while a sandbox's git pushes its fork with deltas. A fork with 1,500 edits of 4 KiB pages was 5.1 MiB when it landed and 6.4 MiB as the next session's fork, which is over `transferBytes`, so the next land was refused. Read `packBytes` in a `land` event as the size before that land, and expect the wiki to stop landing at about 6 MiB of compressed page and directory versions.
+The numbers come from measuring `Git.land` in a Node process of its own, on lands just under the limits: prose, incompressible files, many small files, a long history and highly repetitive files. The land added at most 38 MiB of memory still in use, and at most 68 MiB counting garbage not yet collected. A land of one small commit onto a wiki of the same sizes added 8 MiB.
+
+On a deployed Worker (staging, November 2026):
+
+- Lands of the same shapes went through just under each limit and were refused just over it, and no land ran out of memory.
+- A wiki grew to 27.5 MiB packed in five lands of 5.5 MiB each, and a one-line edit then landed.
+- The slowest lands were of many objects: 1,500 commits (6,252 objects) took 9 to 13 seconds and 9,055 small files took 8 seconds, each with under 2 seconds of CPU time. The next session's one-commit land in the 1,500-commit wiki fetched 1.5 kB and took 28 ms of CPU time.
 
 ## Monitor usage
 
@@ -85,8 +91,8 @@ There are three records of what happened, from the most to the least detailed.
 | `workspace.created` | A workspace is first created | `workspace`, `baseSha` |
 | `session.created` | A session and its fork are created | `workspace`, `sessionId`, `agent`, `model` |
 | `tokens.minted` | A sandbox mints tokens, about once every 55 minutes of git use | `workspace`, `sessionId` |
-| `land` | Every `wiki-land` call that gets an answer | `workspace`, `sessionId`, `agent`, `model`, `status` (`landed`, `behind`, `nothing_to_land`), `mainSha`, `forkHead`; for `landed` and `behind` also `packBytes`, `objects` and `inflatedBytes`, the size of the fork it fetched |
-| `land.refused` | A land is refused because the fork is over a landing limit | `workspace`, `sessionId`, `agent`, `model`, `limit`, `max`, `mainSha`, `forkHead` |
+| `land` | Every `wiki-land` call that gets an answer | `workspace`, `sessionId`, `agent`, `model`, `status` (`landed`, `behind`, `nothing_to_land`), `mainSha`, `forkHead`; for `landed`, and for `behind` when the fork has main's head, also `packBytes`, `objects` and `inflatedBytes`: the size of the commits it fetched, which are those main lacked |
+| `land.refused` | A land is refused because the fork's new commits are over a landing limit | `workspace`, `sessionId`, `agent`, `model`, `limit`, `max`, `mainSha`, `forkHead` |
 | `session.ended` | A session is closed or times out | `workspace`, `sessionId`, `agent`, `model`, `state` (`closed`, `parked`), `reason` (`closed`, `idle`), `forkHead` |
 | `session.settled` | A closed fork's ten minutes are over | `workspace`, `sessionId`, `agent`, `model`, `state` (`deleted`, `parked`), `forkHead` |
 
@@ -94,7 +100,7 @@ An entry can take up to ten minutes to show up in Workers Logs after the call th
 
 The questions these answer: how many `land` calls come back `behind` (agents hitting conflicts), how many sessions end `parked` (work that never landed) and how many end with `reason: idle` (sandboxes that died or orchestrators that did not clean up).
 
-Compare `packBytes`, `objects` and `inflatedBytes` of `land` events with the landing limits to see how close a wiki is to them; a `land.refused` means one got there. A `session.settled` with `state: parked` means a push finished after its session had ended.
+Compare `packBytes`, `objects` and `inflatedBytes` of `land` events with the landing limits to see how close sessions come to them; a `land.refused` means one got there. They are the size of one land, not of the wiki. A `session.settled` with `state: parked` means a push finished after its session had ended.
 
 Warnings are logged the same way: `land: note not recorded`, `sweep: session not ended`, `sweep: session not settled`, `service token not revoked` and `session.create: fork not cleaned up`.
 

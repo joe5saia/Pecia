@@ -37,10 +37,10 @@ export class SessionNotActive extends Schema.TaggedError<SessionNotActive>()(
 }
 
 /**
- * 422: the session's fork is larger than the service lands. A land clones the
- * fork into the memory of a Worker, so its size has a ceiling
- * (docs/operations.md, "Landing limits"). Repeating the call does not help: the
- * fork has to get smaller, or the wiki has outgrown landing in a Worker.
+ * 422: the session's fork adds more to main than the service lands at once. A
+ * land holds the fork's new commits in the memory of a Worker, so their size
+ * has a ceiling (docs/operations.md, "Landing limits"). Repeating the call does
+ * not help: the work has to be landed in smaller steps.
  */
 export class ForkTooLarge extends Schema.TaggedError<ForkTooLarge>()(
   "ForkTooLarge",
@@ -54,10 +54,10 @@ export class ForkTooLarge extends Schema.TaggedError<ForkTooLarge>()(
 ) {
   override get message(): string {
     const what = {
-      transferBytes: "its packed history is more than",
-      objects: "its history has more objects than",
+      transferBytes: "its new commits pack to more than",
+      objects: "its new commits have more objects than",
       objectBytes: "one of its files is more than",
-      inflatedBytes: "its unpacked history is more than",
+      inflatedBytes: "its new commits unpack to more than",
     } as const satisfies Record<ForkTooLarge["limit"], string>;
     const unit = this.limit === "objects" ? "" : " bytes";
     return `the fork is too large to land: ${what[this.limit]} ${this.max}${unit}`;

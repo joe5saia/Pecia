@@ -144,6 +144,9 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
   };
 
   const server = createServer((request, response) => serve(request, response));
+  // A land computes between two of its calls, with Node's event loop blocked. Node's five seconds
+  // would close the connection meanwhile, and the next call would be written to a closed socket.
+  server.keepAliveTimeout = 120_000;
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const origin = `http://127.0.0.1:${portOf(server)}`;
   const remoteOf = (repo: string) => `${origin}/${repo}.git`;

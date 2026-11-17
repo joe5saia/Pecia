@@ -1,5 +1,5 @@
 // In-memory filesystem for isomorphic-git. A Worker has no disk, so landing
-// keeps its short-lived clone here (docs/mvp.md, "Landing", step 4).
+// keeps the commits it fetched here (docs/mvp.md, "Landing", step 5).
 
 type Entry =
   | { readonly kind: "file"; data: Uint8Array; mtimeMs: number }

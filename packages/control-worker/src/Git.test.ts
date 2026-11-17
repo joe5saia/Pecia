@@ -26,8 +26,18 @@ const remote = (repo: string, scope: "read" | "write") =>
     }),
   );
 
-/** How many objects the history of a repo's main has. */
-const objectCount = (repo: string) => artifacts.git(repo, "rev-list", "--count", "--objects", "main");
+/** How many objects the history of a repo's main has, leaving out those `since` has. */
+const objectCount = async (repo: string, since?: string) =>
+  Number(
+    await artifacts.git(
+      repo,
+      "rev-list",
+      "--count",
+      "--objects",
+      "main",
+      ...(since === undefined ? [] : [`^${since}`]),
+    ),
+  );
 
 /** A seeded main repo named `name` and a way to land a fork into it. */
 const makeWiki = async (name: string) => {
@@ -100,9 +110,9 @@ describe("land", () => {
 
     const landed = await wiki.land("ff--a", "pecia-session: ff.a");
     expect(landed).toMatchObject({ _tag: "Landed", sha });
-    // It fetched the fork's whole history: here two commits, each with a tree and a file.
-    expect(landed).toMatchObject({ fetched: { objects: Number(await objectCount("ff--a")) } });
-    expect(await objectCount("ff--a")).toBe("6");
+    // It fetched what main lacked, one commit with its tree and its file, and not the first commit's three objects.
+    expect(landed).toMatchObject({ fetched: { objects: 3 } });
+    expect(await objectCount("ff--a")).toBe(6);
     expect(await wiki.head()).toBe(sha);
     expect(await artifacts.git("ff", "notes", "show", sha)).toBe("pecia-session: ff.a");
   });
@@ -115,8 +125,67 @@ describe("land", () => {
     await b.commit("b.md", "from b\n");
     await wiki.land("behind--a", "a");
 
-    expect(await wiki.land("behind--b", "b")).toMatchObject({ _tag: "Behind" });
+    expect(await wiki.land("behind--b", "b")).toEqual({ _tag: "Behind", fetched: undefined });
+    // The fork does not have main's head, and that is found out without downloading the fork.
+    expect(await wiki.landWithin("behind--b", { transferBytes: 0 })).toEqual({ _tag: "Behind" });
     expect(await wiki.head()).toBe(first);
+  });
+
+  it("answers behind for a fork that was moved back to before main's head", async () => {
+    const wiki = await makeWiki("moved-back");
+    const { sandbox, commit } = await forkInto(wiki, "moved-back--a");
+    const first = await commit("a.md", "from a\n");
+    await wiki.land("moved-back--a", "a");
+    await sandbox.git("push", "--force", "origin", `${wiki.seedSha}:main`);
+
+    // The fork still has main's head, so it answers with what its own head adds to it: nothing.
+    expect(await wiki.land("moved-back--a", "a")).toMatchObject({ _tag: "Behind", fetched: { objects: 0 } });
+    expect(await wiki.head()).toBe(first);
+  });
+
+  it("answers behind and leaves main alone when main has moved since its head was read", async () => {
+    const wiki = await makeWiki("moved");
+    const a = await forkInto(wiki, "moved--a");
+    const b = await forkInto(wiki, "moved--b");
+    const first = await a.commit("a.md", "from a\n");
+    await b.commit("b.md", "from b\n");
+    await wiki.land("moved--a", "a");
+
+    // b's commit descends from the head this land was told, which main has left.
+    const stale = Git.land({
+      fork: await remote("moved--b", "read"),
+      main: wiki.main,
+      mainHead: wiki.seedSha,
+      note: "b",
+      limits: Git.landLimits,
+    });
+    expect(await Effect.runPromise(stale)).toMatchObject({ _tag: "Behind", fetched: { objects: 3 } });
+    expect(await wiki.head()).toBe(first);
+  });
+
+  it("fetches only the commits main lacks, however long the wiki's history is", async () => {
+    const wiki = await makeWiki("long");
+    const a = await forkInto(wiki, "long--a");
+    await a.sandbox.exec("sh", [
+      "-c",
+      'cd docs && for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do echo edit $i > page.md && git add page.md && git commit --quiet --message "Edit $i"; done',
+    ]);
+    await a.commit("a.md", "from a\n");
+    await wiki.land("long--a", "a");
+    const history = await objectCount("long");
+    expect(history).toBeGreaterThan(60);
+
+    const b = await forkInto(wiki, "long--b");
+    const sha = await b.commit("b.md", "from b\n");
+    // One commit, its tree and its file: a land that fetched the history would be over this limit.
+    expect(await wiki.landWithin("long--b", { objects: 2 })).toMatchObject({ _tag: "ForkTooLarge", limit: "objects" });
+    expect(await wiki.landWithin("long--b", { objects: 3 })).toEqual({ _tag: "Landed" });
+    expect(await wiki.head()).toBe(sha);
+    // Main got those three objects and is whole.
+    expect(await objectCount("long")).toBe(history + 3);
+    await artifacts.git("long", "fsck", "--strict");
+    expect(await artifacts.git("long", "show", "main:page.md")).toBe("edit 20");
+    expect(await artifacts.git("long", "notes", "show", sha)).toBe("limits");
   });
 
   it("lands a merge whose second parent is the old main head, keeping earlier notes", async () => {
@@ -177,7 +246,7 @@ describe("land", () => {
 describe("land limits", () => {
   const KiB = 1024;
 
-  it("stops downloading a fork whose packed history is over transferBytes", async () => {
+  it("stops downloading a fork whose new commits pack to more than transferBytes", async () => {
     const wiki = await makeWiki("limit-transfer");
     const { sandbox, commit } = await forkInto(wiki, "limit-transfer--a");
     // Random bytes do not compress: the pack is at least as large as the file.
@@ -214,14 +283,15 @@ describe("land limits", () => {
     });
   });
 
-  it("refuses a history with more objects than the limit", async () => {
+  it("refuses new commits with more objects than the limit", async () => {
     const wiki = await makeWiki("limit-count");
     const { sandbox, commit } = await forkInto(wiki, "limit-count--a");
     await sandbox.exec("sh", ["-c", "for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo page $i > docs/p$i.md; done"]);
     await sandbox.git("add", "--all");
     await commit("a.md", "from a\n");
-    const objects = Number(await objectCount("limit-count--a"));
-    expect(objects).toBeGreaterThan(12);
+    // What the fork adds to main: one commit, its tree and thirteen files.
+    const objects = await objectCount("limit-count--a", wiki.seedSha);
+    expect(objects).toBe(15);
 
     expect(await wiki.landWithin("limit-count--a", { objects: objects - 1 })).toEqual({
       _tag: "ForkTooLarge",

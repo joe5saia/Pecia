@@ -489,7 +489,7 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
           // Where main was before the call, and what the session asked to land.
           mainSha: mainHead,
           forkHead,
-          // How much the land held in memory, to compare with `Git.landLimits`.
+          // How much the land fetched and held in memory, to compare with `Git.landLimits`.
           ...("fetched" in outcome ? outcome.fetched : {}),
         });
         return response;

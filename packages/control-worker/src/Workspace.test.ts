@@ -268,11 +268,12 @@ describe("usage events", () => {
     });
     const base = await artifacts.git("usage", "rev-list", "--max-parents=0", "main");
     const unlanded = await b.sandbox.git("rev-parse", "HEAD");
-    // A land also says how much it fetched from the fork: the first commit and one more, each
-    // with a tree and a file. The byte counts depend on git's packing, so they are checked apart.
-    const fetched = { objects: 6 };
+    // A land that fetched from the fork also says how much: here a's commit with its tree and its
+    // file. b's fork does not have main's head, so nothing was fetched to answer `behind`. The byte
+    // counts depend on git's packing, so they are checked apart.
+    const fetched = { objects: 3 };
     const sizes = wiki.events().flatMap((event) => [event["packBytes"], event["inflatedBytes"]]);
-    expect(sizes.filter((size) => size !== undefined)).toHaveLength(4);
+    expect(sizes.filter((size) => size !== undefined)).toHaveLength(2);
     expect(sizes.every((size) => size === undefined || (typeof size === "number" && size > 0))).toBe(true);
     const events = wiki.events().map(({ packBytes: _packBytes, inflatedBytes: _inflatedBytes, ...event }) => event);
     expect(events).toEqual([
@@ -282,7 +283,7 @@ describe("usage events", () => {
       { event: "session.created", ...who(b) },
       { event: "tokens.minted", workspace: "usage", sessionId: b.sessionId },
       { event: "land", ...who(a), status: "landed", mainSha: base, forkHead: sha, ...fetched },
-      { event: "land", ...who(b), status: "behind", mainSha: sha, forkHead: unlanded, ...fetched },
+      { event: "land", ...who(b), status: "behind", mainSha: sha, forkHead: unlanded },
       { event: "session.ended", ...who(a), state: "closed", reason: "closed", forkHead: sha },
       { event: "session.ended", ...who(b), state: "parked", reason: "closed", forkHead: unlanded },
     ]);

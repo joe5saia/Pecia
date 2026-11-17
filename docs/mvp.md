@@ -175,15 +175,15 @@ Its alarm wakes periodically, ends sessions idle longer than a configurable time
 1. Read the head of main in the main repo and in the fork, with the binding's `log({ ref: "main", limit: 1 })` on each.
 2. If they are equal, return `nothing_to_land`.
 3. Mint a short-lived read token for the fork and a short-lived write token for main. Both stay inside the Worker.
-4. Clone the fork's main with isomorphic-git into an in-memory filesystem.
-5. Check that the fork head descends from main's head with isomorphic-git's `isDescendent`, with no depth limit. Don't use the binding's `log` for this: it follows only the first-parent chain, and after `git merge upstream/main` the old main head is usually the merge's second parent. If main's head isn't in the fork at all, the agent hasn't merged it yet.
+4. Ask the fork for the pack of what its main has and main's head lacks (git's smart HTTP protocol: `want` the fork head, `have` main's head). If the fork does not have main's head, it says so before sending anything: return `behind`.
+5. Index the pack with isomorphic-git in an in-memory filesystem and walk the commits in it from the fork head. The fork head descends from main's head if one of them has main's head as a parent. Don't use the binding's `log` for this: it follows only the first-parent chain, and after `git merge upstream/main` the old main head is usually the merge's second parent.
 6. If it doesn't descend, return `behind` with main's current head.
-7. Otherwise push the fork head to main's main branch. If the push is rejected, return `behind`; that can only happen if something outside the service wrote main.
-8. Fetch main's `refs/notes/commits` into the in-memory repo, add a note to the new head with session ID, agent and model (isomorphic-git `addNote`), and push `refs/notes/commits` to main. Fetching first keeps the notes push a fast-forward instead of replacing earlier notes. A failed note push doesn't undo the land; log it.
+7. Otherwise push that same pack to main, moving main's main branch from the head read in step 1 to the fork head. Artifacts moves the branch only if it is still there; if not, return `behind`. That can only happen if something outside the service wrote main.
+8. Fetch the newest commit of main's `refs/notes/commits`, add a note to the new head with session ID, agent and model (isomorphic-git `addNote`), and push the note's three new objects to main the same way. Fetching first keeps earlier notes. A failed note push doesn't undo the land; log it.
 9. Record the land in `lands`, update `last_active_at`, and return `landed` with the new head.
 
 - **History is kept as the agent wrote it.** main moves by fast-forward, so the agent's commits and merge commits appear in main unchanged.
-- **Repo size.** The in-memory clone is fine for markdown-sized repos. A fork over the landing limits ([operations.md](operations.md), "Landing limits") is refused with 422 before it is downloaded or unpacked that far. If a wiki outgrows them, move steps 4–8 into a container with real git.
+- **Repo size.** A land holds only the fork's new commits in memory, never the wiki, so the wiki's size does not limit landing. A fork whose new commits are over the landing limits ([operations.md](operations.md), "Landing limits") is refused with 422 before they are downloaded or unpacked that far. If single lands outgrow them, move steps 4–8 into a container with real git.
 
 ## Naming, tokens and cleanup
 
@@ -220,7 +220,7 @@ Answered from the Artifacts and Workers documentation as of November 2026. Where
 | Does Artifacts reject forced or non-fast-forward pushes? | Not documented. Pushes use standard git receive-pack (protocol v1); no branch protection is described. | No dependency: only the Worker ever holds a write token for main, and it never force-pushes. A forced push to an agent's own fork affects only that agent. |
 | Token lifetime and refresh | TTL from 60 seconds to 31,536,000 seconds (one year); default 86,400 (24 hours). Tokens can be revoked by token or ID. | Mint one-hour tokens and refresh them through the credential helper. Revoke a session's fork tokens when the session ends. |
 | Is a fork billed at full size? | Not documented. Storage is billed across all repos, and a fork's response reports how many objects it copied. | Budget every fork at the wiki's full size and delete forks promptly. Example: 100 concurrent forks of a 50 MB wiki is about 5 GB, roughly $2 a month beyond the included 1 GB. |
-| Memory for in-Worker landing | A Worker isolate has 128 MB of memory, shared across the requests it serves. Artifacts repos can grow to 1 GB. | The in-memory clone suits small wikis only. Milestone 2 measures peak memory when landing the largest expected wiki and sets a size ceiling; above it, landing runs in a container with real git. |
+| Memory for in-Worker landing | A Worker isolate has 128 MB of memory, shared across the requests it serves. Artifacts repos can grow to 1 GB. | A land holds only the commits main lacks, never the wiki, so the wiki's size does not matter. One land's commits are bounded by the landing limits ([operations.md](operations.md), "Landing limits"), set from measured peak memory; a land over them is refused. |
 | Do forks carry `refs/notes/*`? | Not documented; `defaultBranchOnly: true` suggests only the default branch is copied. | Not needed: notes live only on the main repo. Landing fetches main's notes ref before adding a note (Landing, step 8). |
 
 ## Test scenarios
