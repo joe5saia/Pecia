@@ -19,6 +19,12 @@ updates:
     # from the lockfile. Waiting longer than that keeps the lockfile installable.
     cooldown:
       default-days: 3
+    ignore:
+      # TypeScript's nightlies (7.1.0-dev.<date>, npm tag `next`) rank above its
+      # 7.1.0-beta and below 7.1.0-rc. Pecia follows the beta, RC and stable
+      # releases. Move the range along when pecia moves to another beta.
+      - dependency-name: typescript
+        versions: [">7.1.0-beta <7.1.0-rc"]
     groups:
       non-major:
         update-types: [minor, patch]
