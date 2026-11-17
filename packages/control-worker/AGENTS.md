@@ -15,7 +15,7 @@ The Worker, the workspace Durable Object and their Alchemy stack. Repo-wide rule
 
 ### Crossing the Durable Object
 
-- Arguments and results are structured-cloned. A `Redacted`, or any other class instance, does not arrive as itself, which is why a session key crosses as a `string` and is only `Redacted` in the Worker.
+- Arguments and results are structured-cloned. A `Redacted`, a `DateTime` or any other class instance does not arrive as itself. That is why a session key and the minted tokens cross as `string`, and a time as a `Timestamp`.
 - An error is rebuilt as its class on the Worker's side only if it is in `WorkspaceErrors` (`Workspace.ts`). One that is missing arrives as a plain object, which the API does not recognise as the error its endpoint declares. A new workspace error goes there as well as in the places the root `AGENTS.md` lists.
 - A call can also fail on the way. `RemoteWorkspace.ts` is the one place that handles `RpcCallError`: Cloudflare's own failures become 503, an exception in the object becomes a defect.
 - The Worker makes a new stub for every call. A stub that has failed stays broken.
@@ -26,6 +26,9 @@ The Worker, the workspace Durable Object and their Alchemy stack. Repo-wide rule
 - The binding works only while a request is served. The Worker builds the reader inside `fetch` for that reason; do not move it to the module or the layer.
 - Without `artifacts.d.ts` the binding's results are `any` and both type checkers accept that. The `typescript/no-unsafe-*` lint rules are what reports a missing name.
 - `log` follows first parents only. After `git merge upstream/main` the old main head is usually a second parent, so a land walks the commits itself (`descendsFrom` in `Git.ts`).
+- Artifacts gives a time as an ISO string in some answers and as Unix seconds in others (a commit's `committedAt`). `timeOf` turns both into a `Timestamp`; a value that is not a time is a defect.
+- A token's text is `Redacted` from the binding's answer on (`RepoToken.token`, `Remote.token`, `SmartHttp.Endpoint.password`, the `session_tokens` row as read). It is in the clear in four places only: the SQL insert, isomorphic-git's `onAuth`, the Basic `Authorization` header, and the answer of `mintTokens`.
+- A tree entry's hash is typed by what it names (`TreeEntry` in `Repos.ts`): a `TreeSha` for a directory, a `BlobSha` for a file or symlink, a `CommitSha` for a submodule. Build one with `treeEntry`. `readTree` takes only a `TreeSha`, so a file's hash cannot be walked as a directory.
 - `listTokens` and `list` page. `revokeAllTokens` lists again until nothing is active, up to `revokePasses` times, and fails if it does not get there.
 
 ### Landing (Git.ts, SmartHttp.ts, Pack.ts, MemoryFs.ts)
