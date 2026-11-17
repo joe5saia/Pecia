@@ -21,6 +21,12 @@ The reader endpoints take the stage's orchestrator key, the same key as the orch
 
 This is the per-stage key decided for the MVP. Logging in people by identity (Cloudflare Access, or Sign in with an identity provider) would replace `ReaderAuth` and the login endpoint and leave the rest as it is.
 
+### Logging in during development
+
+The dev server of `task dev:viewer` has one more route, `GET /__dev/log-me-in?returnTo=<path>` (`vite.config.ts`). It trades `PECIA_ORCHESTRATOR_KEY_STAGING`, from the dev server's own environment, for the cookie at the Worker it proxies to, gives the browser that cookie and redirects to `returnTo`, which must be a path on the same origin. An agent or a reviewer of an Amp portal is then logged in without typing the key, and the key never reaches the browser. The portal link in `.amp/services.yaml` opens this route.
+
+The route exists only in `vite dev`: `vite build` leaves it out, so no deployed stage has it. It only ever uses staging's key, so it fails against prod. Whoever can open the dev server can read staging's wikis through it; an Amp portal is limited to the people who can view its thread unless someone makes it public.
+
 ## API
 
 | Endpoint | Response |

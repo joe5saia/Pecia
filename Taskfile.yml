@@ -116,7 +116,7 @@ tasks:
     desc: Serve the viewer with hot reload, calling a deployed Worker's API (PECIA_VIEWER_API, default staging's URL)
     dir: packages/viewer
     interactive: true
-    cmd: PECIA_VIEWER_API="${PECIA_VIEWER_API:-{{.STAGING_URL}}}" pnpm exec vite --port "${PORT:-5173}"
+    cmd: PECIA_VIEWER_API="${PECIA_VIEWER_API:-{{.STAGING_URL}}}" pnpm exec vite --port "${PORT:-5173}" --strictPort
 
   check:
     desc: Local CI - every check except deploying

@@ -1,0 +1,14 @@
+# Development servers for Amp orbs (https://ampcode.com/docs/orbs/portals).
+# `amp orb services ensure` starts them and prints their portal URLs.
+services:
+  # The viewer with hot reload. Its API calls go to staging (PECIA_VIEWER_API
+  # in Taskfile.yml), so it shows staging's wikis and needs no local Worker.
+  viewer:
+    command: pnpm exec task dev:viewer
+    health: /
+    portal:
+      # The development login in packages/viewer/vite.config.ts. It needs
+      # PECIA_ORCHESTRATOR_KEY_STAGING; without it, open / and type the key.
+      url: /__dev/log-me-in?returnTo=/
+      title: Viewer (staging)
+      description: Logs in with staging's key and shows staging's wikis. Read-only.

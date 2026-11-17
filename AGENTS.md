@@ -17,15 +17,37 @@ Agent wiki on Cloudflare Artifacts. The design is in `docs/mvp.md`.
 
 Every command runs through Task (`Taskfile.yml`); package.json files have no `scripts`. Run `task --list` for all tasks.
 
-- `task check`: local CI (fmt:check, lint, typecheck, test). Run it before committing.
+- `task check`: local CI (fmt:check, lint, typecheck, test). Run it before committing. About 25 seconds on a 4-CPU orb: the tests take about 15 of them, each other check under 5. Task skips a check whose inputs have not changed since it last passed.
+- One test file: `pnpm exec vitest run packages/control-worker/src/Git.test.ts`; add `-t '<name>'` for one test. `task test:watch` never exits, so do not run it from an agent.
 - `task fmt`: format with oxfmt.
 - `task build:viewer`: build the viewer into `packages/viewer/dist`. The Alchemy tasks run it first.
-- `task dev:viewer`: serve the viewer with hot reload against a deployed Worker's API (`PECIA_VIEWER_API`, default staging).
+- `task dev:viewer`: serve the viewer with hot reload against a deployed Worker's API (`PECIA_VIEWER_API`, default staging). It runs until stopped; in an orb start it as a service (see "Running the viewer").
 - `task build:tools`: bundle `wiki-credential` and `wiki-land` into `packages/sandbox-tools/dist`.
 - `task dev`: `alchemy dev` for the Control Worker.
 - `task ci`: `task check`, then `task deploy:preview` (needs `PULL_REQUEST` and a Cloudflare profile).
 
 oxlint runs the `pecia` rules in JS and reserves about 6 GiB of address space for it, as does the rules' test. On Linux with less memory than that, lint panics in `oxc_allocator` and the test fails with `Array buffer allocation failed` until `sudo sysctl -w vm.overcommit_memory=1`; orbs set it in `.agents/resume`.
+
+## Running the viewer
+
+`.amp/services.yaml` declares the one development server, `viewer` (`task dev:viewer`). In an Amp orb, `amp orb services ensure` starts it and prints its portal URL; `amp orb service logs viewer` has its output. It serves `packages/viewer` with hot reload and passes API calls to staging, so the pages show staging's wikis.
+
+The portal link opens `/__dev/log-me-in?returnTo=<path>`, a route of the Vite dev server only (`packages/viewer/vite.config.ts`). It logs the browser in with `PECIA_ORCHESTRATOR_KEY_STAGING` from the server's environment, so nobody types the key. Open it in the browser used for testing; a `curl` of it does not log that browser in. Without the key it answers 404, and the viewer's own login page at `/` takes the key by hand.
+
+`task dev` (the Worker under `alchemy dev`) and the deploy tasks need Cloudflare credentials and are not declared as services.
+
+## In an orb
+
+- `.agents/setup` installs the locked dependencies and puts `task` on `PATH`; `.agents/resume` sets `vm.overcommit_memory=1` (see Commands). Their logs are in `~/.cache/amp/logs/setup.log` and `resume.log`.
+- Secrets come from Amp settings, never from a file in the repository. `PECIA_ORCHESTRATOR_KEY_STAGING`, `PECIA_ORCHESTRATOR_KEY_PROD` and the `SAIAAI_CLOUDFLARE_*` credentials are Joe's personal secrets: a thread he owns has them, `.agents/setup` and other people's threads do not. `task check` and the viewer service need none of them.
+- `.pecia/` holds wiki session checkouts (`using-pecia-wiki`) and `.amp/in/` holds scratch files; both are ignored by git.
+
+## Do not
+
+- Do not push to `main` or merge a pull request without Joe's say: the push deploys staging and then prod. The one exception is the `reviewing-dependency-updates` skill, under its own conditions.
+- Do not run `task deploy:prod`, or `task deploy:staging` outside that CI run. Try a change on a preview stage (`task deploy:preview PULL_REQUEST=<n>`) and destroy it afterwards (`task destroy:preview`).
+- Do not print or commit a key or token, and do not write one into the wiki.
+- Do not disable a lint rule or weaken a check to get `task check` to pass.
 
 ## Effect style
 
