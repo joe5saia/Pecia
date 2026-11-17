@@ -35,6 +35,12 @@ The deploy jobs read from GitHub:
 
 A stage's first deploy creates its Worker. For some seconds after it, the Worker's URL can answer `error code: 1104` with status 500: Cloudflare has not finished publishing the script.
 
+A preview stage is smoke-checked the same way with its URL, which `task deploy:preview` prints: `task smoke STAGE=pr-<n> URL=<url>`.
+
+### Dependency updates
+
+Dependabot (`.github/dependabot.yml`) checks the pnpm workspace and the GitHub Actions every Monday. Each ecosystem's minor and patch updates come in one pull request; each major update comes in its own. An Amp orb spawner on Joe's account starts a thread in the pecia project for every pull request `dependabot[bot]` opens. The thread follows the project skill `reviewing-dependency-updates`: it reads the release notes, fixes pecia on the pull request's branch, runs `task check` and a smoke check of a preview deploy, and when that is safe merges the pull request and follows the deploy to prod. Otherwise it comments on the pull request and asks Joe in the thread. Pause or delete the spawner under Event Subscriptions in Amp's GitHub settings.
+
 ## Run a session
 
 The orchestrator holds the stage's orchestrator key and sends it as `Authorization: Bearer <key>`; the sandbox never sees it.

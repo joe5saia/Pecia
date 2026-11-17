@@ -161,15 +161,16 @@ tasks:
     cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_PROD" pnpm exec alchemy deploy --stage prod --yes --no-input
 
   smoke:
-    desc: Check that a deployed stage (STAGE, staging or prod) answers with its own orchestrator key
+    desc: Check that a deployed stage (STAGE, staging or prod; or a preview with STAGE=pr-<n> URL=<its Worker URL>) answers with its own orchestrator key
     vars:
       STAGE: '{{.STAGE | default "staging"}}'
       KEY_VAR: '{{if eq .STAGE "prod"}}PECIA_ORCHESTRATOR_KEY_PROD{{else}}PECIA_ORCHESTRATOR_KEY_STAGING{{end}}'
       # The stages' Worker URLs, as in .agents/skills/using-pecia-wiki/scripts/wiki-session.
-      URL: '{{if eq .STAGE "prod"}}https://pecia-controlworker-prod-3qj2wdcevov3iq5y.joe-9a0.workers.dev{{else if eq .STAGE "staging"}}https://pecia-controlworker-staging-5psyjyjp2wm6ohvr.joe-9a0.workers.dev{{end}}'
+      # A preview's URL is the `url` output `task deploy:preview` prints.
+      URL: '{{if .URL}}{{.URL}}{{else if eq .STAGE "prod"}}https://pecia-controlworker-prod-3qj2wdcevov3iq5y.joe-9a0.workers.dev{{else if eq .STAGE "staging"}}https://pecia-controlworker-staging-5psyjyjp2wm6ohvr.joe-9a0.workers.dev{{end}}'
     preconditions:
       - sh: '[ -n "{{.URL}}" ]'
-        msg: "STAGE must be staging or prod"
+        msg: "STAGE must be staging or prod, or pass the preview's URL"
       - sh: '[ -n "${{.KEY_VAR}}" ]'
         msg: "{{.KEY_VAR}} is not set"
     # Listing a workspace that is never created must answer 401 without the key

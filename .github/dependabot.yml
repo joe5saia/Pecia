@@ -1,0 +1,36 @@
+# Weekly version updates for every ecosystem in the repository. Minor and patch
+# updates of an ecosystem arrive together in one pull request; each major update
+# gets its own. Opening one starts an Amp orb that reviews, fixes and lands it
+# (docs/operations.md, "Dependency updates").
+version: 2
+
+updates:
+  # pnpm workspace: the root package.json and every packages/* package, one
+  # lockfile. Versions stay pinned exactly.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/New_York
+    # pnpm refuses versions younger than its minimum release age (one day, with
+    # oxlint and oxfmt excluded in pnpm-workspace.yaml), also when it installs
+    # from the lockfile. Waiting longer than that keeps the lockfile installable.
+    cooldown:
+      default-days: 3
+    groups:
+      non-major:
+        update-types: [minor, patch]
+
+  # The workflows and the composite setup action, pinned to commit SHAs.
+  - package-ecosystem: github-actions
+    directories: [/, /.github/actions/*]
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/New_York
+    groups:
+      non-major:
+        update-types: [minor, patch]
