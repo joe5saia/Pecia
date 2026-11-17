@@ -111,7 +111,7 @@ git -C docs remote set-url --push upstream no-push   # pushes to main always fai
 
 Two small programs (Effect, bundled as single Node scripts) are installed in the sandbox image:
 
-- **`wiki-credential`** implements git's credential-helper protocol. On `get` it reads `protocol`, `host` and `path` from stdin, fetches tokens from `POST /sessions/:id/token` (cached until shortly before `expiresAt`), and prints `username=x` and `password=<secret>`: the fork write token for the fork's path, the main read token for main's path. It strips the `?expires=…` suffix and ignores `store` and `erase`.
+- **`wiki-credential`** implements git's credential-helper protocol. On `get` it reads `protocol`, `host` and `path` from stdin, fetches the session's tokens from `POST /sessions/:id/token` on every call, and prints `username=x` and `password=<secret>`: the fork write token for the fork's path, the main read token for main's path. It strips the `?expires=…` suffix and ignores `store` and `erase`. It caches nothing: the workspace Durable Object keeps the tokens and decides when to replace them. So once the session has ended, every git operation shows the service's "has ended" error. A cache in the sandbox would keep handing git a revoked token, which Artifacts refuses with 403, and git drops a credential only after a 401.
 - **`wiki-land`** calls `POST /sessions/:id/land`, prints `landed <sha>`, `behind` or `nothing to land`, and exits 0 for landed or nothing to land, 2 for behind, 1 on error.
 
 Tokens never appear in remote URLs, git config or files in the repo.
@@ -164,6 +164,7 @@ One per workspace, addressed by workspace name. Every land for the workspace run
 | Table | Columns |
 | --- | --- |
 | `sessions` | `session_id`, `fork_name`, `session_key_hash`, `agent`, `model`, `state` (active, closed, parked, deleted), `created_at`, `last_active_at`, `ended_at` |
+| `session_tokens` | `session_id`, `fork_write_token`, `main_read_token`, `expires_at`: an active session's current tokens, handed out until five minutes before they expire. Ending the session deletes the row. |
 | `lands` | `session_id`, `from_sha`, `to_sha`, `landed_at` |
 
 Its alarm wakes periodically, ends sessions idle longer than a configurable timeout (closed if nothing is unlanded, otherwise parked), deletes closed forks ten minutes after they were closed, and reschedules itself. A fork is not deleted when its session ends: Artifacts cannot make a repo read-only or delete it only if its head is unchanged, so a push already under way could finish after the head was read. If one did, the fork is parked instead. Only a hash of each session key is stored.
@@ -188,7 +189,7 @@ Its alarm wakes periodically, ends sessions idle longer than a configurable time
 ## Naming, tokens and cleanup
 
 - **Names:** main repo `<workspace>`; forks `<workspace>--<session-id>`. Artifacts recommends stable identifiers like session ID in repo names to avoid collisions and ease cleanup.
-- **Tokens:** fork write and main read only, minted for one hour and re-minted through the credential helper. Artifacts allows lifetimes from 60 seconds to one year (default 24 hours) and advises the narrowest token for the shortest time, fresh for each session.
+- **Tokens:** fork write and main read only, minted for one hour and replaced by the service in their last five minutes. Artifacts allows lifetimes from 60 seconds to one year (default 24 hours) and advises the narrowest token for the shortest time, fresh for each session.
 - **Cleanup:** forks persist until deleted, so every session must end in delete or park, with its fork tokens revoked. The Durable Object's alarm expires idle sessions.
 - **Namespaces:** separate staging and prod from the start.
 
@@ -218,7 +219,7 @@ Answered from the Artifacts and Workers documentation as of November 2026. Where
 | Question | What the docs say | Effect on the design |
 | --- | --- | --- |
 | Does Artifacts reject forced or non-fast-forward pushes? | Not documented. Pushes use standard git receive-pack (protocol v1); no branch protection is described. | No dependency: only the Worker ever holds a write token for main, and it never force-pushes. A forced push to an agent's own fork affects only that agent. |
-| Token lifetime and refresh | TTL from 60 seconds to 31,536,000 seconds (one year); default 86,400 (24 hours). Tokens can be revoked by token or ID. | Mint one-hour tokens and refresh them through the credential helper. Revoke a session's fork tokens when the session ends. |
+| Token lifetime and refresh | TTL from 60 seconds to 31,536,000 seconds (one year); default 86,400 (24 hours). Tokens can be revoked by token or ID. | Mint one-hour tokens and replace them shortly before they expire. Revoke a session's fork tokens when the session ends. |
 | Is a fork billed at full size? | Not documented. Storage is billed across all repos, and a fork's response reports how many objects it copied. | Budget every fork at the wiki's full size and delete forks promptly. Example: 100 concurrent forks of a 50 MB wiki is about 5 GB, roughly $2 a month beyond the included 1 GB. |
 | Memory for in-Worker landing | A Worker isolate has 128 MB of memory, shared across the requests it serves. Artifacts repos can grow to 1 GB. | A land holds only the commits main lacks, never the wiki, so the wiki's size does not matter. One land's commits are bounded by the landing limits ([operations.md](operations.md), "Landing limits"), set from measured peak memory; a land over them is refused. |
 | Do forks carry `refs/notes/*`? | Not documented; `defaultBranchOnly: true` suggests only the default branch is copied. | Not needed: notes live only on the main repo. Landing fetches main's notes ref before adding a note (Landing, step 8). |
@@ -230,7 +231,7 @@ Answered from the Artifacts and Workers documentation as of November 2026. Where
 3. An agent runs `wiki-land` without merging after main moved: `behind`.
 4. A sandbox is killed mid-session: the fork keeps every pushed commit, and the idle alarm parks it.
 5. An agent runs `git push upstream`: it fails, because the push URL is disabled and the sandbox holds no main write token.
-6. A token expires mid-session: the credential helper re-mints it and git keeps working.
+6. A token expires mid-session: the service hands out a new one and git keeps working.
 7. A session ends with nothing unlanded: its fork is closed, then deleted.
 
 ## Build plan

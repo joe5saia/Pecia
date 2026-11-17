@@ -120,6 +120,23 @@ describe("sessions", () => {
     expect(await artifacts.git("scopes", "rev-list", "--count", "main")).toBe("1");
   });
 
+  it("hands a sandbox the same tokens until they are about to expire, then new ones", async () => {
+    const wiki = await makeWiki("reuse");
+    const a = await openSession(wiki);
+    const mint = () => wiki.run(wiki.workspace.mintTokens(a.sessionId, a.sessionKey));
+
+    expect(await mint()).toEqual(a.tokens);
+    // The tokens live an hour and are replaced in their last five minutes.
+    wiki.advance(54 * 60_000);
+    expect(await mint()).toEqual(a.tokens);
+    wiki.advance(2 * 60_000);
+    const renewed = await mint();
+    expect(renewed.forkWriteToken).not.toBe(a.tokens.forkWriteToken);
+    expect(renewed.mainReadToken).not.toBe(a.tokens.mainReadToken);
+    expect(await mint()).toEqual(renewed);
+    expect(wiki.events().filter((event) => event["event"] === "tokens.minted")).toHaveLength(2);
+  });
+
   it("reports an Artifacts outage as ArtifactsUnavailable and leaves no fork without a session", async () => {
     const wiki = await makeWiki("outage");
     artifacts.setUnavailable(true);
@@ -143,7 +160,9 @@ describe("sessions", () => {
     const a = await openSession(wiki);
     const unlanded = await a.commit("a.md", "unlanded\n");
 
-    // The mint has checked the session and is about to create the fork token.
+    // The stored tokens are about to expire, so the next request mints. It has
+    // checked the session and is about to create the fork token.
+    wiki.advance(56 * 60_000);
     const held = artifacts.hold("mintToken", forkOf(a), "before");
     const minting = wiki.run(wiki.workspace.mintTokens(a.sessionId, a.sessionKey));
     await held.reached;

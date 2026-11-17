@@ -28,8 +28,8 @@ export interface Session {
 
 export class ToolError extends Data.TaggedError("ToolError")<{ readonly message: string }> {}
 
-/** Where setup.sh keeps the session and the credential helper caches tokens. Never inside the wiki checkout. */
-export const stateDir = (): string =>
+/** Where setup.sh keeps the session. Never inside the wiki checkout. */
+const stateDir = (): string =>
   process.env["PECIA_HOME"] ?? join(process.env["XDG_CONFIG_HOME"] ?? join(homedir(), ".config"), "pecia");
 
 const variables = {

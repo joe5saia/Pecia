@@ -31,7 +31,7 @@ export const WorkspaceObjectLive = WorkspaceObject.make(
   Effect.gen(function* () {
     const artifacts = yield* Cloudflare.Artifacts.ReadWriteNamespace(Wikis);
     const state = yield* Cloudflare.DurableObjectState;
-    // A session with no token mint or land for this long is ended, e.g. PECIA_IDLE_TIMEOUT="30 minutes".
+    // A session with no token request or land for this long is ended, e.g. PECIA_IDLE_TIMEOUT="30 minutes".
     const idleTimeout = yield* Config.Duration("PECIA_IDLE_TIMEOUT").pipe(
       Config.withDefault(Duration.hours(2)),
       Effect.orDie,

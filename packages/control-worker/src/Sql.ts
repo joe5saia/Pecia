@@ -15,7 +15,7 @@ export class Sql extends Context.Service<
   }
 >()("pecia/Sql") {}
 
-/** Every statement is idempotent, so the schema is applied whenever a workspace is created. */
+/** Every statement is idempotent, so the schema is applied when a workspace is created and whenever its object starts. */
 export const schema: ReadonlyArray<string> = [
   // One row: the workspace this database belongs to. `base_sha` is the commit
   // main pointed at when the workspace was created.
@@ -37,6 +37,15 @@ export const schema: ReadonlyArray<string> = [
     last_active_at INTEGER NOT NULL,
     -- When the session ended: its fork's tokens were revoked and none is issued since.
     ended_at INTEGER
+  )`,
+  // The tokens an active session's sandbox is handed, kept until shortly before
+  // they expire so every git operation does not mint new ones. Ending the
+  // session revokes them and deletes the row.
+  `CREATE TABLE IF NOT EXISTS session_tokens (
+    session_id TEXT PRIMARY KEY,
+    fork_write_token TEXT NOT NULL,
+    main_read_token TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS lands (
     session_id TEXT NOT NULL,

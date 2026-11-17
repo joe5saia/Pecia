@@ -49,6 +49,10 @@ export interface Workspace {
   readonly endSession: (
     sessionId: SessionId,
   ) => Effect.Effect<EndSessionResponse, NotFound | SessionNotActive | ArtifactsUnavailable>;
+  /**
+   * The session's tokens: the ones handed out before until shortly before they
+   * expire, then new ones. A sandbox asks on every git operation.
+   */
   readonly mintTokens: (
     sessionId: SessionId,
     sessionKey: string,
@@ -67,15 +71,17 @@ export interface Workspace {
 export class WorkspaceConfig extends Context.Service<
   WorkspaceConfig,
   {
-    /** A session with no token mint or land for this long is ended. */
+    /** A session with no token request or land for this long is ended. */
     readonly idleTimeoutMs: number;
     /** Ask for `sweep` to run at this time, replacing any earlier request; `undefined` cancels it. */
     readonly wakeAt: (timeMs: number | undefined) => Effect.Effect<void>;
   }
 >()("pecia/WorkspaceConfig") {}
 
-/** Fork and main tokens handed to a sandbox live this long; the credential helper re-mints them. */
+/** Fork and main tokens handed to a sandbox live this long. */
 const sandboxTokenTtlSeconds = 3600;
+/** A sandbox is handed new tokens once its tokens expire in less than this, so none expires mid-push. */
+const sandboxTokenMarginMs = 5 * 60_000;
 /** The tokens a land uses are revoked when it finishes; this bounds them if that fails. */
 const landTokenTtlSeconds = 300;
 /** A sweep that could not end or settle a session tries again after this long. */
@@ -111,6 +117,12 @@ const SessionRow = Schema.Struct({
   ended_at: Schema.NullOr(Schema.Number),
 });
 type SessionRow = typeof SessionRow.Type;
+
+const TokensRow = Schema.Struct({
+  fork_write_token: Schema.String,
+  main_read_token: Schema.String,
+  expires_at: Schema.Number,
+});
 
 const NextRow = Schema.Struct({ next: Schema.NullOr(Schema.Number) });
 
@@ -164,6 +176,11 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
   // finds the session ended. It is a lock of its own so that a mint does not
   // wait for another session's land. Where both are held, `lock` is taken first.
   const access = yield* Semaphore.make(1);
+
+  const applySchema = Effect.forEach(schema, (statement) => sql.exec(statement), { discard: true });
+  // A workspace created before a table was added gets it here.
+  const created = yield* sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspace'");
+  if (created.length > 0) yield* applySchema;
 
   /** Run a query and decode its rows. SQLite returns them untyped; one that doesn't match its table is a defect. */
   const select = <S extends Schema.Top>(row: S, query: string, ...bindings: ReadonlyArray<SqlValue>) =>
@@ -302,6 +319,7 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     access.withPermit(
       Effect.gen(function* () {
         yield* repos.revokeAllTokens(session.fork_name);
+        yield* sql.exec("DELETE FROM session_tokens WHERE session_id = ?", session.session_id);
         const forkHead = yield* repos.head(session.fork_name);
         const state = (yield* isLanded(forkHead, base)) ? "closed" : "parked";
         yield* sql.exec(
@@ -350,7 +368,7 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
         const mainRemote = yield* repos.ensure(name);
         const existing = yield* repos.head(name);
         const baseSha = existing ?? (yield* seedMain(name, mainRemote));
-        yield* Effect.forEach(schema, (statement) => sql.exec(statement), { discard: true });
+        yield* applySchema;
         const inserted = yield* sql.exec(
           "INSERT INTO workspace (name, main_remote, base_sha, created_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING name",
           name,
@@ -426,25 +444,63 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
       }),
     );
 
+  /** New tokens for a session's sandbox, stored to be handed out until shortly before they expire. */
+  const mintSandboxTokens = (
+    session: SessionRow,
+    base: WorkspaceRow,
+  ): Effect.Effect<typeof TokensRow.Type, ArtifactsUnavailable> =>
+    Effect.gen(function* () {
+      // The only tokens a sandbox ever holds: write to its fork, read from main.
+      const [fork, main] = yield* Effect.all(
+        [
+          repos.mintToken(session.fork_name, "write", sandboxTokenTtlSeconds),
+          repos.mintToken(base.name, "read", sandboxTokenTtlSeconds),
+        ],
+        { concurrency: 2 },
+      );
+      const tokens = {
+        fork_write_token: fork.plaintext,
+        main_read_token: main.plaintext,
+        // By the service's clock, which also decides when to replace them; the
+        // replacement margin covers a difference from Artifacts' clock.
+        expires_at: (yield* Clock.currentTimeMillis) + sandboxTokenTtlSeconds * 1000,
+      };
+      yield* sql.exec(
+        `INSERT INTO session_tokens (session_id, fork_write_token, main_read_token, expires_at)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT (session_id) DO UPDATE SET fork_write_token = excluded.fork_write_token,
+            main_read_token = excluded.main_read_token, expires_at = excluded.expires_at`,
+        session.session_id,
+        tokens.fork_write_token,
+        tokens.main_read_token,
+        tokens.expires_at,
+      );
+      yield* record("tokens.minted", { workspace: base.name, sessionId: session.session_id });
+      return tokens;
+    });
+
   const mintTokens: Workspace["mintTokens"] = (sessionId, sessionKey) =>
-    // The session is checked and the tokens are created in one step that `end` cannot interleave with.
+    // The session is checked and its tokens are read or created in one step
+    // that `end` cannot interleave with, so a session that has ended is never
+    // handed a token: `end` deletes the stored ones with the revoke.
     access.withPermit(
       Effect.gen(function* () {
         const { session, base } = yield* authorize(sessionId, sessionKey);
-        // The only tokens a sandbox ever holds: write to its fork, read from main.
-        const [fork, main] = yield* Effect.all(
-          [
-            repos.mintToken(session.fork_name, "write", sandboxTokenTtlSeconds),
-            repos.mintToken(base.name, "read", sandboxTokenTtlSeconds),
-          ],
-          { concurrency: 2 },
-        );
         yield* touch(sessionId);
-        yield* record("tokens.minted", { workspace: base.name, sessionId });
+        const now = yield* Clock.currentTimeMillis;
+        const [stored] = yield* select(
+          TokensRow,
+          "SELECT fork_write_token, main_read_token, expires_at FROM session_tokens WHERE session_id = ?",
+          sessionId,
+        );
+        const tokens =
+          stored !== undefined && stored.expires_at - sandboxTokenMarginMs > now
+            ? stored
+            : yield* mintSandboxTokens(session, base);
         return {
-          forkWriteToken: fork.plaintext,
-          mainReadToken: main.plaintext,
-          expiresAt: fork.expiresAt < main.expiresAt ? fork.expiresAt : main.expiresAt,
+          forkWriteToken: tokens.fork_write_token,
+          mainReadToken: tokens.main_read_token,
+          expiresAt: new Date(tokens.expires_at).toISOString(),
         };
       }),
     );

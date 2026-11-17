@@ -61,6 +61,8 @@ export interface FakeArtifacts {
 export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
   const root = await mkdtemp(join(tmpdir(), "pecia-artifacts-"));
   const tokens = new Map<string, Token>();
+  /** The secrets of revoked tokens, which Artifacts still recognizes. */
+  const revoked = new Set<string>();
   let clockOffsetMs = 0;
   let unavailable = false;
   const holds: Array<{
@@ -79,17 +81,19 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
       () => false,
     );
 
-  const authorize = (request: IncomingMessage, repo: string, needsWrite: boolean): boolean => {
+  /**
+   * Like Artifacts on staging: 401 for no token or one it never issued, 403 for
+   * one it issued that is revoked, expired, for another repo or read-only on a
+   * push. Git asks its credential helper to `erase` only after a 401.
+   */
+  const authorize = (request: IncomingMessage, repo: string, needsWrite: boolean): 200 | 401 | 403 => {
     const header = request.headers.authorization;
-    if (header === undefined || !header.startsWith("Basic ")) return false;
+    if (header === undefined || !header.startsWith("Basic ")) return 401;
     const [, password] = Buffer.from(header.slice(6), "base64").toString().split(":");
+    if (password !== undefined && revoked.has(password)) return 403;
     const token = [...tokens.values()].find((candidate) => candidate.secret === password);
-    return (
-      token !== undefined &&
-      token.repo === repo &&
-      token.expiresAtMs > now() &&
-      (!needsWrite || token.scope === "write")
-    );
+    if (token === undefined) return 401;
+    return token.repo === repo && token.expiresAtMs > now() && (!needsWrite || token.scope === "write") ? 200 : 403;
   };
 
   const serve = (request: IncomingMessage, response: ServerResponse) => {
@@ -97,8 +101,13 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
     const repo = /^\/([^/]+)\.git\//.exec(url.pathname)?.[1];
     const needsWrite =
       url.searchParams.get("service") === "git-receive-pack" || url.pathname.endsWith("/git-receive-pack");
-    if (repo === undefined || !authorize(request, repo, needsWrite)) {
-      response.writeHead(401, { "www-authenticate": 'Basic realm="artifacts"' }).end();
+    const verdict = repo === undefined ? 401 : authorize(request, repo, needsWrite);
+    if (verdict === 401) {
+      response.writeHead(401, { "www-authenticate": 'Basic realm="artifacts"' }).end("Authentication required");
+      return;
+    }
+    if (verdict === 403) {
+      response.writeHead(403).end("Invalid or expired token");
       return;
     }
     const chunks: Buffer[] = [];
@@ -150,6 +159,13 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const origin = `http://127.0.0.1:${portOf(server)}`;
   const remoteOf = (repo: string) => `${origin}/${repo}.git`;
+
+  const revoke = (tokenId: string) => {
+    const token = tokens.get(tokenId);
+    if (token === undefined) return;
+    revoked.add(token.secret);
+    tokens.delete(tokenId);
+  };
 
   const control = <A>(
     operation: ControlOperation,
@@ -213,10 +229,10 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
         tokens.set(token.id, token);
         return { id: token.id, plaintext, expiresAt: new Date(expiresAtMs).toISOString() };
       }),
-    revokeToken: (name, tokenId) => control("revokeToken", name, async () => void tokens.delete(tokenId)),
+    revokeToken: (name, tokenId) => control("revokeToken", name, async () => revoke(tokenId)),
     revokeAllTokens: (name) =>
       control("revokeAllTokens", name, async () => {
-        for (const token of tokens.values()) if (token.repo === name) tokens.delete(token.id);
+        for (const token of tokens.values()) if (token.repo === name) revoke(token.id);
       }),
   };
 

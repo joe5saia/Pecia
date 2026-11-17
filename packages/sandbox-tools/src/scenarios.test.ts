@@ -8,7 +8,7 @@ import {
 } from "@pecia/control-worker/testing";
 import { CreateSessionResponse, ListSessionsResponse, TokenResponse, WorkspaceName } from "@pecia/wiki-api";
 import * as Schema from "effect/Schema";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,7 +52,7 @@ const orchestrator = async (method: string, path: string, body?: unknown, key = 
 
 const decodeSession = Schema.decodeUnknownSync(CreateSessionResponse);
 const decodeSessions = Schema.decodeUnknownSync(ListSessionsResponse);
-const decodeTokens = Schema.decodeUnknownSync(Schema.fromJsonString(TokenResponse));
+const decodeTokens = Schema.decodeUnknownSync(TokenResponse);
 
 const createWorkspace = async (name: string) => {
   const created = await orchestrator("POST", "/workspaces", { name });
@@ -104,7 +104,12 @@ const openSandbox = async (workspace: string) => {
     await sandbox.git("merge", "--no-edit", "upstream/main");
     await sandbox.git("push", "origin", "HEAD:main");
   };
-  return { ...session, sandbox, commit, land, mergeUpstream };
+  /** The tokens the service hands this sandbox now, as `wiki-credential` gets them. */
+  const tokens = async () =>
+    decodeTokens(
+      (await orchestrator("POST", `/sessions/${session.sessionId}/token`, undefined, session.sessionKey)).body,
+    );
+  return { ...session, sandbox, commit, land, mergeUpstream, tokens };
 };
 
 const forkName = (session: { forkRemote: string }) =>
@@ -197,32 +202,18 @@ describe("the test scenarios of docs/mvp.md", () => {
     expect(await wiki.head()).toBe(before);
   });
 
-  it("6. a token expires mid-session: the credential helper re-mints it and git keeps working", async () => {
+  it("6. a token expires mid-session: the service hands out a new one and git keeps working", async () => {
     await createWorkspace("s6");
     const a = await openSandbox("s6");
     await a.commit("a.md", "first\n");
-    const cache = join(a.sandbox.home, ".config", "pecia", `tokens-${a.sessionId}.json`);
-    const first = decodeTokens(await readFile(cache, "utf8"));
+    const first = await a.tokens();
 
-    // Two hours pass: on the service, where the one-hour tokens expire, and in the sandbox.
+    // Two hours pass, and the one-hour tokens the sandbox was using expire.
     service.workspace(WorkspaceName.make("s6")).advance(2 * 60 * 60_000);
-    await writeFile(cache, JSON.stringify({ ...first, expiresAt: new Date(Date.now() - 60 * 60_000).toISOString() }));
 
     await a.commit("a.md", "second\n");
     await a.sandbox.git("fetch", "upstream");
-    const second = decodeTokens(await readFile(cache, "utf8"));
-    expect(second.forkWriteToken).not.toBe(first.forkWriteToken);
-  });
-
-  it("6b. a token rejected early costs one failed command, then git works again", async () => {
-    await createWorkspace("s6b");
-    const a = await openSandbox("s6b");
-    // The service's tokens expire while the sandbox still believes its cache.
-    service.workspace(WorkspaceName.make("s6b")).advance(2 * 60 * 60_000);
-
-    const rejected = await a.sandbox.exec("git", ["-C", "docs", "fetch", "upstream"]);
-    expect(rejected.exitCode).not.toBe(0);
-    await a.sandbox.git("fetch", "upstream");
+    expect((await a.tokens()).forkWriteToken).not.toBe(first.forkWriteToken);
   });
 
   it("7. a session ends with nothing unlanded: its fork is closed, then deleted", async () => {
@@ -246,24 +237,28 @@ describe("the test scenarios of docs/mvp.md", () => {
 });
 
 describe("the sandbox", () => {
-  it("keeps tokens and the session key out of remote URLs, git config and the wiki checkout", async () => {
+  it("keeps tokens and the session key out of remote URLs, git config and the wiki checkout, and writes no token", async () => {
     await createWorkspace("secrets");
     const a = await openSandbox("secrets");
     await a.commit("a.md", "from a\n");
-    const cache = join(a.sandbox.home, ".config", "pecia", `tokens-${a.sessionId}.json`);
-    const tokens = decodeTokens(await readFile(cache, "utf8"));
-    const secrets = [tokens.forkWriteToken, tokens.mainReadToken, a.sessionKey].map(
+    const tokens = await a.tokens();
+    const tokenSecrets = [tokens.forkWriteToken, tokens.mainReadToken].map(
       (secret) => secret.split("?expires=")[0] ?? secret,
     );
+    const secrets = [...tokenSecrets, a.sessionKey];
+    const find = async (pattern: readonly string[], where: string) =>
+      (await a.sandbox.exec("grep", ["--recursive", "--files-with-matches", "--regexp", pattern.join("\\|"), where]))
+        .stdout;
 
     const places = [
       await readFile(join(a.sandbox.home, ".gitconfig"), "utf8"),
       await readFile(join(a.sandbox.docs, ".git", "config"), "utf8"),
       await a.sandbox.git("remote", "--verbose"),
-      (await a.sandbox.exec("grep", ["--recursive", "--files-with-matches", "--regexp", secrets.join("\\|"), "docs"]))
-        .stdout,
+      await find(secrets, "docs"),
     ].join("\n");
     for (const secret of secrets) expect(places).not.toContain(secret);
+    // The session key is kept for the tools; tokens are never written to disk.
+    expect(await find(tokenSecrets, ".")).toBe("");
   });
 
   it("is told that a parked session can no longer land", async () => {
@@ -279,6 +274,26 @@ describe("the sandbox", () => {
     expect(land.exitCode).toBe(1);
     expect(land.error).toBe(`wiki-land: session '${a.sessionId}' has ended (parked) and can no longer push or land`);
     expect((await a.sandbox.exec("git", ["-C", "docs", "push", "origin", "HEAD:main"])).exitCode).not.toBe(0);
+  });
+
+  it("is told on every push and fetch that a closed session has ended", async () => {
+    await createWorkspace("ended");
+    const a = await openSandbox("ended");
+    await a.commit("a.md", "from a\n");
+    expect((await a.land()).exitCode).toBe(0);
+    expect(await orchestrator("DELETE", `/sessions/${a.sessionId}`)).toMatchObject({ body: { state: "closed" } });
+
+    await a.sandbox.git("commit", "--allow-empty", "--message", "after the end");
+    const ended = `wiki-credential: session '${a.sessionId}' has ended (closed) and can no longer push or land`;
+    for (const attempt of [1, 2]) {
+      const push = await a.sandbox.exec("git", ["-C", "docs", "push", "origin", "HEAD:main"]);
+      expect(push.exitCode, `push ${attempt}`).not.toBe(0);
+      expect(push.stderr, `push ${attempt}`).toContain(ended);
+    }
+    // Main's read token outlives the session, but the sandbox is not handed it any more.
+    const fetch = await a.sandbox.exec("git", ["-C", "docs", "fetch", "upstream"]);
+    expect(fetch.exitCode).not.toBe(0);
+    expect(fetch.stderr).toContain(ended);
   });
 
   it("is told that its fork is too large to land", async () => {

@@ -14,7 +14,7 @@ task deploy:staging                         # or deploy:prod, or deploy:preview 
 
 Each stage has its own key, so a staging key never opens prod. The deploy task binds its stage's key to the Worker as the secret `PECIA_ORCHESTRATOR_KEY`. In Amp orbs both are Joe's personal secrets.
 
-`PECIA_IDLE_TIMEOUT` (default `2 hours`) sets how long a session may go without a token mint or a land before it is ended.
+`PECIA_IDLE_TIMEOUT` (default `2 hours`) sets how long a session may go without a git operation (each one asks for tokens) or a land before it is ended.
 
 A stage's first deploy creates its Worker. For some seconds after it, the Worker's URL can answer `error code: 1104` with status 500: Cloudflare has not finished publishing the script.
 
@@ -56,7 +56,7 @@ Ending a session revokes its fork's tokens and answers one of two states:
 
 A problem is an RFC 9457 body, `{ "type": "about:blank", "status", "title", "detail" }`, served as `application/problem+json`.
 
-After a 502 or 503 the call may or may not have been applied. Repeating it does no harm: creating a workspace and minting tokens repeat cleanly, a repeated land answers `nothing_to_land` if the first one landed, a repeated end answers 409 if the first one ended the session, and a repeated session create leaves an extra session for the idle timeout to end.
+After a 502 or 503 the call may or may not have been applied. Repeating it does no harm: creating a workspace and asking for tokens repeat cleanly, a repeated land answers `nothing_to_land` if the first one landed, a repeated end answers 409 if the first one ended the session, and a repeated session create leaves an extra session for the idle timeout to end.
 
 `wiki-land` and `wiki-credential` print the error's message to stderr and exit 1; neither retries.
 
@@ -95,7 +95,7 @@ There are three records of what happened, from the most to the least detailed.
 | --- | --- | --- |
 | `workspace.created` | A workspace is first created | `workspace`, `baseSha` |
 | `session.created` | A session and its fork are created | `workspace`, `sessionId`, `agent`, `model` |
-| `tokens.minted` | A sandbox mints tokens, about once every 55 minutes of git use | `workspace`, `sessionId` |
+| `tokens.minted` | The service mints new tokens for a sandbox, at most about once every 55 minutes of git use | `workspace`, `sessionId` |
 | `land` | Every `wiki-land` call that gets an answer | `workspace`, `sessionId`, `agent`, `model`, `status` (`landed`, `behind`, `nothing_to_land`), `mainSha`, `forkHead`; for `landed`, and for `behind` when the fork has main's head, also `packBytes`, `objects` and `inflatedBytes`: the size of the commits it fetched, which are those main lacked |
 | `land.refused` | A land is refused because the fork's new commits are over a landing limit | `workspace`, `sessionId`, `agent`, `model`, `limit`, `max`, `mainSha`, `forkHead` |
 | `session.ended` | A session is closed or times out | `workspace`, `sessionId`, `agent`, `model`, `state` (`closed`, `parked`), `reason` (`closed`, `idle`), `forkHead` |
