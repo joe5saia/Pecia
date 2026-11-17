@@ -1,0 +1,20 @@
+# Viewer
+
+The read-only web UI, served by the Control Worker as static assets. Its design is in `docs/viewer.md`; how to run it is in the root `AGENTS.md`, "Running the viewer".
+
+## Gotchas
+
+- The only tests are `paths.test.ts`. No test renders a component, so a change to a page or a style has to be looked at in a browser, in the states it touches.
+- It is type-checked as its own project with the DOM's types (`tsconfig.json` here). The root project excludes `src`, so an error here shows up only in the `-p packages/viewer` half of `task typecheck`.
+- `api.ts` is the one place effects are run. Components call `useRead` and `run`. `useRead` reads again only when its `key` changes, so the key has to name everything the call depends on.
+- A page and everything on it are read at one commit. `Page.sha` is that commit and goes into every read and file URL. `Page.at` is what the URL says and goes into links: it is `undefined` while reading main, so links stay on main.
+- A read of a commit hash is answered with `immutable` and the browser keeps it. While changing what the API answers for a hash, a reload does not ask again: empty the cache or read another commit.
+- Pages are written by agents. In `Markdown.tsx` the sanitizer runs before every other rehype plugin; a plugin moved in front of it sees unsanitized HTML. Ids from a page's own HTML come out prefixed `user-content-`, which `scrollToAnchor` allows for.
+- A new API path prefix has to be added in two places or the viewer's `index.html` is served instead: `runWorkerFirst` in `packages/control-worker/src/worker.ts` and the proxy list in `vite.config.ts`. A new viewer route must not start with one of those prefixes.
+- The development server shows staging's real wikis, not fixtures. `/__dev/log-me-in` exists only in `vite dev` and uses staging's key from the server's environment.
+
+## Debugging live
+
+- **In an orb.** `amp orb services ensure` prints the portal URL; `amp orb service logs viewer` has Vite's output, including proxy errors when staging does not answer.
+- **In the browser.** The network panel shows each read. A 401 sends the page to `/login`: the cookie `pecia_viewer` has expired or the stage's key changed. The cookie is `HttpOnly`, so it is visible in the browser's storage panel and not to scripts.
+- **On a deployed stage.** The assets are what `task build:viewer` wrote to `dist` at deploy time. `task smoke` checks that `/` serves the page. A page that loads but shows "Could not load this" is an API failure: look at the Worker's logs (`packages/control-worker/AGENTS.md`).

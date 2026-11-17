@@ -13,6 +13,8 @@ Agent wiki on Cloudflare Artifacts. The design is in `docs/mvp.md`.
 
 `docs/operations.md` covers deploying, running a session and monitoring usage.
 
+Each package has its own `AGENTS.md` with what is not obvious from its code ("Gotchas") and where its logs and state are ("Debugging live"). This file has the rules that hold everywhere; put a nuance of one package in that package's file.
+
 ## Commands
 
 Every command runs through Task (`Taskfile.yml`); package.json files have no `scripts`. Run `task --list` for all tasks.
@@ -56,22 +58,25 @@ The code follows the Effect v4 code style pages, starting at https://effect.webs
 - Write callbacks out: `Effect.map(effect, (a) => f(a))`, never `Effect.map(effect, f)`, and no `flow`. This also covers functions passed to our own helpers and to Node APIs.
 - One operation is data-first (`Effect.map(effect, f)`); two or more go in `.pipe(...)`.
 - Logic with several steps is an `Effect.gen`. Don't nest callbacks to hold a resource: acquire it with `Effect.acquireRelease` and close the scope with `Effect.scoped`.
-- Identifiers are branded schemas in `packages/wiki-api` (`WorkspaceName`, `SessionId`, `CommitSha`). Build one with `.make`, or decode it where it enters the program.
+- A named function whose body is a generator is `Effect.fn("Module.name")(function* (...) {})` for an operation of a module (`Workspace.land`, `Git.land`, `Reader.readTree`) and `Effect.fnUntraced(function* (...) {})` for a private helper. It is not an arrow function that returns `Effect.gen`. What used to follow in `.pipe` goes in as further arguments, such as `(effect) => lock.withPermit(effect)`. State the result with `Effect.fn.Return<A, E, R>` where it is not inferred from an interface. An inline callback whose parameter types come from where it is passed, such as an `HttpApiBuilder` handler, stays an arrow function around `Effect.gen`.
+- Identifiers are branded schemas: `WorkspaceName`, `SessionId`, `CommitSha` and `RemoteUrl` in `packages/wiki-api`, and the ones only the service uses, `ForkName` and `TokenId`, in `packages/control-worker/src/Repos.ts`. Build one with `.make`, or decode it where it enters the program. A repo is named by a `RepoName`: a workspace's name for its main repo, or `forkOf(sessionId)`.
 - Branch on the cases of a union with `Match` and an exhaustive finalizer (`Match.valueTags`, `Match.discriminatorsExhaustive`, `Match.exhaustive`). Plain `if` is for guards and early returns.
 - Loop over effects with `Effect.forEach` and combine independent ones with `Effect.all`.
 - A Node entry point runs through `NodeRuntime.runMain` (`runTool` in `packages/sandbox-tools`) and prints through `Console`.
+- Settings and secrets from the environment are read with `Config` (`worker.ts`, `WorkspaceObject.ts`, `packages/sandbox-tools/src/Session.ts`), a secret as `Config.Redacted`. `process.env` is for build and test tooling only (`vite.config.ts`, the test doubles).
 
 `task lint` enforces the parts of this that a linter without type information can see:
 
 - `pecia/no-tacit`: a function passed by name to an Effect combinator (`map`, `flatMap`, `catchTag`, ...) or as an option such as `catch` or `while`. It does not see our own helpers or Node APIs.
 - `pecia/prefer-data-first`: `x.pipe(oneStep)` with a step from `Effect` or `Layer`.
+- `pecia/prefer-fn`: `const f = (...) => Effect.gen(...)`, with or without a `.pipe` after it. It does not see a function that wraps the generator in something else, such as `lock.withPermit(Effect.gen(...))`.
 - `pecia/prefer-for-each`: `yield*` inside `for...of` or `for...in` in an `Effect.gen` or `Effect.fn`.
 - `pecia/match-unions`: `switch`, and an `else if` chain that compares one value with string literals.
 - `pecia/run-at-the-edge`: `Effect.run*` outside tests and `src/testing`.
 - Built-in rules: no `flow`, no nested ternary, no `as` assertion (`as const` is fine), no `console` and no `process.stdout` or `process.stderr`.
 - `typescript/no-unsafe-*`: no use of a value typed `any`. A dependency whose types do not resolve yields `any` without a compiler error; these rules are what reports it (see `packages/control-worker/src/artifacts.d.ts`).
 
-Fix what a rule reports instead of disabling it. A rule that reports good code has a bug: fix the rule and add the case to `packages/lint-rules/src/index.test.ts`. Branded identifiers, `Effect.gen` over nested callbacks and `Effect.acquireRelease` are not checked; review for them.
+Fix what a rule reports instead of disabling it. A rule that reports good code has a bug: fix the rule and add the case to `packages/lint-rules/src/index.test.ts`. Branded identifiers, `Effect.gen` over nested callbacks, `Effect.acquireRelease` and `Config` over `process.env` are not checked; review for them.
 
 ## Errors
 
@@ -89,7 +94,7 @@ The Alchemy tasks (`dev`, `plan`, `deploy:*`) need the stage's orchestrator API 
 
 Tests run the real workspace logic and real `git` against bare repos served by `git http-backend` (`src/testing/FakeArtifacts.ts`); nothing in `task check` calls Cloudflare.
 
-A test file sits beside its source as `<Name>.test.ts` and imports `describe`, `it` and `expect` from `@effect/vitest`, never from `vitest`. A test of an effect is an `it.effect`, which runs on a `TestClock` that starts at 0: move it with `TestClock.adjust` from `effect/testing/TestClock`. The workspace tests move time with the clock of `src/testing/TestWorkspace.ts` instead, which also expires the fake Artifacts tokens. No task reports coverage; to see whether a module is tested, search the test files for its name.
+A test file sits beside its source as `<Name>.test.ts` and imports `describe`, `it` and `expect` from `@effect/vitest`, never from `vitest`. A test of an effect is an `it.effect`: it yields the effect, takes an expected failure with `Effect.flip`, and runs two calls at once with `Effect.forkChild` or `Effect.all`. Its helpers are effects too; a promise from a test double is wrapped once, in the helper, with `Effect.promise`. `it.effect` runs on a `TestClock` that starts at 0: move it with `TestClock.adjust` from `effect/testing/TestClock`, and use `it.live` for the rare test that has to wait in real time. The workspace tests move time with the clock of `src/testing/TestWorkspace.ts` instead, which also expires the fake Artifacts tokens. A test that drives the service from outside, with the built tools and HTTP (`packages/sandbox-tools/src/scenarios.test.ts`), is a plain `it` with promises. No task reports coverage; to see whether a module is tested, search the test files for its name.
 
 pnpm does not hoist: a package's dependencies, such as `effect`, are in `packages/<name>/node_modules`, and the root `node_modules` has only the root's tools.
 
