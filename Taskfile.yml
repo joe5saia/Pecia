@@ -150,7 +150,7 @@ tasks:
       vars: [PECIA_ORCHESTRATOR_KEY_STAGING]
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
-    cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_STAGING" pnpm exec alchemy deploy --stage staging
+    cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_STAGING" pnpm exec alchemy deploy --stage staging --yes --no-input
 
   deploy:prod:
     desc: Deploy the prod stage
@@ -158,4 +158,4 @@ tasks:
       vars: [PECIA_ORCHESTRATOR_KEY_PROD]
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
-    cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_PROD" pnpm exec alchemy deploy --stage prod
+    cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_PROD" pnpm exec alchemy deploy --stage prod --yes --no-input
