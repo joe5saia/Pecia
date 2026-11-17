@@ -30,7 +30,7 @@ The deploy jobs read from GitHub:
 | `PECIA_ORCHESTRATOR_KEY_STAGING` | Secret | Environment `staging` |
 | `PECIA_ORCHESTRATOR_KEY_PROD` | Secret | Environment `production` |
 
-The Cloudflare account ID is in the workflow. The Alchemy state is in the `pecia-state` Worker, so a deploy from CI and one from an orb see the same state.
+`CLOUDFLARE_API_TOKEN` is the account token "Pecia GitHub Actions deploy", with Workers Scripts Write, Artifacts Write, Secrets Store Write (Alchemy keeps its state store's credentials there) and Account Settings Read. The Cloudflare account ID is in the workflow. The Alchemy state is in the `pecia-state` Worker, so a deploy from CI and one from an orb see the same state.
 
 A stage's first deploy creates its Worker. For some seconds after it, the Worker's URL can answer `error code: 1104` with status 500: Cloudflare has not finished publishing the script.
 
