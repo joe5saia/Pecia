@@ -14,6 +14,7 @@ describe("WikiApi", () => {
       ),
     );
     // 400 and 500 come from ProblemDetails, 401 from each group's auth and 503 from reaching the workspace.
+    // Reads and login never reach a workspace, so they have no 503.
     expect(Object.fromEntries(declared)).toEqual({
       "POST /workspaces": "200 400 401 500 502 503",
       "POST /workspaces/{ws}/sessions": "200 400 401 404 500 502 503",
@@ -21,6 +22,12 @@ describe("WikiApi", () => {
       "DELETE /sessions/{id}": "200 400 401 404 409 500 502 503",
       "POST /sessions/{id}/token": "200 400 401 404 409 500 502 503",
       "POST /sessions/{id}/land": "200 400 401 404 409 422 500 502 503",
+      "GET /workspaces": "200 400 401 500 502",
+      "GET /workspaces/{ws}/tree": "200 400 401 404 500 502",
+      "GET /workspaces/{ws}/file": "200 400 401 404 500 502",
+      "GET /workspaces/{ws}/history": "200 400 401 404 500 502",
+      "POST /auth/login": "200 400 401 500",
+      "POST /auth/logout": "204 400 500",
     });
   });
 });

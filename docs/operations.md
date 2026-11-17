@@ -1,6 +1,6 @@
 # Operating pecia
 
-How to deploy the Control Worker, run a session and see how the wiki is used. The design is in [mvp.md](mvp.md).
+How to deploy the Control Worker, run a session, read a wiki and see how the wiki is used. The design is in [mvp.md](mvp.md); the viewer's is in [viewer.md](viewer.md).
 
 ## Deploy
 
@@ -16,7 +16,9 @@ Each stage has its own key, so a staging key never opens prod. The deploy task b
 
 `PECIA_IDLE_TIMEOUT` (default `2 hours`) sets how long a session may go without a git operation (each one asks for tokens) or a land before it is ended.
 
-`task smoke STAGE=staging` (or `prod`) checks that a deployed stage answers: 401 without its key, and the Durable Object's 404 for a workspace that does not exist with it.
+Each deploy builds the viewer first (`task build:viewer`) and uploads it with the Worker.
+
+`task smoke STAGE=staging` (or `prod`) checks that a deployed stage answers: 401 without its key, the Durable Object's 404 for a workspace that does not exist with it, and the viewer's page.
 
 ### GitHub Actions
 
@@ -58,6 +60,10 @@ Ending a session revokes its fork's tokens and answers one of two states:
 - `parked`: the fork has unlanded commits. It is kept for a person or another agent to pick up.
 - `closed`: the fork has nothing unlanded. It is kept for ten more minutes, because a push that was already under way when the tokens were revoked may still finish. Then the alarm looks again: it deletes the fork (`deleted`), or parks it if such a push brought commits.
 
+## Read a wiki
+
+Open the stage's Worker URL in a browser and log in with the stage's orchestrator key. The login lasts seven days. [viewer.md](viewer.md) has the reader endpoints, which scripts can call with the key as a bearer token.
+
 ## API statuses
 
 `packages/wiki-api` declares every status below, so a client derived from it gets each error as a typed failure. A test pins the list per endpoint.
@@ -67,7 +73,7 @@ Ending a session revokes its fork's tokens and answers one of two states:
 | 200 | The endpoint's response | The call succeeded. `wiki-land`'s `behind` and `nothing_to_land` are 200s: they are answers, not errors. | |
 | 400 | Problem with `errors: [{ path, message }]` | The path, or the JSON body, does not match the endpoint: a malformed workspace name or session ID, a missing field, invalid JSON. | No |
 | 401 | `{ "_tag": "Unauthorized" }`, with `WWW-Authenticate: Bearer` | The bearer credential is missing or wrong. It is checked before anything else, so a wrong credential never gets a 400, 404 or 409. | No |
-| 404 | `{ "_tag": "NotFound", "resource", "id" }` | The workspace or session does not exist. | No |
+| 404 | `{ "_tag": "NotFound", "resource", "id" }` | The workspace or session does not exist; for a reader endpoint, the commit or file does not either. | No |
 | 404 | Problem | The API has no such path and method. | No |
 | 409 | `{ "_tag": "SessionNotActive", "sessionId", "state" }` | The session has ended: it is `closed`, `parked` or `deleted`. It does not become active again. | No |
 | 422 | `{ "_tag": "ForkTooLarge", "limit", "max" }` | `land` only: the fork's new commits are over a landing limit (see "Landing limits"). | No |

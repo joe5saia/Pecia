@@ -1,0 +1,652 @@
+@import "highlight.js/styles/github.css" (prefers-color-scheme: light);
+@import "highlight.js/styles/github-dark.css" (prefers-color-scheme: dark);
+
+:root {
+  --bg: #ffffff;
+  --bg-soft: #f6f8fa;
+  --fg: #1f2328;
+  --fg-soft: #59636e;
+  --border: #d1d9e0;
+  --accent: #2f5f9e;
+  --accent-soft: #e7eef8;
+  --danger: #b42318;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1216;
+    --bg-soft: #171b21;
+    --fg: #e6e9ee;
+    --fg-soft: #9aa4b2;
+    --border: #2b323b;
+    --accent: #7fb0f0;
+    --accent-soft: #1b2738;
+    --danger: #ff8a80;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.6 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--fg);
+  border-radius: 6px;
+  padding: 4px 12px;
+}
+button:hover {
+  border-color: var(--fg-soft);
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+button.quiet {
+  background: none;
+  border-color: transparent;
+  color: var(--fg-soft);
+}
+button.quiet:hover {
+  color: var(--fg);
+  border-color: var(--border);
+}
+
+code {
+  font-family: var(--mono);
+}
+
+/* Header */
+
+.top {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 52px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(8px);
+}
+.brand {
+  font:
+    600 19px/1 Georgia,
+    "Iowan Old Style",
+    serif;
+  color: var(--fg);
+  letter-spacing: 0.01em;
+}
+.crumbs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.crumbs a {
+  font-weight: 600;
+}
+.crumbs .path {
+  color: var(--fg-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Login */
+
+.login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg-soft);
+}
+.login form {
+  width: min(380px, 100%);
+  padding: 32px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  display: grid;
+  gap: 14px;
+}
+.login h1 {
+  margin: 0;
+  font:
+    600 28px/1 Georgia,
+    serif;
+}
+.login p {
+  margin: 0;
+  color: var(--fg-soft);
+}
+.login input {
+  font: inherit;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.login input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.login button[type="submit"] {
+  padding: 9px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+}
+.login .problem {
+  color: var(--danger);
+}
+
+/* Lists of wikis and of commits */
+
+.workspaces,
+.history {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+.workspaces h1,
+.history h1 {
+  font-size: 26px;
+  margin: 0 0 16px;
+}
+.cards {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.cards a {
+  display: grid;
+  gap: 4px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--fg);
+}
+.cards a:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  text-decoration: none;
+}
+.cards span {
+  color: var(--fg-soft);
+  font-size: 13px;
+}
+.history ol {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.history li {
+  display: grid;
+  gap: 2px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+.history li:first-child {
+  border-top: none;
+}
+.history li span {
+  color: var(--fg-soft);
+  font-size: 13px;
+}
+.note {
+  color: var(--fg-soft);
+  font-size: 13px;
+}
+
+.loading {
+  padding: 32px 24px;
+  color: var(--fg-soft);
+}
+.problem {
+  margin: 24px;
+  padding: 12px 16px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  border-radius: 8px;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+
+/* The wiki: pages | page | outline */
+
+.wiki {
+  display: grid;
+  grid-template-columns: 270px minmax(0, 1fr) 220px;
+  align-items: start;
+}
+.sidebar {
+  position: sticky;
+  top: 52px;
+  height: calc(100vh - 52px);
+  overflow: auto;
+  padding: 16px 12px 32px 16px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-soft);
+  font-size: 14px;
+}
+.sidebar .commit {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 8px;
+  margin: 0 0 12px;
+  padding: 0 4px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-soft);
+  font-size: 12px;
+}
+.sidebar .commit code {
+  font-size: 11px;
+}
+.sidebar .pinned {
+  color: var(--fg);
+}
+.tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.tree .tree {
+  padding-left: 12px;
+  margin-left: 6px;
+  border-left: 1px solid var(--border);
+}
+.tree summary {
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 5px;
+  color: var(--fg-soft);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  list-style-position: inside;
+}
+.tree summary:hover {
+  color: var(--fg);
+}
+.tree a {
+  display: block;
+  padding: 3px 8px;
+  border-radius: 5px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tree a:hover {
+  background: var(--accent-soft);
+  text-decoration: none;
+}
+.tree a.current {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.tree a.other {
+  color: var(--fg-soft);
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.page {
+  min-width: 0;
+  padding: 32px 48px 96px;
+}
+.outline {
+  position: sticky;
+  top: 52px;
+  max-height: calc(100vh - 52px);
+  overflow: auto;
+  padding: 32px 16px 32px 0;
+  font-size: 13px;
+}
+.outline h2 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-soft);
+}
+.outline ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-left: 1px solid var(--border);
+}
+.outline li a {
+  display: block;
+  padding: 3px 0 3px 12px;
+  color: var(--fg-soft);
+  line-height: 1.35;
+}
+.outline li a:hover {
+  color: var(--fg);
+  text-decoration: none;
+}
+.outline li.level-3 a {
+  padding-left: 24px;
+}
+.menu {
+  display: none;
+}
+
+@media (max-width: 1180px) {
+  .wiki {
+    grid-template-columns: 250px minmax(0, 1fr);
+  }
+  .outline {
+    display: none;
+  }
+}
+@media (max-width: 820px) {
+  .wiki {
+    display: block;
+  }
+  .sidebar {
+    display: none;
+  }
+  .wiki.menu-open .sidebar {
+    display: block;
+    position: fixed;
+    inset: 52px 0 0 0;
+    height: auto;
+    z-index: 9;
+    border-right: none;
+  }
+  .menu {
+    display: block;
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 11;
+    padding: 8px 16px;
+    border-radius: 999px;
+    background: var(--fg);
+    color: var(--bg);
+    border-color: var(--fg);
+    box-shadow: 0 4px 16px rgb(0 0 0 / 0.2);
+  }
+  .page {
+    padding: 20px 18px 80px;
+  }
+}
+
+/* Markdown */
+
+.markdown {
+  max-width: 820px;
+  margin: 0 auto;
+  word-wrap: break-word;
+}
+.markdown > :first-child,
+.markdown > div:first-child > :first-child {
+  margin-top: 0;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  position: relative;
+  margin: 1.6em 0 0.6em;
+  line-height: 1.25;
+  font-weight: 650;
+  scroll-margin-top: 68px;
+}
+.markdown h1 {
+  font-size: 2em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border);
+}
+.markdown h2 {
+  font-size: 1.5em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border);
+}
+.markdown h3 {
+  font-size: 1.25em;
+}
+.markdown h4 {
+  font-size: 1em;
+}
+.markdown h5,
+.markdown h6 {
+  font-size: 0.875em;
+  color: var(--fg-soft);
+}
+.markdown .anchor {
+  margin-left: 8px;
+  color: var(--fg-soft);
+  opacity: 0;
+  font-weight: 400;
+}
+.markdown :is(h1, h2, h3, h4, h5, h6):hover .anchor,
+.markdown .anchor:focus {
+  opacity: 1;
+  text-decoration: none;
+}
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown .table-wrap,
+.markdown .code-block,
+.markdown details,
+.markdown dl {
+  margin: 0 0 1em;
+}
+.markdown ul,
+.markdown ol {
+  padding-left: 2em;
+}
+.markdown li + li {
+  margin-top: 0.25em;
+}
+.markdown li > p {
+  margin-bottom: 0.4em;
+}
+.markdown li:has(> input[type="checkbox"]) {
+  list-style: none;
+}
+.markdown li > input[type="checkbox"] {
+  margin: 0 0.4em 0 -1.4em;
+  vertical-align: middle;
+}
+.markdown blockquote {
+  padding: 0 1em;
+  color: var(--fg-soft);
+  border-left: 0.25em solid var(--border);
+}
+.markdown hr {
+  height: 2px;
+  margin: 1.8em 0;
+  border: 0;
+  background: var(--border);
+}
+.markdown img {
+  max-width: 100%;
+  border-radius: 4px;
+}
+.markdown :not(pre) > code {
+  padding: 0.15em 0.4em;
+  font-size: 85%;
+  border-radius: 5px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+}
+.markdown kbd {
+  font: 12px var(--mono);
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--bg-soft);
+}
+.markdown .table-wrap {
+  overflow-x: auto;
+}
+.markdown table {
+  border-collapse: collapse;
+  font-size: 14px;
+  min-width: 50%;
+}
+.markdown th,
+.markdown td {
+  padding: 6px 13px;
+  border: 1px solid var(--border);
+  vertical-align: top;
+}
+.markdown th {
+  background: var(--bg-soft);
+  font-weight: 600;
+  text-align: left;
+}
+.markdown tr:nth-child(2n) td {
+  background: color-mix(in srgb, var(--bg-soft) 55%, transparent);
+}
+.markdown details {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.markdown summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.markdown .footnotes {
+  margin-top: 2.5em;
+  font-size: 13px;
+  color: var(--fg-soft);
+  border-top: 1px solid var(--border);
+}
+.markdown .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.markdown .missing-image {
+  color: var(--fg-soft);
+  font-style: italic;
+}
+
+.code-block {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  overflow: hidden;
+}
+.code-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px 4px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-soft);
+  font: 12px var(--mono);
+}
+.code-bar button {
+  padding: 1px 8px;
+  font-size: 12px;
+  background: var(--bg);
+}
+.code-block pre {
+  margin: 0;
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.code-block pre code.hljs {
+  padding: 0;
+  background: none;
+}
+
+.mermaid {
+  margin: 0 0 1em;
+  padding: 16px;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+.mermaid-source {
+  margin: 0 0 1em;
+}
+.mermaid-source pre {
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: var(--bg-soft);
+  overflow-x: auto;
+  font-size: 13px;
+}
+.mermaid-source figcaption {
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.front-matter {
+  font-size: 13px;
+  background: var(--bg-soft);
+}
+.front-matter pre {
+  margin: 8px 0 0;
+  overflow-x: auto;
+}
+
+.image-file {
+  margin: 0;
+  text-align: center;
+}
+.image-file img {
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}

@@ -1,0 +1,89 @@
+import { type Ref, WikiApi, type WorkspaceName } from "@pecia/wiki-api";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import type * as HttpClient from "effect/http/HttpClient";
+import * as HttpApiClient from "effect/http-api/HttpApiClient";
+import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Predicate from "effect/Predicate";
+import * as Redacted from "effect/Redacted";
+import { useEffect, useState } from "react";
+
+// The viewer's calls to the Control Worker, through a client derived from the
+// shared contract. The browser sends the login cookie with each one. This is
+// the viewer's edge: React calls `useRead` and `run`, which run the effects.
+
+const runtime = ManagedRuntime.make(FetchHttpClient.layer);
+
+const client = HttpApiClient.make(WikiApi, { baseUrl: globalThis.location.origin });
+
+type Call<A, E> = Effect.Effect<A, E, HttpClient.HttpClient>;
+
+/** What a failed call shows: whether to log in again, or what went wrong. */
+export type Failure = { readonly _tag: "LoggedOut" } | { readonly _tag: "Failed"; readonly message: string };
+
+const failureOf = (error: unknown): Failure => {
+  if (Predicate.isTagged(error, "Unauthorized")) return { _tag: "LoggedOut" };
+  if (Predicate.hasProperty(error, "message") && Predicate.isString(error.message))
+    return { _tag: "Failed", message: error.message };
+  return { _tag: "Failed", message: String(error) };
+};
+
+export const run = async <A, E>(
+  call: Call<A, E>,
+): Promise<{ ok: true; value: A } | { ok: false; failure: Failure }> => {
+  const exit = await runtime.runPromiseExit(call);
+  if (Exit.isSuccess(exit)) return { ok: true, value: exit.value };
+  const error = Exit.findErrorOption(exit);
+  return { ok: false, failure: failureOf(error._tag === "Some" ? error.value : exit.cause) };
+};
+
+export type ReadState<A> =
+  | { readonly _tag: "Loading" }
+  | { readonly _tag: "Loaded"; readonly value: A }
+  | { readonly _tag: "Failed"; readonly failure: Failure };
+
+/** The answer of `call`, read again when `key` changes. */
+export const useRead = <A, E>(key: string, call: () => Call<A, E>): ReadState<A> => {
+  const [state, setState] = useState<{ key: string; read: ReadState<A> }>({ key, read: { _tag: "Loading" } });
+  useEffect(() => {
+    let current = true;
+    setState({ key, read: { _tag: "Loading" } });
+    void run(call()).then((result) => {
+      if (!current) return;
+      setState({
+        key,
+        read: result.ok ? { _tag: "Loaded", value: result.value } : { _tag: "Failed", failure: result.failure },
+      });
+    });
+    return () => {
+      current = false;
+    };
+    // `call` is a new function on every render; `key` names what it reads.
+  }, [key]);
+  return state.key === key ? state.read : { _tag: "Loading" };
+};
+
+export const listWorkspaces = () => Effect.flatMap(client, (api) => api.reader.listWorkspaces());
+
+export const readTree = (ws: WorkspaceName, ref: Ref) =>
+  Effect.flatMap(client, (api) => api.reader.readTree({ params: { ws }, query: { ref } }));
+
+export const readText = (ws: WorkspaceName, ref: Ref, path: string) =>
+  Effect.flatMap(client, (api) =>
+    Effect.map(api.reader.readFile({ params: { ws }, query: { ref, path } }), (bytes) =>
+      new TextDecoder().decode(bytes),
+    ),
+  );
+
+export const readHistory = (ws: WorkspaceName) =>
+  Effect.flatMap(client, (api) => api.reader.readHistory({ params: { ws }, query: { limit: 50 } }));
+
+export const login = (key: string) =>
+  Effect.flatMap(client, (api) => api.viewer.login({ payload: { key: Redacted.make(key) } }));
+
+export const logout = () => Effect.flatMap(client, (api) => api.viewer.logout());
+
+/** The URL of a file's bytes, for an `<img>` or a download. The browser sends the cookie. */
+export const fileUrl = (ws: WorkspaceName, ref: Ref, path: string): string =>
+  `/workspaces/${ws}/file?${new URLSearchParams({ ref, path }).toString()}`;

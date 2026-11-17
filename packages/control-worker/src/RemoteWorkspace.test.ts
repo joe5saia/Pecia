@@ -6,6 +6,7 @@ import * as HttpRouter from "effect/http/HttpRouter";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import { ApiLive, OrchestratorKey, Workspaces } from "./Handlers.ts";
+import { Readers } from "./Reader.ts";
 import * as RemoteWorkspace from "./RemoteWorkspace.ts";
 
 // What the API answers when a call to the workspace's Durable Object fails on
@@ -27,6 +28,14 @@ const createThrough = async (create: RemoteWorkspace.Stub["create"]) => {
     ApiLive.pipe(
       Layer.provide(Layer.succeed(OrchestratorKey, Redacted.make("key"))),
       Layer.provide(Layer.succeed(Workspaces, { get: () => RemoteWorkspace.overRpc(stub) })),
+      HttpRouter.provideRequest(
+        Layer.succeed(Readers, {
+          listWorkspaces: unused,
+          readTree: unused,
+          readFile: unused,
+          readHistory: unused,
+        }),
+      ),
     ),
     { disableLogger: true },
   );

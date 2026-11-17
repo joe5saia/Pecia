@@ -16,5 +16,6 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["packages/*/src", "packages/*/*.ts", "*.ts"]
+  "include": ["packages/*/src", "packages/*/*.ts", "*.ts"],
+  "exclude": ["packages/viewer/src"]
 }

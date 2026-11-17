@@ -6,6 +6,7 @@ set: [errexit, pipefail]
 
 vars:
   STACK_DIR: packages/control-worker
+  STAGING_URL: https://pecia-controlworker-staging-5psyjyjp2wm6ohvr.joe-9a0.workers.dev
 
 # Cloudflare credentials for the Alchemy tasks. Alchemy uses them when both are
 # set (CI, orbs) and otherwise falls back to the local `alchemy profile`.
@@ -23,6 +24,7 @@ x-cloudflare-env: &cloudflare-env
 # Inputs shared by the checks: Task skips a check when none of them changed.
 x-check-sources: &check-sources
   - "packages/**/*.ts"
+  - "packages/**/*.tsx"
   - "packages/**/*.sh"
   - "*.ts"
   - tsconfig.json
@@ -64,13 +66,18 @@ tasks:
     desc: Type-check with tsrs and, until tsrs is stable, the official TypeScript compiler
     deps: [typecheck:tsrs, typecheck:tsc]
 
+  # The viewer runs in a browser, so it has its own project with the DOM's types.
   typecheck:tsrs:
     sources: *check-sources
-    cmd: pnpm exec tsrs --noEmit
+    cmds:
+      - pnpm exec tsrs --noEmit
+      - pnpm exec tsrs --noEmit -p packages/viewer
 
   typecheck:tsc:
     sources: *check-sources
-    cmd: pnpm exec tsc --noEmit
+    cmds:
+      - pnpm exec tsc --noEmit
+      - pnpm exec tsc --noEmit -p packages/viewer
 
   test:
     desc: Run the test suite
@@ -93,6 +100,19 @@ tasks:
       # them as ES modules here, under this package's "type": "module".
       - echo '{"type":"commonjs"}' >dist/package.json
 
+  build:viewer:
+    desc: Build the viewer into packages/viewer/dist, which the Control Worker serves
+    dir: packages/viewer
+    sources: [index.html, vite.config.ts, "src/**/*", "../wiki-api/src/**/*.ts", ../../pnpm-lock.yaml]
+    generates: [dist/index.html]
+    cmd: pnpm exec vite build
+
+  dev:viewer:
+    desc: Serve the viewer with hot reload, calling a deployed Worker's API (PECIA_VIEWER_API, default staging's URL)
+    dir: packages/viewer
+    interactive: true
+    cmd: PECIA_VIEWER_API="${PECIA_VIEWER_API:-{{.STAGING_URL}}}" pnpm exec vite --port "${PORT:-5173}"
+
   check:
     desc: Local CI - every check except deploying
     cmds:
@@ -108,6 +128,7 @@ tasks:
       - task: deploy:preview
 
   dev:
+    deps: [build:viewer]
     desc: Run the Control Worker and Durable Objects locally with alchemy dev
     requires:
       vars: [PECIA_ORCHESTRATOR_KEY_STAGING]
@@ -117,6 +138,7 @@ tasks:
     cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_STAGING" pnpm exec alchemy dev
 
   plan:
+    deps: [build:viewer]
     desc: Preview changes to a stage (STAGE, default staging) without deploying
     vars:
       STAGE: '{{.STAGE | default "staging"}}'
@@ -129,6 +151,7 @@ tasks:
     cmd: PECIA_ORCHESTRATOR_KEY="${{.KEY_VAR}}" pnpm exec alchemy plan --stage {{.STAGE}} --no-input
 
   deploy:preview:
+    deps: [build:viewer]
     desc: Deploy the pr-<PULL_REQUEST> preview stage
     requires:
       vars: [PULL_REQUEST, PECIA_ORCHESTRATOR_KEY_STAGING]
@@ -145,6 +168,7 @@ tasks:
     cmd: pnpm exec alchemy destroy --stage pr-{{.PULL_REQUEST}} --yes --no-input
 
   deploy:staging:
+    deps: [build:viewer]
     desc: Deploy the staging stage
     requires:
       vars: [PECIA_ORCHESTRATOR_KEY_STAGING]
@@ -153,6 +177,7 @@ tasks:
     cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_STAGING" pnpm exec alchemy deploy --stage staging --yes --no-input
 
   deploy:prod:
+    deps: [build:viewer]
     desc: Deploy the prod stage
     requires:
       vars: [PECIA_ORCHESTRATOR_KEY_PROD]
@@ -175,18 +200,21 @@ tasks:
         msg: "{{.KEY_VAR}} is not set"
     # Listing a workspace that is never created must answer 401 without the key
     # and the Durable Object's typed 404 with it: the Worker is published, has
-    # this stage's key and reaches its Durable Objects. Retried for a minute,
+    # this stage's key and reaches its Durable Objects. The viewer's page must be
+    # served, which it is only if its assets were uploaded. Retried for a minute,
     # because a newly published Worker can answer `error code: 1104` for a while.
     cmd: |
       url={{.URL}}/workspaces/ci-smoke/sessions
       for attempt in 1 2 3 4 5 6; do
         anonymous=$(curl -sS -o /dev/null -w '%{http_code}' "$url" || true)
         body=$(curl -sS -H "Authorization: Bearer ${{.KEY_VAR}}" "$url" || true)
-        if [ "$anonymous" = 401 ] && jq -e '._tag == "NotFound"' >/dev/null 2>&1 <<<"$body"; then
+        viewer=$(curl -sS "{{.URL}}/" || true)
+        if [ "$anonymous" = 401 ] && jq -e '._tag == "NotFound"' >/dev/null 2>&1 <<<"$body" &&
+          grep -q '<div id="root">' <<<"$viewer"; then
           echo "{{.STAGE}} answers"
           exit 0
         fi
-        echo "attempt $attempt: $anonymous without the key, '$body' with it"
+        echo "attempt $attempt: $anonymous without the key, '$body' with it, viewer page $(grep -c '<div id="root">' <<<"$viewer") root"
         sleep 10
       done
       exit 1

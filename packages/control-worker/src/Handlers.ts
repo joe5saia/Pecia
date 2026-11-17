@@ -1,8 +1,11 @@
 import {
   OrchestratorAuth,
+  ReaderAuth,
+  type Ref,
   SessionAuth,
   SessionKey,
   Unauthorized,
+  ViewerCookie,
   WikiApi,
   workspaceOfSession,
   type WorkspaceName,
@@ -13,6 +16,7 @@ import * as ByteSize from "effect/ByteSize";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as HttpEffect from "effect/http/HttpEffect";
 import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServerError from "effect/http/HttpServerError";
@@ -23,6 +27,8 @@ import * as HttpApiError from "effect/http-api/HttpApiError";
 import * as HttpApiMiddleware from "effect/http-api/HttpApiMiddleware";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import * as Login from "./Login.ts";
+import { Readers } from "./Reader.ts";
 import type { Workspace } from "./Workspace.ts";
 
 // The Control Worker's HTTP API over a set of workspaces (docs/mvp.md,
@@ -48,21 +54,29 @@ export class Workspaces extends Context.Service<
 
 export class OrchestratorKey extends Context.Service<OrchestratorKey, Redacted.Redacted>()("pecia/OrchestratorKey") {}
 
-const sameText = (a: string, b: string): boolean => {
-  let difference = a.length ^ b.length;
-  for (let index = 0; index < a.length; index++)
-    difference |= a.charCodeAt(index) ^ b.charCodeAt(index % (b.length || 1));
-  return difference === 0;
-};
-
 const OrchestratorAuthLive = Layer.effect(
   OrchestratorAuth,
   Effect.gen(function* () {
     const key = Redacted.value(yield* OrchestratorKey);
     return {
       bearer: (httpEffect, { credential }) =>
-        // An unset key authorizes nobody.
-        key !== "" && sameText(Redacted.value(credential), key) ? httpEffect : Effect.fail(new Unauthorized()),
+        Login.isKey(key, Redacted.value(credential)) ? httpEffect : Effect.fail(new Unauthorized()),
+    };
+  }),
+);
+
+const ReaderAuthLive = Layer.effect(
+  ReaderAuth,
+  Effect.gen(function* () {
+    const key = Redacted.value(yield* OrchestratorKey);
+    return {
+      bearer: (httpEffect, { credential }) =>
+        Login.isKey(key, Redacted.value(credential)) ? httpEffect : Effect.fail(new Unauthorized()),
+      cookie: (httpEffect, { credential }) =>
+        Effect.gen(function* () {
+          if (!(yield* Login.verify(key, Redacted.value(credential)))) return yield* new Unauthorized();
+          return yield* httpEffect;
+        }),
     };
   }),
 );
@@ -100,6 +114,99 @@ const SandboxLive = HttpApiBuilder.group(WikiApi, "sandbox", (handlers) =>
           workspaces.get(workspaceOfSession(params.id)).land(params.id, Redacted.value(key)),
         ),
       );
+  }),
+);
+
+/**
+ * A read of a commit hash never changes, so the browser keeps it. A read of
+ * `main` is checked again every time. Either way only the browser keeps it:
+ * it was answered for one credential.
+ */
+const cacheFor = (ref: Ref) =>
+  HttpEffect.appendPreResponseHandler((_request, response) =>
+    Effect.succeed(
+      HttpServerResponse.setHeaders(response, {
+        "cache-control": ref === "main" ? "private, no-cache" : "private, max-age=31536000, immutable",
+        vary: "authorization, cookie",
+      }),
+    ),
+  );
+
+/** Content types by extension. Anything else is served as bytes to download. */
+const contentTypes: Readonly<Record<string, string>> = {
+  md: "text/markdown; charset=utf-8",
+  markdown: "text/markdown; charset=utf-8",
+  txt: "text/plain; charset=utf-8",
+  json: "application/json; charset=utf-8",
+  yaml: "text/plain; charset=utf-8",
+  yml: "text/plain; charset=utf-8",
+  csv: "text/csv; charset=utf-8",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  avif: "image/avif",
+  svg: "image/svg+xml",
+  pdf: "application/pdf",
+};
+
+const contentTypeOf = (path: string): string =>
+  contentTypes[path.slice(path.lastIndexOf(".") + 1).toLowerCase()] ?? "application/octet-stream";
+
+// The reader is reached per request: on Cloudflare it calls the Artifacts
+// binding, which is only there while a request is served.
+const ReaderLive = HttpApiBuilder.group(WikiApi, "reader", (handlers) =>
+  Effect.succeed(
+    handlers
+      .handle("listWorkspaces", () => Effect.flatMap(Readers, (reader) => reader.listWorkspaces()))
+      .handle("readTree", ({ params, query }) =>
+        Effect.gen(function* () {
+          const ref = query.ref ?? "main";
+          yield* cacheFor(ref);
+          return yield* (yield* Readers).readTree(params.ws, ref);
+        }),
+      )
+      .handle("readFile", ({ params, query }) =>
+        Effect.gen(function* () {
+          const ref = query.ref ?? "main";
+          yield* cacheFor(ref);
+          const bytes = yield* (yield* Readers).readFile(params.ws, ref, query.path);
+          return HttpServerResponse.uint8Array(bytes, {
+            contentType: contentTypeOf(query.path),
+            headers: {
+              // A wiki's files are written by agents. Opened on their own, none
+              // of them, an SVG included, may run script on this origin.
+              "content-security-policy": "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
+              "x-content-type-options": "nosniff",
+            },
+          });
+        }),
+      )
+      .handle("readHistory", ({ params, query }) =>
+        Effect.flatMap(Readers, (reader) => reader.readHistory(params.ws, query.limit ?? 30)),
+      ),
+  ),
+);
+
+const cookieOptions = { path: "/", sameSite: "strict" } as const;
+
+const ViewerLive = HttpApiBuilder.group(WikiApi, "viewer", (handlers) =>
+  Effect.gen(function* () {
+    const key = Redacted.value(yield* OrchestratorKey);
+    return handlers
+      .handle("login", ({ payload }) =>
+        Effect.gen(function* () {
+          if (!Login.isKey(key, Redacted.value(payload.key))) return yield* new Unauthorized();
+          const cookie = yield* Login.issue(key);
+          yield* HttpApiBuilder.securitySetCookie(ViewerCookie, cookie.value, {
+            ...cookieOptions,
+            expires: cookie.expiresAt,
+          });
+          return { expiresAt: cookie.expiresAt.toISOString() };
+        }),
+      )
+      .handle("logout", () => HttpApiBuilder.securitySetCookie(ViewerCookie, "", { ...cookieOptions, maxAge: 0 }));
   }),
 );
 
@@ -147,10 +254,11 @@ const Failures = HttpRouter.middleware(
 
 /** The API as a router layer, for `HttpRouter.toHttpEffect` in the Worker and `toWebHandler` in tests. */
 export const ApiLive = HttpApiBuilder.layer(WikiApi).pipe(
-  Layer.provide([OrchestratorLive, SandboxLive]),
+  Layer.provide([OrchestratorLive, SandboxLive, ReaderLive, ViewerLive]),
   Layer.provide([
     OrchestratorAuthLive,
     SessionAuthLive,
+    ReaderAuthLive,
     // A 400 says which part of the request was wrong.
     HttpApiMiddleware.layerProblemDetails({ includeDetails: true }),
   ]),

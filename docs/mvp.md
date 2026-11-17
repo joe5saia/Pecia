@@ -43,7 +43,7 @@ Artifacts is Cloudflare's Git-compatible versioned storage. Repos are created, f
 
 - Agents without a persistent execution environment (see Phase 2).
 - Server-side merging, conflict tracking and undo.
-- Any web UI, human editor, live collaboration, search or per-path permissions. Humans read the wiki by cloning main with a read token.
+- Any web UI, human editor, live collaboration, search or per-path permissions. Humans read the wiki by cloning main with a read token. (A read-only viewer followed the MVP: [viewer.md](viewer.md).)
 
 ## Architecture
 

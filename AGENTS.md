@@ -6,6 +6,7 @@ Agent wiki on Cloudflare Artifacts. The design is in `docs/mvp.md`.
 
 - `packages/wiki-api`: the shared Effect Schema contract for the Control Worker API.
 - `packages/control-worker`: the Control Worker, the workspace Durable Object and its Alchemy stack (`alchemy.run.ts`). `src/Workspace.ts` holds the session and landing logic; `src/testing` holds the fakes the tests run it on.
+- `packages/viewer`: the read-only web UI (React and Vite), served as the Control Worker's static assets. Its design, login and the way to add editing are in `docs/viewer.md`. It is type-checked as its own project (`packages/viewer/tsconfig.json`), with the DOM's types.
 - `packages/sandbox-tools`: what runs in a sandbox: `wiki-credential`, `wiki-land`, `setup.sh` and `agent-instructions.md`.
 - `.agents/skills/using-pecia-wiki`: the project skill that lets an Amp thread read and publish to a deployed wiki.
 - `packages/lint-rules`: the oxlint plugin `pecia`, which enforces the Effect style below. `.oxlintrc.json` loads it.
@@ -18,6 +19,8 @@ Every command runs through Task (`Taskfile.yml`); package.json files have no `sc
 
 - `task check`: local CI (fmt:check, lint, typecheck, test). Run it before committing.
 - `task fmt`: format with oxfmt.
+- `task build:viewer`: build the viewer into `packages/viewer/dist`. The Alchemy tasks run it first.
+- `task dev:viewer`: serve the viewer with hot reload against a deployed Worker's API (`PECIA_VIEWER_API`, default staging).
 - `task build:tools`: bundle `wiki-credential` and `wiki-land` into `packages/sandbox-tools/dist`.
 - `task dev`: `alchemy dev` for the Control Worker.
 - `task ci`: `task check`, then `task deploy:preview` (needs `PULL_REQUEST` and a Cloudflare profile).

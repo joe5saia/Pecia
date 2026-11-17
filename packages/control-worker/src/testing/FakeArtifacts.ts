@@ -2,17 +2,26 @@ import { ArtifactsUnavailable, CommitSha } from "@pecia/wiki-api";
 import * as Effect from "effect/Effect";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { type RepoToken, type Repos, tokenSecret, type TokenScope } from "../Repos.ts";
+import { type RepoToken, type Repos, tokenSecret, type TokenScope, type TreeEntry } from "../Repos.ts";
 
 // A stand-in for Cloudflare Artifacts in tests: bare repos on disk, served over
 // HTTP by `git http-backend`, behind the same repo-scoped Basic-auth tokens.
 
 const run = promisify(execFile);
+
+/** Git's tree entry modes, as Artifacts classifies them. */
+const entryTypes: Readonly<Record<string, TreeEntry["type"]>> = {
+  "040000": "tree",
+  "100644": "blob",
+  "100755": "exec",
+  "120000": "symlink",
+  "160000": "gitlink",
+};
 
 /** The port a server started with `listen(0)` was given. */
 export const portOf = (server: Server): number => {
@@ -230,6 +239,73 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
         return { id: token.id, plaintext, expiresAt: new Date(expiresAtMs).toISOString() };
       }),
     revokeToken: (name, tokenId) => control("revokeToken", name, async () => revoke(tokenId)),
+    list: () =>
+      control("list", "", async () =>
+        Promise.all(
+          (await readdir(root))
+            .filter((entry) => entry.endsWith(".git"))
+            .map(async (entry) => ({
+              name: entry.slice(0, -".git".length),
+              createdAt: (await stat(join(root, entry))).birthtime.toISOString(),
+              lastPushAt: undefined,
+            })),
+        ),
+      ),
+    log: (name, { ref, limit }) =>
+      control("log", name, () =>
+        run("git", [
+          "--git-dir",
+          repoDir(name),
+          "log",
+          "--first-parent",
+          `--max-count=${limit}`,
+          "--format=%H%x00%T%x00%an%x00%cI%x00%B%x1e",
+          ref,
+          "--",
+        ]).then(
+          ({ stdout }) =>
+            stdout
+              .split("\x1e")
+              .filter((record) => record.trim() !== "")
+              .map((record) => {
+                const [sha = "", treeSha = "", author = "", committedAt = "", message = ""] = record
+                  .replace(/^\n/, "")
+                  .split("\0");
+                return {
+                  sha: CommitSha.make(sha),
+                  treeSha,
+                  author,
+                  committedAt: new Date(committedAt).toISOString(),
+                  message: message.replace(/\n$/, ""),
+                };
+              }),
+          () => [],
+        ),
+      ),
+    readTree: (name, treeSha) =>
+      control("readTree", name, () =>
+        run("git", ["--git-dir", repoDir(name), "ls-tree", "-z", treeSha]).then(
+          ({ stdout }) =>
+            stdout
+              .split("\0")
+              .filter((line) => line !== "")
+              .map((line): TreeEntry => {
+                const [meta = "", entryName = ""] = line.split("\t");
+                const [mode = "", , sha = ""] = meta.split(" ");
+                return { name: entryName, sha, type: entryTypes[mode] ?? "blob" };
+              }),
+          () => undefined,
+        ),
+      ),
+    readFile: (name, ref, path) =>
+      control("readFile", name, () =>
+        promisify(execFile)("git", ["--git-dir", repoDir(name), "cat-file", "blob", `${ref}:${path}`], {
+          encoding: "buffer",
+        }).then(
+          ({ stdout }) => new Uint8Array(stdout),
+          () => undefined,
+        ),
+      ),
     revokeAllTokens: (name) =>
       control("revokeAllTokens", name, async () => {
         for (const token of tokens.values()) if (token.repo === name) revoke(token.id);

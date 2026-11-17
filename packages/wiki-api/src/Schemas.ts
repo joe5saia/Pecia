@@ -106,3 +106,66 @@ export type SessionSummary = typeof SessionSummary.Type;
 
 export const ListSessionsResponse = Schema.Array(SessionSummary);
 export type ListSessionsResponse = typeof ListSessionsResponse.Type;
+
+// Reading a wiki (docs/viewer.md). Every read is of one commit of main, so a
+// page and the tree it was found in never disagree.
+
+/** A full commit hash, or `main` for the newest commit of main. */
+export const Ref = Schema.String.check(
+  Schema.isPattern(/^(?:main|[0-9a-f]{40})$/, { description: "main or a 40-character commit hash" }),
+);
+export type Ref = typeof Ref.Type;
+
+/** A path in a wiki: relative, with no empty, `.` or `..` segments. */
+export const FilePath = Schema.String.check(
+  Schema.isPattern(/^(?!\/)(?!.*\/\/)(?!.*\/$)(?!(?:.*\/)?\.\.?(?:\/|$)).+$/, {
+    description: "a relative path with no empty, '.' or '..' segments",
+  }),
+  Schema.isMaxLength(1024),
+);
+export type FilePath = typeof FilePath.Type;
+
+export const Commit = Schema.Struct({
+  sha: CommitSha,
+  message: Schema.String,
+  author: Schema.String,
+  /** ISO 8601. */
+  committedAt: Schema.String,
+});
+export type Commit = typeof Commit.Type;
+
+export const WorkspaceSummary = Schema.Struct({
+  name: WorkspaceName,
+  /** ISO 8601 time of the last push to main, or of its creation if nothing was pushed. */
+  updatedAt: Schema.String,
+});
+export type WorkspaceSummary = typeof WorkspaceSummary.Type;
+
+export const ListWorkspacesResponse = Schema.Array(WorkspaceSummary);
+export type ListWorkspacesResponse = typeof ListWorkspacesResponse.Type;
+
+export const FileEntry = Schema.Struct({ path: FilePath, sha: Schema.String });
+export type FileEntry = typeof FileEntry.Type;
+
+export const TreeResponse = Schema.Struct({
+  workspace: WorkspaceName,
+  commit: Commit,
+  /** Every file of the commit, sorted by path. Symlinks and submodules are left out. */
+  files: Schema.Array(FileEntry),
+  /** Whether the commit has more files than a tree read returns. */
+  truncated: Schema.Boolean,
+});
+export type TreeResponse = typeof TreeResponse.Type;
+
+/** Main's commits, newest first, following first parents. */
+export const HistoryResponse = Schema.Array(Commit);
+export type HistoryResponse = typeof HistoryResponse.Type;
+
+export const LoginRequest = Schema.Struct({ key: Schema.Redacted(Schema.String) });
+export type LoginRequest = typeof LoginRequest.Type;
+
+export const LoginResponse = Schema.Struct({
+  /** ISO 8601 time at which the login cookie expires. */
+  expiresAt: Schema.String,
+});
+export type LoginResponse = typeof LoginResponse.Type;

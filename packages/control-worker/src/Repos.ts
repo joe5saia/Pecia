@@ -1,4 +1,4 @@
-import type { ArtifactsUnavailable, CommitSha } from "@pecia/wiki-api";
+import type { ArtifactsUnavailable, Commit, CommitSha } from "@pecia/wiki-api";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
@@ -14,6 +14,21 @@ export interface RepoToken {
   readonly plaintext: string;
   /** ISO 8601. */
   readonly expiresAt: string;
+}
+
+export interface RepoSummary {
+  readonly name: string;
+  /** ISO 8601. */
+  readonly createdAt: string;
+  /** ISO 8601, or `undefined` if nothing was ever pushed. */
+  readonly lastPushAt: string | undefined;
+}
+
+/** An entry of a git tree. `tree` is a directory; `exec` is an executable file. */
+export interface TreeEntry {
+  readonly name: string;
+  readonly sha: string;
+  readonly type: "tree" | "blob" | "exec" | "symlink" | "gitlink";
 }
 
 export class Repos extends Context.Service<
@@ -35,6 +50,27 @@ export class Repos extends Context.Service<
     readonly revokeToken: (name: string, tokenId: string) => Effect.Effect<void, ArtifactsUnavailable>;
     /** Revoke every active token of the repo. */
     readonly revokeAllTokens: (name: string) => Effect.Effect<void, ArtifactsUnavailable>;
+    /** Every repo of the namespace, main repos and forks alike. */
+    readonly list: () => Effect.Effect<ReadonlyArray<RepoSummary>, ArtifactsUnavailable>;
+    /**
+     * Commits from `ref` (a branch or commit hash) along first parents, newest
+     * first. Empty when the repo does not exist or the ref does not resolve.
+     */
+    readonly log: (
+      name: string,
+      options: { readonly ref: string; readonly limit: number },
+    ) => Effect.Effect<ReadonlyArray<Commit & { readonly treeSha: string }>, ArtifactsUnavailable>;
+    /** The entries of a tree, or `undefined` when the repo or the tree does not exist. */
+    readonly readTree: (
+      name: string,
+      treeSha: string,
+    ) => Effect.Effect<ReadonlyArray<TreeEntry> | undefined, ArtifactsUnavailable>;
+    /** A file's bytes at `ref`, or `undefined` when the repo, the ref or the file does not exist. */
+    readonly readFile: (
+      name: string,
+      ref: string,
+      path: string,
+    ) => Effect.Effect<Uint8Array | undefined, ArtifactsUnavailable>;
   }
 >()("pecia/Repos") {}
 

@@ -6,7 +6,15 @@ import {
   startTestService,
   type TestService,
 } from "@pecia/control-worker/testing";
-import { CreateSessionResponse, ListSessionsResponse, TokenResponse, WorkspaceName } from "@pecia/wiki-api";
+import {
+  CreateSessionResponse,
+  HistoryResponse,
+  ListSessionsResponse,
+  ListWorkspacesResponse,
+  TokenResponse,
+  TreeResponse,
+  WorkspaceName,
+} from "@pecia/wiki-api";
 import * as Schema from "effect/Schema";
 import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -361,7 +369,7 @@ describe("the API", () => {
   it("answers 404 with a problem for a path or method the API does not have", async () => {
     const problem = { type: "about:blank", status: 404, title: "Not Found" };
     expect(await orchestrator("GET", "/nope")).toMatchObject({ status: 404, body: problem });
-    expect(await orchestrator("GET", "/workspaces")).toMatchObject({ status: 404, body: problem });
+    expect(await orchestrator("PUT", "/workspaces")).toMatchObject({ status: 404, body: problem });
   });
 
   it("answers 400 saying what was wrong with the request, 413 for an oversized one and 502 when Artifacts is down", async () => {
@@ -388,5 +396,114 @@ describe("the API", () => {
     } finally {
       service.artifacts.setUnavailable(false);
     }
+  });
+});
+
+/** A read as a browser or script makes it; the body is JSON when it parses. */
+const read = async (path: string, headers: Record<string, string> = {}) => {
+  const response = await fetch(`${service.url}${path}`, { headers });
+  const text = await response.text();
+  let body: unknown = text;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    // A file's bytes, kept as text.
+  }
+  return { status: response.status, body, headers: response.headers };
+};
+const bearer = () => ({ authorization: `Bearer ${service.orchestratorKey}` });
+const login = (key: string) =>
+  fetch(`${service.url}/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ key }),
+  });
+const decodeWorkspaces = Schema.decodeUnknownSync(ListWorkspacesResponse);
+const decodeTree = Schema.decodeUnknownSync(TreeResponse);
+const decodeHistory = Schema.decodeUnknownSync(HistoryResponse);
+
+describe("the reader", () => {
+  it("lists workspaces without their session forks, and reads a landed tree, file and history", async () => {
+    await createWorkspace("readme");
+    const agent = await openSandbox("readme");
+    await agent.sandbox.exec("mkdir", ["docs/guide"]);
+    const first = await agent.commit("guide/setup.md", "# Setup\n");
+    await agent.commit("intro.md", "# Read me\n\nSee [setup](guide/setup.md).\n");
+    const head = await agent.sandbox.git("rev-parse", "HEAD");
+    expect((await agent.land()).output).toBe(`landed ${head}`);
+
+    const listed = await read("/workspaces", bearer());
+    expect(listed.status).toBe(200);
+    const names = decodeWorkspaces(listed.body).map((workspace) => workspace.name);
+    expect(names).toContain("readme");
+    expect(names).not.toContain(forkName(agent));
+
+    const tree = await read("/workspaces/readme/tree", bearer());
+    expect(tree.status).toBe(200);
+    expect(tree.body).toMatchObject({ workspace: "readme", commit: { sha: head }, truncated: false });
+    const paths = decodeTree(tree.body).files.map((file) => file.path);
+    expect(paths).toEqual(paths.toSorted());
+    expect(paths).toEqual(expect.arrayContaining(["guide/setup.md", "intro.md"]));
+    // A read of main is checked again; a read of a commit is kept.
+    expect(tree.headers.get("cache-control")).toBe("private, no-cache");
+
+    const old = await read(`/workspaces/readme/tree?ref=${first}`, bearer());
+    expect(decodeTree(old.body).files.map((file) => file.path)).not.toContain("intro.md");
+    expect(old.headers.get("cache-control")).toContain("immutable");
+
+    const file = await read("/workspaces/readme/file?path=intro.md", bearer());
+    expect(file).toMatchObject({ status: 200, body: "# Read me\n\nSee [setup](guide/setup.md).\n" });
+    expect(file.headers.get("content-type")).toBe("text/markdown; charset=utf-8");
+    expect(file.headers.get("content-security-policy")).toContain("sandbox");
+
+    const history = await read("/workspaces/readme/history?limit=2", bearer());
+    expect(decodeHistory(history.body).map((commit) => commit.sha)).toEqual([head, first]);
+  });
+
+  it("says which part of a read is missing, and refuses paths outside the wiki", async () => {
+    await createWorkspace("gaps");
+    const sha = "0".repeat(40);
+    expect(await read("/workspaces/nowhere/tree", bearer())).toMatchObject({
+      status: 404,
+      body: { resource: "workspace", id: "nowhere" },
+    });
+    expect(await read(`/workspaces/gaps/tree?ref=${sha}`, bearer())).toMatchObject({
+      status: 404,
+      body: { resource: "commit", id: sha },
+    });
+    expect(await read("/workspaces/gaps/file?path=missing.md", bearer())).toMatchObject({
+      status: 404,
+      body: { resource: "file", id: "missing.md" },
+    });
+    for (const path of ["../gaps/x.md", "a/../b.md", "/etc/passwd", "a//b.md", "./a.md"]) {
+      expect((await read(`/workspaces/gaps/file?path=${encodeURIComponent(path)}`, bearer())).status).toBe(400);
+    }
+    expect((await read("/workspaces/gaps/tree?ref=HEAD~1", bearer())).status).toBe(400);
+  });
+
+  it("lets a browser in with the orchestrator key and a signed cookie, and nothing else", async () => {
+    expect((await read("/workspaces")).status).toBe(401);
+    expect((await read("/workspaces", { authorization: "Bearer wrong" })).status).toBe(401);
+    expect((await login("wrong")).status).toBe(401);
+
+    const loggedIn = await login(service.orchestratorKey);
+    expect(loggedIn.status).toBe(200);
+    const setCookie = loggedIn.headers.get("set-cookie") ?? "";
+    expect(setCookie).toMatch(/HttpOnly/i);
+    expect(setCookie).toMatch(/SameSite=Strict/i);
+    // The cookie is a signed expiry: the key is not in it.
+    expect(setCookie).not.toContain(service.orchestratorKey);
+    const cookie = setCookie.split(";")[0] ?? "";
+    expect((await read("/workspaces", { cookie })).status).toBe(200);
+
+    // A later expiry under the same signature is refused.
+    const [, value = ""] = cookie.split("=");
+    const [expires = "0", signature = ""] = value.split(".");
+    const forged = `pecia_viewer=${Number(expires) + 86_400}.${signature}`;
+    expect((await read("/workspaces", { cookie: forged })).status).toBe(401);
+
+    const loggedOut = await fetch(`${service.url}/auth/logout`, { method: "POST", headers: { cookie } });
+    expect(loggedOut.status).toBe(204);
+    expect(loggedOut.headers.get("set-cookie")).toMatch(/pecia_viewer=;.*Max-Age=0/i);
   });
 });

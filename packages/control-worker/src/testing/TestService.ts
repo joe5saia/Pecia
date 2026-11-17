@@ -4,6 +4,8 @@ import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import { createServer } from "node:http";
 import { ApiLive, OrchestratorKey, Workspaces } from "../Handlers.ts";
+import * as Reader from "../Reader.ts";
+import { Repos } from "../Repos.ts";
 import { type FakeArtifacts, portOf, startFakeArtifacts } from "./FakeArtifacts.ts";
 import { makeTestWorkspace, type TestWorkspace } from "./TestWorkspace.ts";
 
@@ -39,6 +41,9 @@ export const startTestService = async (options: { readonly idleTimeoutMs: number
     ApiLive.pipe(
       Layer.provide(Layer.succeed(OrchestratorKey, Redacted.make(orchestratorKey))),
       Layer.provide(Layer.succeed(Workspaces, { get: (name) => workspace(name).workspace })),
+      HttpRouter.provideRequest(
+        Layer.provide(Layer.effect(Reader.Readers, Reader.make), Layer.succeed(Repos, artifacts.repos)),
+      ),
     ),
     { disableLogger: true },
   );

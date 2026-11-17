@@ -1,9 +1,9 @@
-import type * as Cloudflare from "@alchemy.run/cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { ArtifactsUnavailable, CommitSha } from "@pecia/wiki-api";
 import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
-import type { Repos } from "./Repos.ts";
+import type { RepoSummary, Repos } from "./Repos.ts";
 
 // Repos over the Cloudflare Artifacts Worker binding.
 //
@@ -59,6 +59,41 @@ const revokeActive = (
     yield* Effect.forEach(active, (tokenId) => repo.revokeToken(tokenId), { discard: true });
     return yield* revokeActive(repo, passes - 1);
   });
+
+/** `list` answers this many repos per page at most. */
+const listPageSize = 200;
+
+/** The repos from `cursor` on, one page per call. */
+const listFrom = (
+  artifacts: Cloudflare.Artifacts.ReadWriteNamespaceClient,
+  cursor: string | undefined,
+): Effect.Effect<ReadonlyArray<RepoSummary>, ArtifactsError, RuntimeContext> =>
+  Effect.gen(function* () {
+    const page = yield* taking(
+      artifacts.list(cursor === undefined ? { limit: listPageSize } : { limit: listPageSize, cursor }),
+      (listed) => ({
+        repos: listed.repos.map((repo): RepoSummary => ({
+          name: repo.name,
+          createdAt: repo.createdAt,
+          lastPushAt: repo.lastPushAt ?? undefined,
+        })),
+        next: listed.cursor,
+      }),
+    );
+    if (page.next === undefined || page.repos.length === 0) return page.repos;
+    return [...page.repos, ...(yield* listFrom(artifacts, page.next))];
+  });
+
+/** A read of a repo that is not there answers `missing`, like a read of an object that is not there. */
+const orMissing = <A, B>(
+  read: Effect.Effect<A, ArtifactsError, RuntimeContext>,
+  missing: B,
+): Effect.Effect<A | B, ArtifactsError, RuntimeContext> =>
+  Effect.catchIf(
+    read,
+    (error) => error.code === "NOT_FOUND",
+    () => Effect.succeed(missing),
+  );
 
 export const make = (
   artifacts: Cloudflare.Artifacts.ReadWriteNamespaceClient,
@@ -157,6 +192,58 @@ export const make = (
               plaintext: token.plaintext,
               expiresAt: token.expiresAt,
             })),
+          ),
+        ),
+      list: () => call("list", listFrom(artifacts, undefined)),
+      log: (name, { ref, limit }) =>
+        call(
+          "log",
+          orMissing(
+            withRepo(name, (repo) =>
+              taking(repo.log({ ref, limit }), (commits) =>
+                commits.map((commit) => ({
+                  sha: CommitSha.make(commit.hash),
+                  treeSha: commit.treeHash,
+                  message: commit.message,
+                  author: commit.author.name,
+                  committedAt: new Date(commit.committedAt * 1000).toISOString(),
+                })),
+              ),
+            ),
+            [],
+          ),
+        ),
+      readTree: (name, treeSha) =>
+        call(
+          "readTree",
+          orMissing(
+            withRepo(name, (repo) =>
+              taking(repo.readTree(treeSha), (entries) =>
+                entries?.map((entry) => ({ name: entry.name, sha: entry.hash, type: entry.type })),
+              ),
+            ),
+            undefined,
+          ),
+        ),
+      readFile: (name, ref, path) =>
+        call(
+          "readFile",
+          orMissing(
+            withRepo(name, (repo) =>
+              Effect.flatMap(repo.readFile({ ref, path }), (blob) =>
+                blob === null
+                  ? Effect.succeed(undefined)
+                  : Effect.tryPromise({
+                      try: async () => new Uint8Array(await blob.arrayBuffer()),
+                      catch: (cause) =>
+                        new Cloudflare.Artifacts.ArtifactsError({
+                          message: `reading '${path}' failed: ${String(cause)}`,
+                          cause: cause instanceof Error ? cause : new Error(String(cause)),
+                        }),
+                    }),
+              ),
+            ),
+            undefined,
           ),
         ),
       revokeToken: (name, tokenId) =>

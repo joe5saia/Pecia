@@ -14,10 +14,10 @@ export class Unauthorized extends Schema.TaggedError<Unauthorized>()("Unauthoriz
   }
 }
 
-/** 404: unknown workspace or session. */
+/** 404: unknown workspace or session, or a commit or file a wiki does not have. */
 export class NotFound extends Schema.TaggedError<NotFound>()(
   "NotFound",
-  { resource: Schema.Literals(["workspace", "session"]), id: Schema.String },
+  { resource: Schema.Literals(["workspace", "session", "commit", "file"]), id: Schema.String },
   { httpApiStatus: 404 },
 ) {
   override get message(): string {
