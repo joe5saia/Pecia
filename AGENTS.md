@@ -59,7 +59,7 @@ Fix what a rule reports instead of disabling it. A rule that reports good code h
 
 ## Environment and tests
 
-The Alchemy tasks (`dev`, `plan`, `deploy:*`) need `PECIA_ORCHESTRATOR_KEY`, the orchestrator's API key, in the environment. `PECIA_IDLE_TIMEOUT` (default `2 hours`) is optional.
+The Alchemy tasks (`dev`, `plan`, `deploy:*`) need the stage's orchestrator API key in the environment: `PECIA_ORCHESTRATOR_KEY_PROD` for prod, `PECIA_ORCHESTRATOR_KEY_STAGING` for every other stage. Each task passes it to the Worker as `PECIA_ORCHESTRATOR_KEY`. `PECIA_IDLE_TIMEOUT` (default `2 hours`) is optional.
 
 Tests run the real workspace logic and real `git` against bare repos served by `git http-backend` (`src/testing/FakeArtifacts.ts`); nothing in `task check` calls Cloudflare.
 

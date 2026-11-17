@@ -14,11 +14,11 @@ x-cloudflare-env: &cloudflare-env
   CLOUDFLARE_ACCOUNT_ID: "{{.CLOUDFLARE_ACCOUNT_ID | default .SAIAAI_CLOUDFLARE_ACCOUNT_ID}}"
   CLOUDFLARE_API_TOKEN: "{{.CLOUDFLARE_API_TOKEN | default .SAIAAI_CLOUDFLARE_API_TOKEN}}"
 
-# The Control Worker's secrets and settings, read from the environment by every
-# Alchemy task. PECIA_ORCHESTRATOR_KEY is the orchestrator's API key, bound to
-# the Worker as a secret; PECIA_IDLE_TIMEOUT (default "2 hours") is optional.
-x-worker-requires: &worker-requires
-  vars: [PECIA_ORCHESTRATOR_KEY]
+# The Control Worker's secrets and settings. Each stage has its own orchestrator
+# API key: PECIA_ORCHESTRATOR_KEY_PROD for prod, PECIA_ORCHESTRATOR_KEY_STAGING
+# for every other stage (staging, previews, dev). Each Alchemy task passes its
+# stage's key to the Worker as PECIA_ORCHESTRATOR_KEY, bound as a secret.
+# PECIA_IDLE_TIMEOUT (default "2 hours") is optional.
 
 # Inputs shared by the checks: Task skips a check when none of them changed.
 x-check-sources: &check-sources
@@ -102,33 +102,39 @@ tasks:
       - task: test
 
   ci:
-    desc: Full CI - the local checks, then a preview deploy (needs PULL_REQUEST, PECIA_ORCHESTRATOR_KEY and Cloudflare credentials)
+    desc: Full CI - the local checks, then a preview deploy (needs PULL_REQUEST, PECIA_ORCHESTRATOR_KEY_STAGING and Cloudflare credentials)
     cmds:
       - task: check
       - task: deploy:preview
 
   dev:
     desc: Run the Control Worker and Durable Objects locally with alchemy dev
-    requires: *worker-requires
+    requires:
+      vars: [PECIA_ORCHESTRATOR_KEY_STAGING]
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
     interactive: true
-    cmd: pnpm exec alchemy dev
+    cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_STAGING" pnpm exec alchemy dev
 
   plan:
     desc: Preview changes to a stage (STAGE, default staging) without deploying
-    requires: *worker-requires
+    vars:
+      STAGE: '{{.STAGE | default "staging"}}'
+      KEY_VAR: '{{if eq .STAGE "prod"}}PECIA_ORCHESTRATOR_KEY_PROD{{else}}PECIA_ORCHESTRATOR_KEY_STAGING{{end}}'
+    preconditions:
+      - sh: '[ -n "${{.KEY_VAR}}" ]'
+        msg: "{{.KEY_VAR}} is not set"
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
-    cmd: pnpm exec alchemy plan --stage {{.STAGE | default "staging"}} --no-input
+    cmd: PECIA_ORCHESTRATOR_KEY="${{.KEY_VAR}}" pnpm exec alchemy plan --stage {{.STAGE}} --no-input
 
   deploy:preview:
     desc: Deploy the pr-<PULL_REQUEST> preview stage
     requires:
-      vars: [PULL_REQUEST, PECIA_ORCHESTRATOR_KEY]
+      vars: [PULL_REQUEST, PECIA_ORCHESTRATOR_KEY_STAGING]
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
-    cmd: pnpm exec alchemy deploy --stage pr-{{.PULL_REQUEST}} --yes --no-input
+    cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_STAGING" pnpm exec alchemy deploy --stage pr-{{.PULL_REQUEST}} --yes --no-input
 
   destroy:preview:
     desc: Destroy the pr-<PULL_REQUEST> preview stage
@@ -140,14 +146,16 @@ tasks:
 
   deploy:staging:
     desc: Deploy the staging stage
-    requires: *worker-requires
+    requires:
+      vars: [PECIA_ORCHESTRATOR_KEY_STAGING]
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
-    cmd: pnpm exec alchemy deploy --stage staging
+    cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_STAGING" pnpm exec alchemy deploy --stage staging
 
   deploy:prod:
     desc: Deploy the prod stage
-    requires: *worker-requires
+    requires:
+      vars: [PECIA_ORCHESTRATOR_KEY_PROD]
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
-    cmd: pnpm exec alchemy deploy --stage prod
+    cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_PROD" pnpm exec alchemy deploy --stage prod

@@ -7,9 +7,12 @@ How to deploy the Control Worker, run a session and see how the wiki is used. Th
 Each stage is a separate Worker with its own Artifacts namespace, `pecia-<stage>`.
 
 ```sh
-export PECIA_ORCHESTRATOR_KEY=...   # the orchestrator's API key, bound to the Worker as a secret
-task deploy:staging                  # or deploy:prod, or deploy:preview with PULL_REQUEST set
+export PECIA_ORCHESTRATOR_KEY_STAGING=...   # staging's orchestrator API key, also used by previews and dev
+export PECIA_ORCHESTRATOR_KEY_PROD=...      # prod's orchestrator API key
+task deploy:staging                         # or deploy:prod, or deploy:preview with PULL_REQUEST set
 ```
+
+Each stage has its own key, so a staging key never opens prod. The deploy task binds its stage's key to the Worker as the secret `PECIA_ORCHESTRATOR_KEY`. In Amp orbs both are project secrets.
 
 `PECIA_IDLE_TIMEOUT` (default `2 hours`) sets how long a session may go without a token mint or a land before it is ended.
 
@@ -17,7 +20,7 @@ A stage's first deploy creates its Worker. For some seconds after it, the Worker
 
 ## Run a session
 
-The orchestrator holds `PECIA_ORCHESTRATOR_KEY`; the sandbox never sees it.
+The orchestrator holds the stage's orchestrator key and sends it as `Authorization: Bearer <key>`; the sandbox never sees it.
 
 1. Create the workspace once: `POST /workspaces` with `{ "name": "eng-wiki" }`. Repeating the call changes nothing.
 2. Create a session per sandbox: `POST /workspaces/eng-wiki/sessions` with `{ "agent", "model" }`.
