@@ -6,7 +6,7 @@ Agent wiki on Cloudflare Artifacts. The design is in `docs/mvp.md`.
 
 - `packages/wiki-api`: the shared Effect Schema contract for the Control Worker API.
 - `packages/control-worker`: the Control Worker, the workspace Durable Object and its Alchemy stack (`alchemy.run.ts`). `src/Workspace.ts` holds the session and landing logic; `src/testing` holds the fakes the tests run it on.
-- `packages/viewer`: the read-only web UI (React and Vite), served as the Control Worker's static assets. Its design, login and the way to add editing are in `docs/viewer.md`. It is type-checked as its own project (`packages/viewer/tsconfig.json`), with the DOM's types.
+- `packages/viewer`: the read-only web UI (React and Vite), served as the Control Worker's static assets. Its design, login and the way to add editing are in `docs/viewer.md`. `src/App.tsx` has every page as a component (`Workspaces` is the list of wikis, `Wiki` a wiki, `History` its commits), `src/styles.css` every style, with the fonts and colors as variables at its top. It is type-checked as its own project (`packages/viewer/tsconfig.json`), with the DOM's types; `task typecheck` covers it, and there is no viewer-only check.
 - `packages/sandbox-tools`: what runs in a sandbox: `wiki-credential`, `wiki-land`, `setup.sh` and `agent-instructions.md`.
 - `.agents/skills/using-pecia-wiki`: the project skill that lets an Amp thread read and publish to a deployed wiki.
 - `packages/lint-rules`: the oxlint plugin `pecia`, which enforces the Effect style below. `.oxlintrc.json` loads it.
@@ -32,7 +32,7 @@ oxlint runs the `pecia` rules in JS and reserves about 6 GiB of address space fo
 
 `.amp/services.yaml` declares the one development server, `viewer` (`task dev:viewer`). In an Amp orb, `amp orb services ensure` starts it and prints its portal URL; `amp orb service logs viewer` has its output. It serves `packages/viewer` with hot reload and passes API calls to staging, so the pages show staging's wikis.
 
-The portal link opens `/__dev/log-me-in?returnTo=<path>`, a route of the Vite dev server only (`packages/viewer/vite.config.ts`). It logs the browser in with `PECIA_ORCHESTRATOR_KEY_STAGING` from the server's environment, so nobody types the key. Open it in the browser used for testing; a `curl` of it does not log that browser in. Without the key it answers 404, and the viewer's own login page at `/` takes the key by hand.
+The portal link opens `/__dev/log-me-in?returnTo=<path>`, a route of the Vite dev server only (`packages/viewer/vite.config.ts`). It logs the browser in with `PECIA_ORCHESTRATOR_KEY_STAGING` from the server's environment, so nobody types the key. Open it in the browser used for testing; a `curl` of it does not log that browser in. In the orb, `agent-browser` can open either the portal URL or `http://localhost:<port>` with the port `ensure` prints; give a person only the portal URL. Each page reads from staging, so it shows "Loading…" for a few seconds: wait for the content before a screenshot. Without the key it answers 404, and the viewer's own login page at `/` takes the key by hand.
 
 `task dev` (the Worker under `alchemy dev`) and the deploy tasks need Cloudflare credentials and are not declared as services.
 
@@ -88,6 +88,10 @@ Fix what a rule reports instead of disabling it. A rule that reports good code h
 The Alchemy tasks (`dev`, `plan`, `deploy:*`) need the stage's orchestrator API key in the environment: `PECIA_ORCHESTRATOR_KEY_PROD` for prod, `PECIA_ORCHESTRATOR_KEY_STAGING` for every other stage. Each task passes it to the Worker as `PECIA_ORCHESTRATOR_KEY`. `PECIA_IDLE_TIMEOUT` (default `2 hours`) is optional.
 
 Tests run the real workspace logic and real `git` against bare repos served by `git http-backend` (`src/testing/FakeArtifacts.ts`); nothing in `task check` calls Cloudflare.
+
+A test file sits beside its source as `<Name>.test.ts` and imports `describe`, `it` and `expect` from `@effect/vitest`, never from `vitest`. A test of an effect is an `it.effect`, which runs on a `TestClock` that starts at 0: move it with `TestClock.adjust` from `effect/testing/TestClock`. The workspace tests move time with the clock of `src/testing/TestWorkspace.ts` instead, which also expires the fake Artifacts tokens. No task reports coverage; to see whether a module is tested, search the test files for its name.
+
+pnpm does not hoist: a package's dependencies, such as `effect`, are in `packages/<name>/node_modules`, and the root `node_modules` has only the root's tools.
 
 Tools run through `pnpm exec`, so their versions come from `pnpm-lock.yaml`. Pin dependency versions exactly.
 Type checking runs both tsrs and the official TypeScript compiler until tsrs is stable.
