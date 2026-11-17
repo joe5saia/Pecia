@@ -53,7 +53,7 @@ Publish first, then run:
 
 It answers `closed` when everything was landed. `parked` means the fork has unlanded commits: the service keeps it, so tell the user what is in it.
 
-A session also ends by itself one to two hours after you last used git or `wiki-land` in it, as `parked` if it has unlanded commits. After that, `wiki-land` fails with `session '<id>' has ended`, and pushes to your fork fail with `Invalid or expired token` (403). Run `wiki-session end` to clear it, start a new session, and tell the user if the old one was parked.
+A session also ends by itself two hours after you last pushed, fetched or ran `wiki-land` in it, as `parked` if it has unlanded commits. After that, `wiki-land`, every push and every fetch fail with `session '<id>' has ended`. Run `wiki-session end` to clear it, start a new session, and tell the user if the old one was parked.
 
 ## Errors
 

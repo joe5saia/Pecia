@@ -102,7 +102,7 @@ end() {
     404 | 409) echo "session $session_id had already ended: $body" ;;
     *) die "ending session $session_id answered $status: $body" ;;
   esac
-  rm -f "$session_file" "$state_dir/tokens-$session_id.json"
+  rm -f "$session_file"
 }
 
 case "${1:-}" in
