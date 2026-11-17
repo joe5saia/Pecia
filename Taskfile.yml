@@ -159,3 +159,33 @@ tasks:
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
     cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_PROD" pnpm exec alchemy deploy --stage prod --yes --no-input
+
+  smoke:
+    desc: Check that a deployed stage (STAGE, staging or prod) answers with its own orchestrator key
+    vars:
+      STAGE: '{{.STAGE | default "staging"}}'
+      KEY_VAR: '{{if eq .STAGE "prod"}}PECIA_ORCHESTRATOR_KEY_PROD{{else}}PECIA_ORCHESTRATOR_KEY_STAGING{{end}}'
+      # The stages' Worker URLs, as in .agents/skills/using-pecia-wiki/scripts/wiki-session.
+      URL: '{{if eq .STAGE "prod"}}https://pecia-controlworker-prod-3qj2wdcevov3iq5y.joe-9a0.workers.dev{{else if eq .STAGE "staging"}}https://pecia-controlworker-staging-5psyjyjp2wm6ohvr.joe-9a0.workers.dev{{end}}'
+    preconditions:
+      - sh: '[ -n "{{.URL}}" ]'
+        msg: "STAGE must be staging or prod"
+      - sh: '[ -n "${{.KEY_VAR}}" ]'
+        msg: "{{.KEY_VAR}} is not set"
+    # Listing a workspace that is never created must answer 401 without the key
+    # and the Durable Object's typed 404 with it: the Worker is published, has
+    # this stage's key and reaches its Durable Objects. Retried for a minute,
+    # because a newly published Worker can answer `error code: 1104` for a while.
+    cmd: |
+      url={{.URL}}/workspaces/ci-smoke/sessions
+      for attempt in 1 2 3 4 5 6; do
+        anonymous=$(curl -sS -o /dev/null -w '%{http_code}' "$url" || true)
+        body=$(curl -sS -H "Authorization: Bearer ${{.KEY_VAR}}" "$url" || true)
+        if [ "$anonymous" = 401 ] && jq -e '._tag == "NotFound"' >/dev/null 2>&1 <<<"$body"; then
+          echo "{{.STAGE}} answers"
+          exit 0
+        fi
+        echo "attempt $attempt: $anonymous without the key, '$body' with it"
+        sleep 10
+      done
+      exit 1
