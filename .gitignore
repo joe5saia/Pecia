@@ -157,3 +157,6 @@ vite.config.ts.timestamp-*
 # Amp orb files
 .amp/in/
 .amp/portals/*
+
+# Pecia wiki session checkouts (.agents/skills/using-pecia-wiki)
+.pecia/

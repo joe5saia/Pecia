@@ -71,7 +71,9 @@ start() {
 
   local session_id
   session_id="$(jq -r .sessionId <<<"$body")"
-  local wiki_dir="$HOME/pecia/$session_id"
+  # Inside the workspace so Amp can open the pages; .gitignore keeps the clone
+  # out of this repository's git status, formatting and lint.
+  local wiki_dir="$repo_root/.pecia/$session_id"
   # A session that could not be set up would otherwise wait for the idle timeout.
   if ! WIKI_URL="$url" SESSION_ID="$session_id" SESSION_KEY="$(jq -r .sessionKey <<<"$body")" \
     FORK_REMOTE="$(jq -r .forkRemote <<<"$body")" MAIN_REMOTE="$(jq -r .mainRemote <<<"$body")" \
