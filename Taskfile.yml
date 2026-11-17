@@ -6,7 +6,12 @@ set: [errexit, pipefail]
 
 vars:
   STACK_DIR: packages/control-worker
-  STAGING_URL: https://pecia-controlworker-staging-5psyjyjp2wm6ohvr.joe-9a0.workers.dev
+  # Each long-lived stage's own hostname, in the joesaia.trade zone of the
+  # saiaai account. The deploy task attaches it to the Worker as a custom
+  # domain (PECIA_DOMAIN). Each stage also keeps its workers.dev URL.
+  STAGING_DOMAIN: staging.pecia.joesaia.trade
+  PROD_DOMAIN: pecia.joesaia.trade
+  STAGING_URL: https://{{.STAGING_DOMAIN}}
 
 # Cloudflare credentials for the Alchemy tasks. Alchemy uses them when both are
 # set (CI, orbs) and otherwise falls back to the local `alchemy profile`.
@@ -148,7 +153,7 @@ tasks:
         msg: "{{.KEY_VAR}} is not set"
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
-    cmd: PECIA_ORCHESTRATOR_KEY="${{.KEY_VAR}}" pnpm exec alchemy plan --stage {{.STAGE}} --no-input
+    cmd: PECIA_ORCHESTRATOR_KEY="${{.KEY_VAR}}" PECIA_DOMAIN="{{if eq .STAGE "prod"}}{{.PROD_DOMAIN}}{{else if eq .STAGE "staging"}}{{.STAGING_DOMAIN}}{{end}}" pnpm exec alchemy plan --stage {{.STAGE}} --no-input
 
   deploy:preview:
     deps: [build:viewer]
@@ -174,7 +179,7 @@ tasks:
       vars: [PECIA_ORCHESTRATOR_KEY_STAGING]
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
-    cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_STAGING" pnpm exec alchemy deploy --stage staging --yes --no-input
+    cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_STAGING" PECIA_DOMAIN={{.STAGING_DOMAIN}} pnpm exec alchemy deploy --stage staging --yes --no-input
 
   deploy:prod:
     deps: [build:viewer]
@@ -183,7 +188,7 @@ tasks:
       vars: [PECIA_ORCHESTRATOR_KEY_PROD]
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
-    cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_PROD" pnpm exec alchemy deploy --stage prod --yes --no-input
+    cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_PROD" PECIA_DOMAIN={{.PROD_DOMAIN}} pnpm exec alchemy deploy --stage prod --yes --no-input
 
   smoke:
     desc: Check that a deployed stage (STAGE, staging or prod; or a preview with STAGE=pr-<n> URL=<its Worker URL>) answers with its own orchestrator key
@@ -192,7 +197,7 @@ tasks:
       KEY_VAR: '{{if eq .STAGE "prod"}}PECIA_ORCHESTRATOR_KEY_PROD{{else}}PECIA_ORCHESTRATOR_KEY_STAGING{{end}}'
       # The stages' Worker URLs, as in .agents/skills/using-pecia-wiki/scripts/wiki-session.
       # A preview's URL is the `url` output `task deploy:preview` prints.
-      URL: '{{if .URL}}{{.URL}}{{else if eq .STAGE "prod"}}https://pecia-controlworker-prod-3qj2wdcevov3iq5y.joe-9a0.workers.dev{{else if eq .STAGE "staging"}}https://pecia-controlworker-staging-5psyjyjp2wm6ohvr.joe-9a0.workers.dev{{end}}'
+      URL: '{{if .URL}}{{.URL}}{{else if eq .STAGE "prod"}}https://{{.PROD_DOMAIN}}{{else if eq .STAGE "staging"}}https://{{.STAGING_DOMAIN}}{{end}}'
     preconditions:
       - sh: '[ -n "{{.URL}}" ]'
         msg: "STAGE must be staging or prod, or pass the preview's URL"

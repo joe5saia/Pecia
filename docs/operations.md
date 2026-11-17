@@ -6,6 +6,14 @@ How to deploy the Control Worker, run a session, read a wiki and see how the wik
 
 Each stage is a separate Worker with its own Artifacts namespace, `pecia-<stage>`.
 
+| Stage | URL |
+| --- | --- |
+| prod | https://pecia.joesaia.trade |
+| staging | https://staging.pecia.joesaia.trade |
+| `pr-<n>` | The `url` the deploy prints, on workers.dev |
+
+Prod's and staging's hostnames are custom domains in the `joesaia.trade` zone of the saiaai account. The deploy task passes its stage's hostname to Alchemy as `PECIA_DOMAIN` (`PROD_DOMAIN` and `STAGING_DOMAIN` in Taskfile.yml), which attaches it to the Worker with its DNS record and certificate. A deploy without `PECIA_DOMAIN` leaves the Worker's custom domains as they are. Both Workers still answer on their workers.dev URLs too, which sessions created before the custom domains recorded.
+
 ```sh
 export PECIA_ORCHESTRATOR_KEY_STAGING=...   # staging's orchestrator API key, also used by previews and dev
 export PECIA_ORCHESTRATOR_KEY_PROD=...      # prod's orchestrator API key
@@ -62,7 +70,7 @@ Ending a session revokes its fork's tokens and answers one of two states:
 
 ## Read a wiki
 
-Open the stage's Worker URL in a browser and log in with the stage's orchestrator key. The login lasts seven days. [viewer.md](viewer.md) has the reader endpoints, which scripts can call with the key as a bearer token.
+Open the stage's URL in a browser and log in with the stage's orchestrator key. The login lasts seven days. [viewer.md](viewer.md) has the reader endpoints, which scripts can call with the key as a bearer token.
 
 ## API statuses
 

@@ -14,8 +14,12 @@ tools="$repo_root/packages/sandbox-tools"
 state_dir="${PECIA_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/pecia}"
 session_file="$state_dir/session.env"
 
-staging_url=https://pecia-controlworker-staging-5psyjyjp2wm6ohvr.joe-9a0.workers.dev
-prod_url=https://pecia-controlworker-prod-3qj2wdcevov3iq5y.joe-9a0.workers.dev
+# The stages' own hostnames (Taskfile.yml). Sessions set up before them
+# recorded the workers.dev URLs, which still serve the same Workers.
+staging_url=https://staging.pecia.joesaia.trade
+prod_url=https://pecia.joesaia.trade
+staging_workers_dev=https://pecia-controlworker-staging-5psyjyjp2wm6ohvr.joe-9a0.workers.dev
+prod_workers_dev=https://pecia-controlworker-prod-3qj2wdcevov3iq5y.joe-9a0.workers.dev
 
 die() {
   echo "wiki-session: $*" >&2
@@ -88,8 +92,8 @@ end() {
   wiki_url="$(sed -n 's/^WIKI_URL=//p' "$session_file")"
   session_id="$(sed -n 's/^SESSION_ID=//p' "$session_file")"
   case "$wiki_url" in
-    "$staging_url") use_stage staging ;;
-    "$prod_url") use_stage prod ;;
+    "$staging_url" | "$staging_workers_dev") use_stage staging ;;
+    "$prod_url" | "$prod_workers_dev") use_stage prod ;;
     *) die "$session_file names an unknown Worker: $wiki_url" ;;
   esac
 
