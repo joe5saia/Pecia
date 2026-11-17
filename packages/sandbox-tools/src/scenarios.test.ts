@@ -12,6 +12,7 @@ import {
   ListSessionsResponse,
   ListWorkspacesResponse,
   TokenResponse,
+  tokenSecret,
   TreeResponse,
   WorkspaceName,
 } from "@pecia/wiki-api";
@@ -250,9 +251,7 @@ describe("the sandbox", () => {
     const a = await openSandbox("secrets");
     await a.commit("a.md", "from a\n");
     const tokens = await a.tokens();
-    const tokenSecrets = [tokens.forkWriteToken, tokens.mainReadToken].map(
-      (secret) => secret.split("?expires=")[0] ?? secret,
-    );
+    const tokenSecrets = [tokens.forkWriteToken, tokens.mainReadToken].map((token) => tokenSecret(token));
     const secrets = [...tokenSecrets, a.sessionKey];
     const find = async (pattern: readonly string[], where: string) =>
       (await a.sandbox.exec("grep", ["--recursive", "--files-with-matches", "--regexp", pattern.join("\\|"), where]))

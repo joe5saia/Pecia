@@ -5,6 +5,7 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import type * as HttpClient from "effect/http/HttpClient";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
 import { useEffect, useState } from "react";
@@ -34,8 +35,8 @@ export const run = async <A, E>(
 ): Promise<{ ok: true; value: A } | { ok: false; failure: Failure }> => {
   const exit = await runtime.runPromiseExit(call);
   if (Exit.isSuccess(exit)) return { ok: true, value: exit.value };
-  const error = Exit.findErrorOption(exit);
-  return { ok: false, failure: failureOf(error._tag === "Some" ? error.value : exit.cause) };
+  // A defect or an interruption has no typed error; its cause says what happened.
+  return { ok: false, failure: failureOf(Option.getOrElse(Exit.findErrorOption(exit), () => exit.cause)) };
 };
 
 export type ReadState<A> =

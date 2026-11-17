@@ -1,4 +1,4 @@
-import { ArtifactsUnavailable, CommitSha } from "@pecia/wiki-api";
+import { ArtifactsUnavailable, CommitSha, RemoteUrl, tokenSecret } from "@pecia/wiki-api";
 import * as Effect from "effect/Effect";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { type RepoToken, type Repos, tokenSecret, type TokenScope, type TreeEntry } from "../Repos.ts";
+import { type RepoToken, type Repos, TokenId, type TokenScope, type TreeEntry } from "../Repos.ts";
 
 // A stand-in for Cloudflare Artifacts in tests: bare repos on disk, served over
 // HTTP by `git http-backend`, behind the same repo-scoped Basic-auth tokens.
@@ -31,7 +31,7 @@ export const portOf = (server: Server): number => {
 };
 
 interface Token {
-  readonly id: string;
+  readonly id: TokenId;
   readonly repo: string;
   readonly scope: TokenScope;
   readonly secret: string;
@@ -69,7 +69,7 @@ export interface FakeArtifacts {
 
 export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
   const root = await mkdtemp(join(tmpdir(), "pecia-artifacts-"));
-  const tokens = new Map<string, Token>();
+  const tokens = new Map<TokenId, Token>();
   /** The secrets of revoked tokens, which Artifacts still recognizes. */
   const revoked = new Set<string>();
   let clockOffsetMs = 0;
@@ -167,9 +167,9 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
   server.keepAliveTimeout = 120_000;
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const origin = `http://127.0.0.1:${portOf(server)}`;
-  const remoteOf = (repo: string) => `${origin}/${repo}.git`;
+  const remoteOf = (repo: string) => RemoteUrl.make(`${origin}/${repo}.git`);
 
-  const revoke = (tokenId: string) => {
+  const revoke = (tokenId: TokenId) => {
     const token = tokens.get(tokenId);
     if (token === undefined) return;
     revoked.add(token.secret);
@@ -229,7 +229,7 @@ export const startFakeArtifacts = async (): Promise<FakeArtifacts> => {
         const expiresAtMs = now() + ttlSeconds * 1000;
         const plaintext = `art_v1_${randomBytes(20).toString("hex")}?expires=${Math.floor(expiresAtMs / 1000)}`;
         const token = {
-          id: randomBytes(8).toString("hex"),
+          id: TokenId.make(randomBytes(8).toString("hex")),
           repo: name,
           scope,
           secret: tokenSecret(plaintext),

@@ -9,6 +9,7 @@ import {
   type LandResponse,
   type ListSessionsResponse,
   NotFound,
+  RemoteUrl,
   SessionId,
   SessionNotActive,
   SessionState,
@@ -24,7 +25,8 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Git from "./Git.ts";
-import { Repos, type RepoToken, type TokenScope } from "./Repos.ts";
+import { ForkName, forkOf, type RepoName, Repos, type RepoToken, type TokenScope } from "./Repos.ts";
+import { randomHex, sameText, sha256Hex } from "./Secrets.ts";
 import { schema, Sql, type SqlValue } from "./Sql.ts";
 
 // One workspace: its main repo, its sessions and its lands (docs/mvp.md,
@@ -99,15 +101,16 @@ export const forkSettleMs = 10 * 60_000;
 
 const WorkspaceRow = Schema.Struct({
   name: WorkspaceName,
-  main_remote: Schema.String,
+  main_remote: RemoteUrl,
   base_sha: CommitSha,
 });
 type WorkspaceRow = typeof WorkspaceRow.Type;
 
 const SessionRow = Schema.Struct({
   session_id: SessionId,
-  fork_name: Schema.String,
-  fork_remote: Schema.String,
+  fork_name: ForkName,
+  // Empty between the session's row and its fork being created (`createSession`).
+  fork_remote: RemoteUrl,
   session_key_hash: Schema.String,
   agent: Schema.String,
   model: Schema.String,
@@ -123,26 +126,9 @@ const TokensRow = Schema.Struct({
   main_read_token: Schema.String,
   expires_at: Schema.Number,
 });
+type TokensRow = typeof TokensRow.Type;
 
 const NextRow = Schema.Struct({ next: Schema.NullOr(Schema.Number) });
-
-const hex = (bytes: Uint8Array): string => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-
-const randomHex = (byteLength: number): Effect.Effect<string> =>
-  Effect.sync(() => hex(crypto.getRandomValues(new Uint8Array(byteLength))));
-
-const sha256 = (text: string): Effect.Effect<string> =>
-  Effect.map(
-    Effect.promise(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))),
-    (digest) => hex(new Uint8Array(digest)),
-  );
-
-/** Compares two SHA-256 hex digests without stopping at the first difference. */
-const sameDigest = (a: string, b: string): boolean => {
-  let difference = a.length ^ b.length;
-  for (let index = 0; index < a.length; index++) difference |= a.charCodeAt(index) ^ b.charCodeAt(index);
-  return difference === 0;
-};
 
 /** One log line per event, with the fields usage is measured by. */
 const record = (event: string, fields: Record<string, unknown>): Effect.Effect<void> =>
@@ -178,9 +164,13 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
   const access = yield* Semaphore.make(1);
 
   const applySchema = Effect.forEach(schema, (statement) => sql.exec(statement), { discard: true });
+  /** Whether the workspace was created. An object nobody created has no tables, and looking must not create them. */
+  const isCreated = Effect.map(
+    sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspace'"),
+    (tables) => tables.length > 0,
+  );
   // A workspace created before a table was added gets it here.
-  const created = yield* sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspace'");
-  if (created.length > 0) yield* applySchema;
+  if (yield* isCreated) yield* applySchema;
 
   /** Run a query and decode its rows. SQLite returns them untyped; one that doesn't match its table is a defect. */
   const select = <S extends Schema.Top>(row: S, query: string, ...bindings: ReadonlyArray<SqlValue>) =>
@@ -190,9 +180,7 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     );
 
   const workspace: Effect.Effect<WorkspaceRow | undefined> = Effect.gen(function* () {
-    // An object nobody created has no tables, and looking it up must not create them.
-    const tables = yield* sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workspace'");
-    if (tables.length === 0) return undefined;
+    if (!(yield* isCreated)) return undefined;
     const rows = yield* select(WorkspaceRow, "SELECT name, main_remote, base_sha FROM workspace");
     return rows[0];
   });
@@ -203,29 +191,27 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     );
 
   /** The session and its workspace, whatever the session's state. */
-  const findSession = (sessionId: SessionId): Effect.Effect<Found, NotFound> =>
-    Effect.gen(function* () {
-      const unknown = new NotFound({ resource: "session", id: sessionId });
-      const base = yield* workspace;
-      if (base === undefined) return yield* unknown;
-      const rows = yield* select(SessionRow, "SELECT * FROM sessions WHERE session_id = ?", sessionId);
-      const session = rows[0];
-      if (session === undefined) return yield* unknown;
-      return { session, base };
-    });
+  const findSession = Effect.fnUntraced(function* (sessionId: SessionId): Effect.fn.Return<Found, NotFound> {
+    const unknown = new NotFound({ resource: "session", id: sessionId });
+    const base = yield* workspace;
+    if (base === undefined) return yield* unknown;
+    const rows = yield* select(SessionRow, "SELECT * FROM sessions WHERE session_id = ?", sessionId);
+    const session = rows[0];
+    if (session === undefined) return yield* unknown;
+    return { session, base };
+  });
 
   /** The session and its workspace, for a sandbox presenting its session key. */
-  const authorize = (
+  const authorize = Effect.fnUntraced(function* (
     sessionId: SessionId,
     sessionKey: string,
-  ): Effect.Effect<Found, Unauthorized | NotFound | SessionNotActive> =>
-    Effect.gen(function* () {
-      const found = yield* findSession(sessionId);
-      // The key is checked first: only its holder learns that the session has ended.
-      if (!sameDigest(yield* sha256(sessionKey), found.session.session_key_hash)) return yield* new Unauthorized();
-      yield* requireActive(found.session);
-      return found;
-    });
+  ): Effect.fn.Return<Found, Unauthorized | NotFound | SessionNotActive> {
+    const found = yield* findSession(sessionId);
+    // The key is checked first: only its holder learns that the session has ended.
+    if (!sameText(yield* sha256Hex(sessionKey), found.session.session_key_hash)) return yield* new Unauthorized();
+    yield* requireActive(found.session);
+    return found;
+  });
 
   const touch = (sessionId: SessionId): Effect.Effect<void> =>
     Effect.flatMap(Clock.currentTimeMillis, (now) =>
@@ -233,21 +219,23 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     );
 
   /** Ask to be woken when the first active session reaches the idle timeout or the first closed fork has settled. */
-  const scheduleSweep = (notBefore = 0): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      const rows = yield* select(
-        NextRow,
-        `SELECT MIN(CASE state WHEN 'active' THEN last_active_at + ? ELSE ended_at + ? END) AS next
-          FROM sessions WHERE state IN ('active', 'closed')`,
-        config.idleTimeoutMs,
-        forkSettleMs,
-      );
-      const next = rows[0]?.next ?? null;
-      yield* config.wakeAt(next === null ? undefined : Math.max(next, notBefore));
-    });
+  const scheduleSweep = Effect.fnUntraced(function* (notBefore: number = 0): Effect.fn.Return<void> {
+    const rows = yield* select(
+      NextRow,
+      `SELECT MIN(CASE state WHEN 'active' THEN last_active_at + ? ELSE ended_at + ? END) AS next
+        FROM sessions WHERE state IN ('active', 'closed')`,
+      config.idleTimeoutMs,
+      forkSettleMs,
+    );
+    const next = rows[0]?.next ?? null;
+    yield* config.wakeAt(next === null ? undefined : Math.max(next, notBefore));
+  });
 
   /** A token for the service's own git calls, revoked when the enclosing scope closes. */
-  const scopedToken = (repo: string, scope: TokenScope): Effect.Effect<RepoToken, ArtifactsUnavailable, Scope.Scope> =>
+  const scopedToken = (
+    repo: RepoName,
+    scope: TokenScope,
+  ): Effect.Effect<RepoToken, ArtifactsUnavailable, Scope.Scope> =>
     Effect.acquireRelease(repos.mintToken(repo, scope, landTokenTtlSeconds), (token) =>
       // The token expires by itself, so a failed revoke is worth a log line and no more.
       Effect.catch(repos.revokeToken(repo, token.id), (error) =>
@@ -259,25 +247,28 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
    * A new repo is empty. Give main a first commit, so every fork has a `main`
    * to clone and `git merge upstream/main` has something to merge.
    */
-  const seedMain = (name: WorkspaceName, mainRemote: string): Effect.Effect<CommitSha, ArtifactsUnavailable> =>
-    Effect.gen(function* () {
+  const seedMain = Effect.fnUntraced(
+    function* (
+      name: WorkspaceName,
+      mainRemote: RemoteUrl,
+    ): Effect.fn.Return<CommitSha, Git.GitError | ArtifactsUnavailable, Scope.Scope> {
       const token = yield* scopedToken(name, "write");
       return yield* Git.seed(
         { url: mainRemote, token: token.plaintext },
         { "README.md": `# ${name}\n\nA shared wiki for agents.\n` },
       );
-    }).pipe(
-      Effect.scoped,
-      Effect.catchTag("GitError", (error) => Effect.fail(unavailable(error))),
-    );
+    },
+    (effect) => Effect.scoped(effect),
+    (effect) => Effect.catchTag(effect, "GitError", (error) => Effect.fail(unavailable(error))),
+  );
 
   /** Fast-forward main to the session's fork, with tokens that live only for this call. */
-  const publish = (
-    session: SessionRow,
-    base: WorkspaceRow,
-    mainHead: CommitSha,
-  ): Effect.Effect<Git.LandOutcome, ForkTooLarge | ArtifactsUnavailable> =>
-    Effect.gen(function* () {
+  const publish = Effect.fnUntraced(
+    function* (
+      session: SessionRow,
+      base: WorkspaceRow,
+      mainHead: CommitSha,
+    ): Effect.fn.Return<Git.LandOutcome, ForkTooLarge | Git.GitError | ArtifactsUnavailable, Scope.Scope> {
       const forkToken = yield* scopedToken(session.fork_name, "read");
       const mainToken = yield* scopedToken(base.name, "write");
       return yield* Git.land({
@@ -287,10 +278,10 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
         note: landNote(session),
         limits: Git.landLimits,
       });
-    }).pipe(
-      Effect.scoped,
-      Effect.catchTag("GitError", (error) => Effect.fail(unavailable(error))),
-    );
+    },
+    (effect) => Effect.scoped(effect),
+    (effect) => Effect.catchTag(effect, "GitError", (error) => Effect.fail(unavailable(error))),
+  );
 
   /**
    * Whether main has everything a fork with this head has. Main only ever
@@ -311,283 +302,285 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
    * under way can still finish after the head was read, and `settle` looks
    * again once it must have.
    */
-  const end = (
-    session: SessionRow,
-    base: WorkspaceRow,
-    reason: "closed" | "idle",
-  ): Effect.Effect<EndSessionResponse, ArtifactsUnavailable> =>
-    access.withPermit(
-      Effect.gen(function* () {
-        yield* repos.revokeAllTokens(session.fork_name);
-        yield* sql.exec("DELETE FROM session_tokens WHERE session_id = ?", session.session_id);
-        const forkHead = yield* repos.head(session.fork_name);
-        const state = (yield* isLanded(forkHead, base)) ? "closed" : "parked";
-        yield* sql.exec(
-          "UPDATE sessions SET state = ?, ended_at = ? WHERE session_id = ?",
-          state,
-          yield* Clock.currentTimeMillis,
-          session.session_id,
-        );
-        yield* record("session.ended", {
-          workspace: base.name,
-          sessionId: session.session_id,
-          agent: session.agent,
-          model: session.model,
-          state,
-          reason,
-          forkHead,
-        });
-        return { state };
-      }),
-    );
-
-  /**
-   * Finish a closed session whose settle period is over: delete the fork if
-   * main still has everything in it, park it if a late push brought commits.
-   */
-  const settle = (session: SessionRow, base: WorkspaceRow): Effect.Effect<void, ArtifactsUnavailable> =>
-    Effect.gen(function* () {
+  const end = Effect.fnUntraced(
+    function* (
+      session: SessionRow,
+      base: WorkspaceRow,
+      reason: "closed" | "idle",
+    ): Effect.fn.Return<EndSessionResponse, ArtifactsUnavailable> {
+      yield* repos.revokeAllTokens(session.fork_name);
+      yield* sql.exec("DELETE FROM session_tokens WHERE session_id = ?", session.session_id);
       const forkHead = yield* repos.head(session.fork_name);
-      const landed = yield* isLanded(forkHead, base);
-      if (landed) yield* repos.delete(session.fork_name);
-      const state = landed ? "deleted" : "parked";
-      yield* sql.exec("UPDATE sessions SET state = ? WHERE session_id = ?", state, session.session_id);
-      yield* record("session.settled", {
+      const state = (yield* isLanded(forkHead, base)) ? "closed" : "parked";
+      yield* sql.exec(
+        "UPDATE sessions SET state = ?, ended_at = ? WHERE session_id = ?",
+        state,
+        yield* Clock.currentTimeMillis,
+        session.session_id,
+      );
+      yield* record("session.ended", {
         workspace: base.name,
         sessionId: session.session_id,
         agent: session.agent,
         model: session.model,
         state,
+        reason,
         forkHead,
       });
-    });
+      return { state };
+    },
+    (effect) => access.withPermit(effect),
+  );
 
-  const create: Workspace["create"] = (name) =>
-    lock.withPermit(
-      Effect.gen(function* () {
-        const mainRemote = yield* repos.ensure(name);
-        const existing = yield* repos.head(name);
-        const baseSha = existing ?? (yield* seedMain(name, mainRemote));
-        yield* applySchema;
-        const inserted = yield* sql.exec(
-          "INSERT INTO workspace (name, main_remote, base_sha, created_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING name",
-          name,
-          mainRemote,
-          baseSha,
-          yield* Clock.currentTimeMillis,
-        );
-        if (inserted.length > 0) yield* record("workspace.created", { workspace: name, baseSha });
-        return { workspace: name, mainRemote };
-      }),
-    );
-
-  const createSession: Workspace["createSession"] = (name, request) =>
-    Effect.gen(function* () {
-      const base = yield* requireWorkspace(name);
-      const sessionId = SessionId.make(`${base.name}.${yield* randomHex(8)}`);
-      const sessionKey = yield* randomHex(32);
-      const forkName = `${base.name}--${sessionId}`;
-      const now = yield* Clock.currentTimeMillis;
-      // The row goes in before the fork exists, so a fork is never without a
-      // session: whatever happens next, ending the session deletes it.
-      yield* sql.exec(
-        `INSERT INTO sessions
-          (session_id, fork_name, fork_remote, session_key_hash, agent, model, state, created_at, last_active_at)
-          VALUES (?, ?, '', ?, ?, ?, 'active', ?, ?)`,
-        sessionId,
-        forkName,
-        yield* sha256(sessionKey),
-        request.agent,
-        request.model,
-        now,
-        now,
-      );
-      yield* scheduleSweep();
-      // The fork may exist even though the call failed. Forget the session
-      // only once the fork is known to be gone; otherwise the sweep ends it.
-      const forget = Effect.gen(function* () {
-        yield* repos.delete(forkName);
-        yield* sql.exec("DELETE FROM sessions WHERE session_id = ?", sessionId);
-        yield* scheduleSweep();
-      });
-      const forkRemote = yield* Effect.tapError(repos.fork(base.name, forkName), () =>
-        Effect.catch(forget, (error) =>
-          Effect.logWarning("session.create: fork not cleaned up", { sessionId, error: error.message }),
-        ),
-      );
-      yield* sql.exec("UPDATE sessions SET fork_remote = ? WHERE session_id = ?", forkRemote, sessionId);
-      yield* record("session.created", { workspace: base.name, sessionId, agent: request.agent, model: request.model });
-      return { sessionId, sessionKey, forkRemote, mainRemote: base.main_remote };
-    });
-
-  const listSessions: Workspace["listSessions"] = (name) =>
-    Effect.gen(function* () {
-      yield* requireWorkspace(name);
-      const rows = yield* select(SessionRow, "SELECT * FROM sessions ORDER BY created_at, session_id");
-      return rows.map((row) => ({
-        sessionId: row.session_id,
-        agent: row.agent,
-        state: row.state,
-        createdAt: new Date(row.created_at).toISOString(),
-        lastActiveAt: new Date(row.last_active_at).toISOString(),
-      }));
-    });
-
-  const endSession: Workspace["endSession"] = (sessionId) =>
-    lock.withPermit(
-      Effect.gen(function* () {
-        const { session, base } = yield* findSession(sessionId);
-        yield* requireActive(session);
-        const result = yield* end(session, base, "closed");
-        yield* scheduleSweep();
-        return result;
-      }),
-    );
-
-  /** New tokens for a session's sandbox, stored to be handed out until shortly before they expire. */
-  const mintSandboxTokens = (
+  /**
+   * Finish a closed session whose settle period is over: delete the fork if
+   * main still has everything in it, park it if a late push brought commits.
+   */
+  const settle = Effect.fnUntraced(function* (
     session: SessionRow,
     base: WorkspaceRow,
-  ): Effect.Effect<typeof TokensRow.Type, ArtifactsUnavailable> =>
-    Effect.gen(function* () {
-      // The only tokens a sandbox ever holds: write to its fork, read from main.
-      const [fork, main] = yield* Effect.all(
-        [
-          repos.mintToken(session.fork_name, "write", sandboxTokenTtlSeconds),
-          repos.mintToken(base.name, "read", sandboxTokenTtlSeconds),
-        ],
-        { concurrency: 2 },
-      );
-      const tokens = {
-        fork_write_token: fork.plaintext,
-        main_read_token: main.plaintext,
-        // By the service's clock, which also decides when to replace them; the
-        // replacement margin covers a difference from Artifacts' clock.
-        expires_at: (yield* Clock.currentTimeMillis) + sandboxTokenTtlSeconds * 1000,
-      };
-      yield* sql.exec(
-        `INSERT INTO session_tokens (session_id, fork_write_token, main_read_token, expires_at)
-          VALUES (?, ?, ?, ?)
-          ON CONFLICT (session_id) DO UPDATE SET fork_write_token = excluded.fork_write_token,
-            main_read_token = excluded.main_read_token, expires_at = excluded.expires_at`,
-        session.session_id,
-        tokens.fork_write_token,
-        tokens.main_read_token,
-        tokens.expires_at,
-      );
-      yield* record("tokens.minted", { workspace: base.name, sessionId: session.session_id });
-      return tokens;
+  ): Effect.fn.Return<void, ArtifactsUnavailable> {
+    const forkHead = yield* repos.head(session.fork_name);
+    const landed = yield* isLanded(forkHead, base);
+    if (landed) yield* repos.delete(session.fork_name);
+    const state = landed ? "deleted" : "parked";
+    yield* sql.exec("UPDATE sessions SET state = ? WHERE session_id = ?", state, session.session_id);
+    yield* record("session.settled", {
+      workspace: base.name,
+      sessionId: session.session_id,
+      agent: session.agent,
+      model: session.model,
+      state,
+      forkHead,
     });
+  });
 
-  const mintTokens: Workspace["mintTokens"] = (sessionId, sessionKey) =>
+  const create: Workspace["create"] = Effect.fn("Workspace.create")(
+    function* (name: WorkspaceName) {
+      const mainRemote = yield* repos.ensure(name);
+      const existing = yield* repos.head(name);
+      const baseSha = existing ?? (yield* seedMain(name, mainRemote));
+      yield* applySchema;
+      const inserted = yield* sql.exec(
+        "INSERT INTO workspace (name, main_remote, base_sha, created_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING name",
+        name,
+        mainRemote,
+        baseSha,
+        yield* Clock.currentTimeMillis,
+      );
+      if (inserted.length > 0) yield* record("workspace.created", { workspace: name, baseSha });
+      return { workspace: name, mainRemote };
+    },
+    (effect) => lock.withPermit(effect),
+  );
+
+  const createSession: Workspace["createSession"] = Effect.fn("Workspace.createSession")(function* (
+    name: WorkspaceName,
+    request: CreateSessionRequest,
+  ) {
+    const base = yield* requireWorkspace(name);
+    const sessionId = SessionId.make(`${base.name}.${yield* randomHex(8)}`);
+    const sessionKey = yield* randomHex(32);
+    const forkName = forkOf(sessionId);
+    const now = yield* Clock.currentTimeMillis;
+    // The row goes in before the fork exists, so a fork is never without a
+    // session: whatever happens next, ending the session deletes it.
+    yield* sql.exec(
+      `INSERT INTO sessions
+        (session_id, fork_name, fork_remote, session_key_hash, agent, model, state, created_at, last_active_at)
+        VALUES (?, ?, '', ?, ?, ?, 'active', ?, ?)`,
+      sessionId,
+      forkName,
+      yield* sha256Hex(sessionKey),
+      request.agent,
+      request.model,
+      now,
+      now,
+    );
+    yield* scheduleSweep();
+    // The fork may exist even though the call failed. Forget the session
+    // only once the fork is known to be gone; otherwise the sweep ends it.
+    const forget = Effect.gen(function* () {
+      yield* repos.delete(forkName);
+      yield* sql.exec("DELETE FROM sessions WHERE session_id = ?", sessionId);
+      yield* scheduleSweep();
+    });
+    const forkRemote = yield* Effect.tapError(repos.fork(base.name, forkName), () =>
+      Effect.catch(forget, (error) =>
+        Effect.logWarning("session.create: fork not cleaned up", { sessionId, error: error.message }),
+      ),
+    );
+    yield* sql.exec("UPDATE sessions SET fork_remote = ? WHERE session_id = ?", forkRemote, sessionId);
+    yield* record("session.created", { workspace: base.name, sessionId, agent: request.agent, model: request.model });
+    return { sessionId, sessionKey, forkRemote, mainRemote: base.main_remote };
+  });
+
+  const listSessions: Workspace["listSessions"] = Effect.fn("Workspace.listSessions")(function* (name: WorkspaceName) {
+    yield* requireWorkspace(name);
+    const rows = yield* select(SessionRow, "SELECT * FROM sessions ORDER BY created_at, session_id");
+    return rows.map((row) => ({
+      sessionId: row.session_id,
+      agent: row.agent,
+      state: row.state,
+      createdAt: new Date(row.created_at).toISOString(),
+      lastActiveAt: new Date(row.last_active_at).toISOString(),
+    }));
+  });
+
+  const endSession: Workspace["endSession"] = Effect.fn("Workspace.endSession")(
+    function* (sessionId: SessionId) {
+      const { session, base } = yield* findSession(sessionId);
+      yield* requireActive(session);
+      const result = yield* end(session, base, "closed");
+      yield* scheduleSweep();
+      return result;
+    },
+    (effect) => lock.withPermit(effect),
+  );
+
+  /** New tokens for a session's sandbox, stored to be handed out until shortly before they expire. */
+  const mintSandboxTokens = Effect.fnUntraced(function* (
+    session: SessionRow,
+    base: WorkspaceRow,
+  ): Effect.fn.Return<TokensRow, ArtifactsUnavailable> {
+    // The only tokens a sandbox ever holds: write to its fork, read from main.
+    const [fork, main] = yield* Effect.all(
+      [
+        repos.mintToken(session.fork_name, "write", sandboxTokenTtlSeconds),
+        repos.mintToken(base.name, "read", sandboxTokenTtlSeconds),
+      ],
+      { concurrency: 2 },
+    );
+    const tokens = {
+      fork_write_token: fork.plaintext,
+      main_read_token: main.plaintext,
+      // By the service's clock, which also decides when to replace them; the
+      // replacement margin covers a difference from Artifacts' clock.
+      expires_at: (yield* Clock.currentTimeMillis) + sandboxTokenTtlSeconds * 1000,
+    };
+    yield* sql.exec(
+      `INSERT INTO session_tokens (session_id, fork_write_token, main_read_token, expires_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT (session_id) DO UPDATE SET fork_write_token = excluded.fork_write_token,
+          main_read_token = excluded.main_read_token, expires_at = excluded.expires_at`,
+      session.session_id,
+      tokens.fork_write_token,
+      tokens.main_read_token,
+      tokens.expires_at,
+    );
+    yield* record("tokens.minted", { workspace: base.name, sessionId: session.session_id });
+    return tokens;
+  });
+
+  const mintTokens: Workspace["mintTokens"] = Effect.fn("Workspace.mintTokens")(
+    function* (sessionId: SessionId, sessionKey: string) {
+      const { session, base } = yield* authorize(sessionId, sessionKey);
+      yield* touch(sessionId);
+      const now = yield* Clock.currentTimeMillis;
+      const [stored] = yield* select(
+        TokensRow,
+        "SELECT fork_write_token, main_read_token, expires_at FROM session_tokens WHERE session_id = ?",
+        sessionId,
+      );
+      const tokens =
+        stored !== undefined && stored.expires_at - sandboxTokenMarginMs > now
+          ? stored
+          : yield* mintSandboxTokens(session, base);
+      return {
+        forkWriteToken: tokens.fork_write_token,
+        mainReadToken: tokens.main_read_token,
+        expiresAt: new Date(tokens.expires_at).toISOString(),
+      };
+    },
     // The session is checked and its tokens are read or created in one step
     // that `end` cannot interleave with, so a session that has ended is never
     // handed a token: `end` deletes the stored ones with the revoke.
-    access.withPermit(
-      Effect.gen(function* () {
-        const { session, base } = yield* authorize(sessionId, sessionKey);
-        yield* touch(sessionId);
-        const now = yield* Clock.currentTimeMillis;
-        const [stored] = yield* select(
-          TokensRow,
-          "SELECT fork_write_token, main_read_token, expires_at FROM session_tokens WHERE session_id = ?",
+    (effect) => access.withPermit(effect),
+  );
+
+  const land: Workspace["land"] = Effect.fn("Workspace.land")(
+    function* (sessionId: SessionId, sessionKey: string) {
+      const { session, base } = yield* authorize(sessionId, sessionKey);
+      yield* touch(sessionId);
+      const [mainHead, forkHead] = yield* Effect.all([repos.head(base.name), repos.head(session.fork_name)], {
+        concurrency: 2,
+      });
+      if (mainHead === undefined) {
+        return yield* new ArtifactsUnavailable({ message: `main repo '${base.name}' has no commits` });
+      }
+      const who = { workspace: base.name, sessionId, agent: session.agent, model: session.model };
+      const outcome: Git.LandOutcome =
+        forkHead === undefined || forkHead === mainHead
+          ? { _tag: "NothingToLand" }
+          : yield* Effect.tapErrorTag(publish(session, base, mainHead), "ForkTooLarge", (error) =>
+              // Worth an event of its own: it says a wiki is reaching what a Worker can land.
+              record("land.refused", { ...who, limit: error.limit, max: error.max, mainSha: mainHead, forkHead }),
+            );
+
+      if (outcome._tag === "Landed") {
+        yield* sql.exec(
+          "INSERT INTO lands (session_id, from_sha, to_sha, landed_at) VALUES (?, ?, ?, ?)",
           sessionId,
+          mainHead,
+          outcome.sha,
+          yield* Clock.currentTimeMillis,
         );
-        const tokens =
-          stored !== undefined && stored.expires_at - sandboxTokenMarginMs > now
-            ? stored
-            : yield* mintSandboxTokens(session, base);
-        return {
-          forkWriteToken: tokens.fork_write_token,
-          mainReadToken: tokens.main_read_token,
-          expiresAt: new Date(tokens.expires_at).toISOString(),
-        };
-      }),
-    );
+      }
+      const response = Match.valueTags(outcome, {
+        Landed: ({ sha }): LandResponse => ({ status: "landed", sha }),
+        Behind: (): LandResponse => ({ status: "behind", mainSha: mainHead }),
+        NothingToLand: (): LandResponse => ({ status: "nothing_to_land" }),
+      });
+      yield* record("land", {
+        ...who,
+        status: response.status,
+        // Where main was before the call, and what the session asked to land.
+        mainSha: mainHead,
+        forkHead,
+        // How much the land fetched and held in memory, to compare with `Git.landLimits`.
+        ...("fetched" in outcome ? outcome.fetched : {}),
+      });
+      return response;
+    },
+    (effect) => lock.withPermit(effect),
+  );
 
-  const land: Workspace["land"] = (sessionId, sessionKey) =>
-    lock.withPermit(
-      Effect.gen(function* () {
-        const { session, base } = yield* authorize(sessionId, sessionKey);
-        yield* touch(sessionId);
-        const [mainHead, forkHead] = yield* Effect.all([repos.head(base.name), repos.head(session.fork_name)], {
-          concurrency: 2,
-        });
-        if (mainHead === undefined) {
-          return yield* new ArtifactsUnavailable({ message: `main repo '${base.name}' has no commits` });
-        }
-        const who = { workspace: base.name, sessionId, agent: session.agent, model: session.model };
-        const outcome: Git.LandOutcome =
-          forkHead === undefined || forkHead === mainHead
-            ? { _tag: "NothingToLand" }
-            : yield* Effect.tapErrorTag(publish(session, base, mainHead), "ForkTooLarge", (error) =>
-                // Worth an event of its own: it says a wiki is reaching what a Worker can land.
-                record("land.refused", { ...who, limit: error.limit, max: error.max, mainSha: mainHead, forkHead }),
-              );
-
-        if (outcome._tag === "Landed") {
-          yield* sql.exec(
-            "INSERT INTO lands (session_id, from_sha, to_sha, landed_at) VALUES (?, ?, ?, ?)",
-            sessionId,
-            mainHead,
-            outcome.sha,
-            yield* Clock.currentTimeMillis,
-          );
-        }
-        const response = Match.valueTags(outcome, {
-          Landed: ({ sha }): LandResponse => ({ status: "landed", sha }),
-          Behind: (): LandResponse => ({ status: "behind", mainSha: mainHead }),
-          NothingToLand: (): LandResponse => ({ status: "nothing_to_land" }),
-        });
-        yield* record("land", {
-          ...who,
-          status: response.status,
-          // Where main was before the call, and what the session asked to land.
-          mainSha: mainHead,
-          forkHead,
-          // How much the land fetched and held in memory, to compare with `Git.landLimits`.
-          ...("fetched" in outcome ? outcome.fetched : {}),
-        });
-        return response;
-      }),
-    );
-
-  const sweep: Workspace["sweep"] = () =>
-    lock.withPermit(
-      Effect.gen(function* () {
-        const base = yield* workspace;
-        // A workspace nobody created has no sessions to end.
-        if (base === undefined) return;
-        const now = yield* Clock.currentTimeMillis;
-        // Each session reports whether its step was done; one that failed is tried again later.
-        const attempt = (step: string, session: SessionRow, effect: Effect.Effect<unknown, ArtifactsUnavailable>) =>
-          effect.pipe(
-            Effect.as(true),
-            Effect.catch((error) =>
-              Effect.as(
-                Effect.logWarning(`sweep: session not ${step}`, {
-                  sessionId: session.session_id,
-                  error: error.message,
-                }),
-                false,
-              ),
+  const sweep: Workspace["sweep"] = Effect.fn("Workspace.sweep")(
+    function* () {
+      const base = yield* workspace;
+      // A workspace nobody created has no sessions to end.
+      if (base === undefined) return;
+      const now = yield* Clock.currentTimeMillis;
+      // Each session reports whether its step was done; one that failed is tried again later.
+      const attempt = (step: string, session: SessionRow, effect: Effect.Effect<unknown, ArtifactsUnavailable>) =>
+        effect.pipe(
+          Effect.as(true),
+          Effect.catch((error) =>
+            Effect.as(
+              Effect.logWarning(`sweep: session not ${step}`, {
+                sessionId: session.session_id,
+                error: error.message,
+              }),
+              false,
             ),
-          );
-        const closed = yield* select(
-          SessionRow,
-          "SELECT * FROM sessions WHERE state = 'closed' AND ended_at <= ? ORDER BY ended_at, session_id",
-          now - forkSettleMs,
+          ),
         );
-        const settled = yield* Effect.forEach(closed, (session) => attempt("settled", session, settle(session, base)));
-        const idle = yield* select(
-          SessionRow,
-          "SELECT * FROM sessions WHERE state = 'active' AND last_active_at <= ?",
-          now - config.idleTimeoutMs,
-        );
-        const ended = yield* Effect.forEach(idle, (session) => attempt("ended", session, end(session, base, "idle")));
-        yield* scheduleSweep([...settled, ...ended].includes(false) ? now + sweepRetryMs : 0);
-      }),
-    );
+      const closed = yield* select(
+        SessionRow,
+        "SELECT * FROM sessions WHERE state = 'closed' AND ended_at <= ? ORDER BY ended_at, session_id",
+        now - forkSettleMs,
+      );
+      const settled = yield* Effect.forEach(closed, (session) => attempt("settled", session, settle(session, base)));
+      const idle = yield* select(
+        SessionRow,
+        "SELECT * FROM sessions WHERE state = 'active' AND last_active_at <= ?",
+        now - config.idleTimeoutMs,
+      );
+      const ended = yield* Effect.forEach(idle, (session) => attempt("ended", session, end(session, base, "idle")));
+      yield* scheduleSweep([...settled, ...ended].includes(false) ? now + sweepRetryMs : 0);
+    },
+    (effect) => lock.withPermit(effect),
+  );
 
   return { create, createSession, listSessions, endSession, mintTokens, land, sweep };
 });

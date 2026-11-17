@@ -1,9 +1,9 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
-import { ArtifactsUnavailable, CommitSha } from "@pecia/wiki-api";
+import { ArtifactsUnavailable, CommitSha, RemoteUrl } from "@pecia/wiki-api";
 import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
-import type { RepoSummary, Repos } from "./Repos.ts";
+import { type RepoName, type RepoSummary, type Repos, TokenId } from "./Repos.ts";
 
 // Repos over the Cloudflare Artifacts Worker binding.
 //
@@ -46,29 +46,28 @@ const revokePasses = 20;
  * Revoke the repo's active tokens, and list again until a listing shows none.
  * Answers whether it got there within `passes` listings.
  */
-const revokeActive = (
+const revokeActive: (
   repo: Cloudflare.Artifacts.RepoClient,
   passes: number,
-): Effect.Effect<boolean, ArtifactsError, RuntimeContext> =>
-  Effect.gen(function* () {
-    const active = yield* taking(repo.listTokens(), ({ tokens }) =>
-      tokens.filter((token) => token.state === "active").map((token) => token.id),
-    );
-    if (active.length === 0) return true;
-    if (passes === 0) return false;
-    yield* Effect.forEach(active, (tokenId) => repo.revokeToken(tokenId), { discard: true });
-    return yield* revokeActive(repo, passes - 1);
-  });
+) => Effect.Effect<boolean, ArtifactsError, RuntimeContext> = Effect.fnUntraced(function* (repo, passes) {
+  const active = yield* taking(repo.listTokens(), ({ tokens }) =>
+    tokens.filter((token) => token.state === "active").map((token) => TokenId.make(token.id)),
+  );
+  if (active.length === 0) return true;
+  if (passes === 0) return false;
+  yield* Effect.forEach(active, (tokenId) => repo.revokeToken(tokenId), { discard: true });
+  return yield* revokeActive(repo, passes - 1);
+});
 
 /** `list` answers this many repos per page at most. */
 const listPageSize = 200;
 
 /** The repos from `cursor` on, one page per call. */
-const listFrom = (
+const listFrom: (
   artifacts: Cloudflare.Artifacts.ReadWriteNamespaceClient,
   cursor: string | undefined,
-): Effect.Effect<ReadonlyArray<RepoSummary>, ArtifactsError, RuntimeContext> =>
-  Effect.gen(function* () {
+) => Effect.Effect<ReadonlyArray<RepoSummary>, ArtifactsError, RuntimeContext> = Effect.fnUntraced(
+  function* (artifacts, cursor) {
     const page = yield* taking(
       artifacts.list(cursor === undefined ? { limit: listPageSize } : { limit: listPageSize, cursor }),
       (listed) => ({
@@ -82,7 +81,8 @@ const listFrom = (
     );
     if (page.next === undefined || page.repos.length === 0) return page.repos;
     return [...page.repos, ...(yield* listFrom(artifacts, page.next))];
-  });
+  },
+);
 
 /** A read of a repo that is not there answers `missing`, like a read of an object that is not there. */
 const orMissing = <A, B>(
@@ -100,7 +100,7 @@ export const make = (
 ): Effect.Effect<Repos["Service"], never, RuntimeContext> => {
   /** Use the repo's handle, then dispose it, also when the use fails. */
   const withRepo = <A>(
-    name: string,
+    name: RepoName,
     use: (repo: Cloudflare.Artifacts.RepoClient) => Effect.Effect<A, ArtifactsError, RuntimeContext>,
   ): Effect.Effect<A, ArtifactsError, RuntimeContext> =>
     Effect.scoped(
@@ -112,7 +112,8 @@ export const make = (
       }),
     );
 
-  const remoteOf = (name: string) => withRepo(name, (repo) => taking(repo.info(), (info) => info.remote));
+  const remoteOf = (name: RepoName) =>
+    withRepo(name, (repo) => taking(repo.info(), (info) => RemoteUrl.make(info.remote)));
 
   return Effect.gen(function* () {
     const context = yield* Effect.context<RuntimeContext>();
@@ -140,7 +141,7 @@ export const make = (
         call(
           "create",
           Effect.catchIf(
-            taking(artifacts.create(name, { setDefaultBranch: "main" }), (created) => created.remote),
+            taking(artifacts.create(name, { setDefaultBranch: "main" }), (created) => RemoteUrl.make(created.remote)),
             (error) => error.code === "ALREADY_EXISTS",
             () => remoteOf(name),
           ),
@@ -151,7 +152,7 @@ export const make = (
           Effect.catchIf(
             withRepo(source, (repo) =>
               // Only main: notes and any other refs stay on the main repo.
-              taking(repo.fork(name, { defaultBranchOnly: true }), (created) => created.remote),
+              taking(repo.fork(name, { defaultBranchOnly: true }), (created) => RemoteUrl.make(created.remote)),
             ),
             // A retry after a fork whose answer was lost.
             (error) => error.code === "ALREADY_EXISTS",
@@ -172,15 +173,14 @@ export const make = (
       head: (name) =>
         call(
           "log",
-          Effect.catchIf(
+          orMissing(
             withRepo(name, (repo) =>
               taking(repo.log({ ref: "main", limit: 1 }), (commits) => {
                 const newest = commits[0];
                 return newest === undefined ? undefined : CommitSha.make(newest.hash);
               }),
             ),
-            (error) => error.code === "NOT_FOUND",
-            () => Effect.succeed(undefined),
+            undefined,
           ),
         ),
       mintToken: (name, scope, ttlSeconds) =>
@@ -188,7 +188,7 @@ export const make = (
           "createToken",
           withRepo(name, (repo) =>
             taking(repo.createToken(scope, ttlSeconds), (token) => ({
-              id: token.id,
+              id: TokenId.make(token.id),
               plaintext: token.plaintext,
               expiresAt: token.expiresAt,
             })),

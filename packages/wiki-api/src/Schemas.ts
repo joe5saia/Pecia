@@ -39,6 +39,16 @@ export const workspaceOfSession = (sessionId: SessionId): WorkspaceName =>
 export const CommitSha = Schema.String.pipe(Schema.brand("CommitSha"));
 export type CommitSha = typeof CommitSha.Type;
 
+/** The HTTPS git remote of an Artifacts repo. The brand only tells it apart from other strings; it adds no check. */
+export const RemoteUrl = Schema.String.pipe(Schema.brand("RemoteUrl"));
+export type RemoteUrl = typeof RemoteUrl.Type;
+
+/**
+ * Git Basic auth takes only the secret of an Artifacts token: the token
+ * (`art_v1_<secret>?expires=<unix_seconds>`) without its `?expires=` suffix.
+ */
+export const tokenSecret = (token: string): string => token.split("?expires=")[0] ?? token;
+
 /**
  * - `active`: the sandbox can push to its fork and land.
  * - `closed`: ended with nothing unlanded. The sandbox is cut off and the fork
@@ -51,12 +61,16 @@ export type CommitSha = typeof CommitSha.Type;
 export const SessionState = Schema.Literals(["active", "closed", "parked", "deleted"]);
 export type SessionState = typeof SessionState.Type;
 
+/** The states of a session that has ended: every state but `active`. */
+export const EndedSessionState = Schema.Literals(["closed", "parked", "deleted"]);
+export type EndedSessionState = typeof EndedSessionState.Type;
+
 export const CreateWorkspaceRequest = Schema.Struct({ name: WorkspaceName });
 export type CreateWorkspaceRequest = typeof CreateWorkspaceRequest.Type;
 
 export const CreateWorkspaceResponse = Schema.Struct({
   workspace: WorkspaceName,
-  mainRemote: Schema.String,
+  mainRemote: RemoteUrl,
 });
 export type CreateWorkspaceResponse = typeof CreateWorkspaceResponse.Type;
 
@@ -69,8 +83,8 @@ export const CreateSessionResponse = Schema.Struct({
   sessionId: SessionId,
   /** Returned only here. The service stores a hash of it. */
   sessionKey: Schema.String,
-  forkRemote: Schema.String,
-  mainRemote: Schema.String,
+  forkRemote: RemoteUrl,
+  mainRemote: RemoteUrl,
 });
 export type CreateSessionResponse = typeof CreateSessionResponse.Type;
 

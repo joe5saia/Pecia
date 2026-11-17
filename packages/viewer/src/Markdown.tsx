@@ -1,4 +1,4 @@
-import { type Ref, type WorkspaceName } from "@pecia/wiki-api";
+import type { CommitSha, WorkspaceName } from "@pecia/wiki-api";
 import * as Predicate from "effect/Predicate";
 import { type ComponentProps, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -20,7 +20,7 @@ import { fileHref, onLinkClick } from "./router.ts";
 export interface Page {
   readonly ws: WorkspaceName;
   /** The commit being read. */
-  readonly sha: Ref;
+  readonly sha: CommitSha;
   /** What the route says: `undefined` while reading main. */
   readonly at: string | undefined;
   readonly path: string;

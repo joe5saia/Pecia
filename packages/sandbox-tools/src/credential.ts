@@ -1,3 +1,4 @@
+import { tokenSecret } from "@pecia/wiki-api";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Match from "effect/Match";
@@ -24,9 +25,7 @@ const get = Effect.gen(function* () {
   const client = yield* sandboxClient(session);
   const minted = yield* client.mintTokens({ params: { id: session.sessionId } });
   const token = isFork ? minted.forkWriteToken : minted.mainReadToken;
-  // Git Basic auth takes only the secret, not the `?expires=` suffix.
-  const secret = token.split("?expires=")[0];
-  yield* Console.log(`username=x\npassword=${secret}`);
+  yield* Console.log(`username=x\npassword=${tokenSecret(token)}`);
   return 0;
 });
 

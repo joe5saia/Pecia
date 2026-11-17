@@ -14,9 +14,8 @@ import type { FakeArtifacts } from "./FakeArtifacts.ts";
 export interface TestWorkspace {
   /** The workspace, with every call running on the test clock. */
   readonly workspace: Workspace.Workspace;
+  /** Run a workspace call from a test that is not an effect, such as one that drives the service over HTTP. */
   readonly run: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>;
-  /** Run a workspace call that is expected to fail, and return its error. */
-  readonly fail: <A, E>(effect: Effect.Effect<A, E>) => Promise<E>;
   /** Move the workspace's clock and the clock that expires Artifacts tokens. */
   readonly advance: (ms: number) => void;
   /** The time the workspace last asked to be woken at, if any. */
@@ -83,7 +82,6 @@ export const makeTestWorkspace = (
   return {
     workspace,
     run: (effect) => Effect.runPromise(effect),
-    fail: (effect) => Effect.runPromise(Effect.flip(effect)),
     advance: (ms) => {
       now += ms;
       artifacts.advanceClock(ms);

@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { SessionId } from "./Schemas.ts";
+import { EndedSessionState, SessionId } from "./Schemas.ts";
 
 // Error responses of the Control Worker API (docs/mvp.md, "Control Worker API").
 // Each is a typed failure in the service, a JSON body `{ "_tag": ..., ...fields }`
@@ -28,7 +28,7 @@ export class NotFound extends Schema.TaggedError<NotFound>()(
 /** 409: the session has ended. It does not become active again, so the call is not worth repeating. */
 export class SessionNotActive extends Schema.TaggedError<SessionNotActive>()(
   "SessionNotActive",
-  { sessionId: SessionId, state: Schema.Literals(["closed", "parked", "deleted"]) },
+  { sessionId: SessionId, state: EndedSessionState },
   { httpApiStatus: 409 },
 ) {
   override get message(): string {

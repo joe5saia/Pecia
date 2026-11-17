@@ -1,6 +1,8 @@
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
-import { SessionId, WikiApi } from "@pecia/wiki-api";
+import { RemoteUrl, SessionId, WikiApi } from "@pecia/wiki-api";
+import * as Config from "effect/Config";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Console from "effect/Console";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -10,7 +12,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
+import type * as Redacted from "effect/Redacted";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -21,24 +23,19 @@ import { join } from "node:path";
 export interface Session {
   readonly wikiUrl: string;
   readonly sessionId: SessionId;
-  readonly sessionKey: string;
-  readonly forkRemote: string;
-  readonly mainRemote: string;
+  readonly sessionKey: Redacted.Redacted;
+  readonly forkRemote: RemoteUrl;
+  readonly mainRemote: RemoteUrl;
 }
 
 export class ToolError extends Data.TaggedError("ToolError")<{ readonly message: string }> {}
 
-/** Where setup.sh keeps the session. Never inside the wiki checkout. */
-const stateDir = (): string =>
-  process.env["PECIA_HOME"] ?? join(process.env["XDG_CONFIG_HOME"] ?? join(homedir(), ".config"), "pecia");
-
-const variables = {
-  wikiUrl: "WIKI_URL",
-  sessionId: "SESSION_ID",
-  sessionKey: "SESSION_KEY",
-  forkRemote: "FORK_REMOTE",
-  mainRemote: "MAIN_REMOTE",
-} as const satisfies Record<keyof Session, string>;
+/** Where setup.sh keeps the session, as setup.sh works it out. Never inside the wiki checkout. */
+const StateDir: Config.Config<string> = Config.orElse(Config.String("PECIA_HOME"), () =>
+  Config.map(Config.withDefault(Config.String("XDG_CONFIG_HOME"), join(homedir(), ".config")), (config) =>
+    join(config, "pecia"),
+  ),
+);
 
 /** `KEY=value` lines, the format setup.sh writes and git's credential protocol uses. */
 export const parseLines = (text: string): Map<string, string> => {
@@ -53,29 +50,34 @@ export const parseLines = (text: string): Map<string, string> => {
 /** The session from the environment, or from the file setup.sh wrote for shells that no longer have it. */
 export const loadSession: Effect.Effect<Session, ToolError, FileSystem.FileSystem> = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
-  const path = join(stateDir(), "session.env");
+  const environment = yield* ConfigProvider.ConfigProvider;
+  const path = join(
+    yield* Effect.mapError(StateDir, (error) => new ToolError({ message: error.message })),
+    "session.env",
+  );
   const file = yield* fs.readFileString(path).pipe(
-    Effect.map((text) => parseLines(text)),
-    Effect.orElseSucceed(() => new Map<string, string>()),
+    Effect.map((text) => Object.fromEntries(parseLines(text))),
+    // A shell that still has the variables needs no file, so one that is missing or unreadable
+    // counts as empty. If a variable is in neither place, the error below names both.
+    Effect.orElseSucceed((): Record<string, string> => ({})),
   );
-  const read = (name: string): Effect.Effect<string, ToolError> => {
-    const value = process.env[name] ?? file.get(name);
-    return value === undefined || value === ""
-      ? Effect.fail(
-          new ToolError({ message: `${name} is not set and not in ${path}. Run the wiki setup script first.` }),
-        )
-      : Effect.succeed(value);
-  };
-  const sessionId = yield* Effect.mapError(
-    Schema.decodeUnknownEffect(SessionId)(yield* read(variables.sessionId)),
-    () => new ToolError({ message: `${variables.sessionId} is not a session ID. Run the wiki setup script again.` }),
-  );
+  // Not `fromDotEnvContents`: setup.sh writes the values as they are, without dotenv's quoting or comments.
+  const provider = ConfigProvider.orElse(environment, ConfigProvider.fromEnvRecord(file));
+  /** One variable of the session. A tool's error is one line, so it names the variable and not the schema's report. */
+  const variable = <A>(name: string, config: (name: string) => Config.Config<A>): Effect.Effect<A, ToolError> =>
+    Effect.mapError(
+      config(name).parse(provider),
+      () =>
+        new ToolError({
+          message: `${name} is not set, or not as the wiki setup script wrote it, in the environment or in ${path}. Run the wiki setup script first.`,
+        }),
+    );
   return {
-    wikiUrl: yield* read(variables.wikiUrl),
-    sessionId,
-    sessionKey: yield* read(variables.sessionKey),
-    forkRemote: yield* read(variables.forkRemote),
-    mainRemote: yield* read(variables.mainRemote),
+    wikiUrl: yield* variable("WIKI_URL", (name) => Config.String(name)),
+    sessionId: yield* variable("SESSION_ID", (name) => Config.schema(SessionId, name)),
+    sessionKey: yield* variable("SESSION_KEY", (name) => Config.Redacted(name)),
+    forkRemote: yield* variable("FORK_REMOTE", (name) => Config.schema(RemoteUrl, name)),
+    mainRemote: yield* variable("MAIN_REMOTE", (name) => Config.schema(RemoteUrl, name)),
   };
 });
 
