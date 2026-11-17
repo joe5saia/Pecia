@@ -123,6 +123,44 @@ tester.run("prefer-for-each", plugin.rules["prefer-for-each"], {
   ],
 });
 
+tester.run("prefer-fn", plugin.rules["prefer-fn"], {
+  valid: [
+    file('const land = Effect.fn("land")(function* (id) { return yield* publish(id); });'),
+    file("const land = Effect.fnUntraced(function* (id) { return yield* publish(id); });"),
+    // An effect, not a function.
+    file("const program = Effect.gen(function* () { yield* start; });"),
+    // More than a generator: the function does something of its own first, or wraps the generator.
+    file("const land = (id) => lock.withPermit(Effect.gen(function* () { yield* publish(id); }));"),
+    file(
+      "const land = (id) => { const note = noteOf(id); return Effect.gen(function* () { yield* publish(note); }); };",
+    ),
+    // An inline callback takes its parameter types from where it is passed.
+    file('handlers.handle("land", ({ params }) => Effect.gen(function* () { yield* publish(params.id); }));'),
+    file("const tools = { land: (id) => Effect.gen(function* () { yield* publish(id); }) };"),
+    'import * as Effect from "./Effect.ts";\nconst land = (id) => Effect.gen(function* () { yield* publish(id); });',
+  ],
+  invalid: [
+    {
+      code: file("const land = (id) => Effect.gen(function* () { yield* publish(id); });"),
+      errors: [{ messageId: "fn", line: 5, column: 13 }],
+    },
+    {
+      code: file(
+        "const land = (id) => Effect.gen(function* () { yield* publish(id); }).pipe(Effect.scoped, Effect.orDie);",
+      ),
+      errors: [{ messageId: "fn" }],
+    },
+    {
+      code: file("const land = (id) => { return Effect.gen(function* () { yield* publish(id); }); };"),
+      errors: [{ messageId: "fn" }],
+    },
+    {
+      code: file("const sweep = function () { return Effect.gen(function* () { yield* settle; }); };"),
+      errors: [{ messageId: "fn" }],
+    },
+  ],
+});
+
 tester.run("run-at-the-edge", plugin.rules["run-at-the-edge"], {
   valid: [
     file("NodeRuntime.runMain(program);"),
