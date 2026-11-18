@@ -26,14 +26,20 @@ x-cloudflare-env: &cloudflare-env
 
 # The Control Worker's settings. Cloudflare Access gates each stage; the stack
 # declares its application and service tokens (docs/operations.md, "Access"),
-# so a deploy needs no key of its own. PECIA_IDLE_TIMEOUT (default "2 hours")
-# is optional.
+# so a deploy needs no key of its own. The time limits PECIA_IDLE_TIMEOUT
+# (default "2 hours"), PECIA_FORK_SETTLE ("10 minutes"), PECIA_SWEEP_RETRY
+# ("5 minutes") and PECIA_SANDBOX_TOKEN_TTL ("1 hour") are optional; deploys
+# use the defaults and the scenarios in e2e/ set them to seconds.
 
 # Inputs shared by the checks: Task skips a check when none of them changed.
 x-check-sources: &check-sources
   - "packages/**/*.ts"
   - "packages/**/*.tsx"
   - "packages/**/*.sh"
+  - "packages/**/*.css"
+  - packages/viewer/index.html
+  - "e2e/**/*.ts"
+  - "e2e/fixtures/**"
   - "*.ts"
   - tsconfig.json
   - .oxlintrc.json
@@ -87,14 +93,39 @@ tasks:
       - pnpm exec tsc --noEmit
       - pnpm exec tsc --noEmit -p packages/viewer
 
+  # The scenarios in e2e/ run the built Worker in workerd, the built sandbox
+  # tools and the built viewer, so each is built first.
   test:
-    desc: Run the test suite
+    desc: Run the E2E scenarios in e2e/ against the built Worker in workerd
+    deps: [build:worker, build:tools, build:viewer]
     sources: *check-sources
     cmd: pnpm exec vitest run
+
+  # The only tests are the scenarios in e2e/ (AGENTS.md, "Tests"): this fails
+  # on a test file that is not e2e/<name>.test.ts, and on any file of e2e/ that
+  # imports from packages/ instead of driving the product from outside. The
+  # scenarios may import the API contract, @pecia/wiki-api, which every client
+  # of the Worker is derived from, and read built output by its path. It has no
+  # sources, so Task never skips it: it takes milliseconds.
+  check:tests-in-e2e:
+    desc: Fail on a test file that is not a scenario in e2e/, or on e2e/ code that imports the product's code
+    cmd: |
+      outside=$(git ls-files --cached --others --exclude-standard | grep -E '\.(test|spec)\.[cm]?[jt]sx?$' | grep -vE '^e2e/[^/]+\.test\.ts$' || true)
+      imports=$(git grep --untracked -nE "(from|import\(?|require\() *['\"\`][^'\"\`]*(packages/|@pecia/(control-worker|viewer|sandbox-tools|lint-rules))" -- 'e2e/*' ':!e2e/fixtures' || true)
+      if [ -n "$outside" ]; then echo "Test files that are not scenarios in e2e/ (unit tests are not allowed):"; echo "$outside"; fi
+      if [ -n "$imports" ]; then echo "e2e/ code that imports the product:"; echo "$imports"; fi
+      [ -z "$outside" ] && [ -z "$imports" ]
 
   test:watch:
     desc: Run tests in watch mode
     cmd: pnpm exec vitest
+
+  build:worker:
+    desc: Bundle the Control Worker as a deploy does, into packages/control-worker/dist, for the scenarios to run in workerd
+    dir: packages/control-worker
+    sources: ["src/**/*.ts", "../wiki-api/src/**/*.ts", build.ts, alchemy.run.ts, ../../pnpm-lock.yaml]
+    generates: [dist/manifest.json]
+    cmd: node build.ts
 
   build:tools:
     desc: Bundle wiki-credential, wiki-land and wiki-comments into single Node scripts in packages/sandbox-tools/dist
@@ -128,6 +159,7 @@ tasks:
       - task: fmt:check
       - task: lint
       - task: typecheck
+      - task: check:tests-in-e2e
       - task: test
 
   ci:

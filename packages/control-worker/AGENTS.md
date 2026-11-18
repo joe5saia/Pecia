@@ -14,11 +14,11 @@ The Worker, the workspace Durable Object and their Alchemy stack. Repo-wide rule
 ### Workspace.ts
 
 - There are two locks. `lock` is held by anything that reads main's head and acts on it (create, land, end, sweep). `access` is held by a token mint and by cutting a sandbox off. Code that needs both takes `lock` first; the other order can deadlock.
-- Ending a session never deletes its fork. A push that Artifacts authorized before the tokens were revoked can still finish, so `end` only closes or parks, and `settle` looks again `forkSettleMs` later.
+- Ending a session never deletes its fork. A push that Artifacts authorized before the tokens were revoked can still finish, so `end` only closes or parks, and `settle` looks again `forkSettle` (`PECIA_FORK_SETTLE`) later.
 - A Durable Object exists for every name, created or not. `isCreated` must stay a read: a call that creates the tables for an uncreated workspace makes it answer as if it existed. The schema is applied by `create`, and when an object that was created starts.
 - Every statement in `Sql.ts`'s `schema` runs again each time a created object starts, so each must be idempotent. A new table is one more `CREATE TABLE IF NOT EXISTS`. A new column on an existing table needs a migration, which nothing here does yet.
 - `sessions.fork_remote` is `''` from the insert of the row until the fork exists. The row goes in first so a fork is never without a session.
-- Token expiry is decided by the service's clock, not by Artifacts'. `sandboxTokenMarginMs` covers the difference.
+- Token expiry is decided by the service's clock, not by Artifacts'. The service renews a token a twelfth of `sandboxTokenTtl` before it expires, which covers the difference.
 
 ### Crossing the Durable Object
 
@@ -47,10 +47,9 @@ The Worker, the workspace Durable Object and their Alchemy stack. Repo-wide rule
 
 ### Tests
 
-- A test file shares one `FakeArtifacts`, so every test names its own workspace.
-- `FakeArtifacts` answers 401 for a token it never issued and 403 for one that is revoked, expired or for another repo, like Artifacts. Git asks its credential helper to `erase` only after a 401.
-- `artifacts.hold(operation, repo, when)` stops one control-plane call so a test can put another call in the middle. The workspace tests move time with `wiki.advance`, which also expires the fake's tokens; `it.effect`'s `TestClock` does not reach them.
-- The tests run in Node, not in workerd. What only workerd has (the binding's disposers, RPC cloning, the 128 MB isolate) is covered by a preview deploy, not by `task check`.
+- The scenarios in `e2e/` run this package's bundle in workerd (`build.ts`, `task build:worker`). It is the one Alchemy builds for a deploy, and its Durable Object export is a stub that only workerd's class wiring reads. The compatibility date and flags come from `src/Runtime.ts`, which `worker.ts` deploys with too: set them there, never in `worker.ts` alone, or the scenarios run with other flags than production. A binding is declared in `src/worker.ts`; when one is added, bind it for the scenarios in `config()` in `e2e/support/Server.ts`.
+- A binding's secret must reach workerd in Alchemy's packed form, `{"_tag":"Redacted","value":...}`, or the Worker reads it as unset.
+- What workerd on loopback cannot show (Artifacts itself, the real Access, the 128 MB isolate under production traffic) is covered by a preview deploy and `task smoke`, not by `task check`.
 
 ## Debugging live
 

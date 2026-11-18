@@ -22,7 +22,7 @@ task deploy:staging   # or deploy:prod, or deploy:preview with PULL_REQUEST set
 
 A deploy needs only Cloudflare credentials. Each stage also declares its own Access application and service tokens ("Access" below), so a staging token never opens prod.
 
-`PECIA_IDLE_TIMEOUT` (default `2 hours`) sets how long a session may go without a git operation (each one asks for tokens) or a land before it is ended.
+`PECIA_IDLE_TIMEOUT` (default `2 hours`) sets how long a session may go without a git operation (each one asks for tokens) or a land before it is ended. `PECIA_FORK_SETTLE` (`10 minutes`) is how long an ended session's fork is kept before it is deleted or parked for good, `PECIA_SWEEP_RETRY` (`5 minutes`) how soon the alarm tries again after Artifacts failed, and `PECIA_SANDBOX_TOKEN_TTL` (`1 hour`) how long a sandbox's git token lasts. Deploys leave all four at their defaults; the scenarios in `e2e/` set them to seconds.
 
 Each deploy builds the viewer first (`task build:viewer`) and uploads it with the Worker.
 
@@ -93,7 +93,7 @@ Open the stage's URL in a browser and sign in with Google as an allowed person (
 
 ## API statuses
 
-`packages/wiki-api` declares every status below, so a client derived from it gets each error as a typed failure. A test pins the list per endpoint.
+`packages/wiki-api` declares every status below, so a client derived from it gets each error as a typed failure. `e2e/contract.test.ts` pins the list per endpoint.
 
 | Status | Body | When | Retry? |
 | --- | --- | --- | --- |

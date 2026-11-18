@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # oxlint and the lint rules' test reserve several GiB of address space
+      # oxlint and the lint rules' scenario reserve several GiB of address space
       # (AGENTS.md); let the kernel overcommit, as .agents/resume does in orbs.
       - run: sudo sysctl -w vm.overcommit_memory=1
       - uses: ./.github/actions/setup

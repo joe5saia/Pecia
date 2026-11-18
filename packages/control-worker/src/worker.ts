@@ -14,6 +14,7 @@ import * as Reader from "./Reader.ts";
 import { Repos } from "./Repos.ts";
 import * as RemoteWorkspace from "./RemoteWorkspace.ts";
 import { Wikis, WorkspaceObject, WorkspaceObjectLive } from "./WorkspaceObject.ts";
+import { runtime } from "./Runtime.ts";
 
 // Control Worker: session API, token minting and landing (docs/mvp.md), and
 // the read-only viewer (docs/viewer.md). Cloudflare Access stands in front of
@@ -74,6 +75,7 @@ export default Cloudflare.Worker(
   "ControlWorker",
   Effect.map(Config.option(Config.String("PECIA_DOMAIN")), (domain) => ({
     main: import.meta.url,
+    ...runtime,
     // The stage's own hostname, which the deploy task passes: staging and prod
     // have one (Taskfile.yml). They also keep answering on their workers.dev
     // URLs. Without it, custom domains are left as they are, not detached.

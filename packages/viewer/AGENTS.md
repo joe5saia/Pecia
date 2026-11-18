@@ -4,7 +4,7 @@ The read-only web UI, served by the Control Worker as static assets. Its design 
 
 ## Gotchas
 
-- The only tests are `paths.test.ts`. No test renders a component, so a change to a page or a style has to be looked at in a browser, in the states it touches.
+- The viewer is tested by `e2e/viewer.test.ts`, which opens the built viewer in Chrome against the Worker in workerd. It checks what a person does (browse, follow links, read history), not how a page looks, so a change to a page or a style still has to be looked at in a browser, in the states it touches.
 - It is type-checked as its own project with the DOM's types (`tsconfig.json` here). The root project excludes `src`, so an error here shows up only in the `-p packages/viewer` half of `task typecheck`.
 - `api.ts` is the one place effects are run. Components call `useRead` and `run`. `useRead` reads again only when its `key` changes, so the key has to name everything the call depends on.
 - A page and everything on it are read at one commit. `Page.sha` is that commit and goes into every read and file URL. `Page.at` is what the URL says and goes into links: it is `undefined` while reading main, so links stay on main.

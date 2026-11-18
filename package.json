@@ -3,7 +3,6 @@
   "private": true,
   "type": "module",
   "devDependencies": {
-    "@effect/vitest": "4.1.4",
     "@go-task/cli": "3.54.0",
     "@types/node": "26.6.6",
     "oxfmt": "0.79.0",

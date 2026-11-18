@@ -5,11 +5,12 @@ Agent wiki on Cloudflare Artifacts. The design is in `docs/mvp.md`; comments on 
 ## Layout
 
 - `packages/wiki-api`: the shared Effect Schema contract for the Control Worker API.
-- `packages/control-worker`: the Control Worker, the workspace Durable Object and its Alchemy stack (`alchemy.run.ts`). `src/Workspace.ts` holds the session and landing logic; `src/testing` holds the fakes the tests run it on.
+- `packages/control-worker`: the Control Worker, the workspace Durable Object and its Alchemy stack (`alchemy.run.ts`). `src/Workspace.ts` holds the session and landing logic. `build.ts` bundles the Worker as a deploy does, for the scenarios.
 - `packages/viewer`: the read-only web UI (React and Vite), served as the Control Worker's static assets. Its design, sign-in and the way to add editing are in `docs/viewer.md`. `src/App.tsx` has every page as a component (`Workspaces` is the list of wikis, `Wiki` a wiki, `History` its commits), `src/styles.css` every style, with the fonts and colors as variables at its top. It is type-checked as its own project (`packages/viewer/tsconfig.json`), with the DOM's types; `task typecheck` covers it, and there is no viewer-only check.
 - `packages/sandbox-tools`: what runs in a sandbox: `wiki-credential`, `wiki-land`, `wiki-comments`, `setup.sh` and `agent-instructions.md`.
 - `.agents/skills/using-pecia-wiki`: the project skill that lets an Amp thread read and publish to a deployed wiki.
 - `packages/lint-rules`: the oxlint plugin `pecia`, which enforces the Effect style below. `.oxlintrc.json` loads it.
+- `e2e`: the only tests, end-to-end scenarios that run the built Worker in workerd ("Tests" below). `e2e/support` is the harness: the server, a fake Access, a fake Artifacts, sandboxes and a browser.
 
 `docs/operations.md` covers deploying, running a session and monitoring usage.
 
@@ -19,8 +20,8 @@ Each package has its own `AGENTS.md` with what is not obvious from its code ("Go
 
 Every command runs through Task (`Taskfile.yml`); package.json files have no `scripts`. Run `task --list` for all tasks.
 
-- `task check`: local CI (fmt:check, lint, typecheck, test). Run it before committing. About 25 seconds on a 4-CPU orb: the tests take about 15 of them, each other check under 5. Task skips a check whose inputs have not changed since it last passed.
-- One test file: `pnpm exec vitest run packages/control-worker/src/Git.test.ts`; add `-t '<name>'` for one test. `task test:watch` never exits, so do not run it from an agent.
+- `task check`: local CI (fmt:check, lint, typecheck, check:tests-in-e2e, test). Run it before committing. About two minutes on a 4-CPU orb, nearly all of it the scenarios; each other check takes under 5 seconds. Task skips a check whose inputs have not changed since it last passed.
+- One scenario file: `pnpm exec vitest run e2e/landing.test.ts`; add `-t '<name>'` for one scenario. Build first with `task build:worker build:tools build:viewer` (`task test` does it for you). `task test:watch` never exits, so do not run it from an agent.
 - `task fmt`: format with oxfmt.
 - `task build:viewer`: build the viewer into `packages/viewer/dist`. The Alchemy tasks run it first.
 - `task dev:viewer`: serve the viewer with hot reload against a deployed Worker's API (`PECIA_VIEWER_API`, default staging), through Access with staging's orchestrator token.
@@ -81,11 +82,11 @@ The code follows the Effect v4 code style pages, starting at https://effect.webs
 - `pecia/prefer-fn`: `const f = (...) => Effect.gen(...)`, with or without a `.pipe` after it. It does not see a function that wraps the generator in something else, such as `lock.withPermit(Effect.gen(...))`.
 - `pecia/prefer-for-each`: `yield*` inside `for...of` or `for...in` in an `Effect.gen` or `Effect.fn`.
 - `pecia/match-unions`: `switch`, and an `else if` chain that compares one value with string literals.
-- `pecia/run-at-the-edge`: `Effect.run*` outside tests and `src/testing`.
+- `pecia/run-at-the-edge`: `Effect.run*` outside `e2e/`.
 - Built-in rules: no `flow`, no nested ternary, no `as` assertion (`as const` is fine), no `console`, and none of `process.stdout`, `process.stderr`, `process.stdin`, `process.argv`, `process.exitCode` or `process.exit`.
 - `typescript/no-unsafe-*`: no use of a value typed `any`. A dependency whose types do not resolve yields `any` without a compiler error; these rules are what reports it (see `packages/control-worker/src/artifacts.d.ts`).
 
-Fix what a rule reports instead of disabling it. A rule that reports good code has a bug: fix the rule and add the case to `packages/lint-rules/src/index.test.ts`. Branded identifiers, `Effect.gen` over nested callbacks, `Effect.acquireRelease` and `Config` over `process.env` are not checked; check your change for them before you push it, since nothing reviews it in between.
+Fix what a rule reports instead of disabling it. A rule that reports good code has a bug: fix the rule and add the case to the rule's fixture in `e2e/fixtures/lint`. Branded identifiers, `Effect.gen` over nested callbacks, `Effect.acquireRelease` and `Config` over `process.env` are not checked; check your change for them before you push it, since nothing reviews it in between.
 
 ## Errors
 
@@ -95,15 +96,22 @@ Fix what a rule reports instead of disabling it. A rule that reports good code h
 - A bug or a broken invariant is a defect (`Effect.die`, `Effect.orDie`), not a member of the error type. `Failures` in `Handlers.ts` logs it once and answers 500.
 - Exported effects state their error type, so a new failure is a compile error at the callers that must handle it.
 - The service does not drop a failure silently: recover with a value, or log it with `Effect.logWarning` and its fields, and say in a comment why going on is right.
-- A new error that reaches the API is added to the endpoint in `Api.ts`, to the status table in `docs/operations.md` and to the test in `packages/wiki-api/src/index.test.ts`.
+- A new error that reaches the API is added to the endpoint in `Api.ts`, to the status table in `docs/operations.md` and to the status list in `e2e/contract.test.ts`.
 
 ## Environment and tests
 
-The Alchemy tasks (`dev`, `plan`, `deploy:*`) need only Cloudflare credentials; each stage's Access application and service tokens are resources of the stack (`docs/operations.md`, "Access"). `PECIA_IDLE_TIMEOUT` (default `2 hours`) is optional. Tests stand in for Access with `src/testing/TestAccess.ts`: a local signing key, and the assertions Access would add for a person, the orchestrator token and the sandbox token.
+The Alchemy tasks (`dev`, `plan`, `deploy:*`) need only Cloudflare credentials; each stage's Access application and service tokens are resources of the stack (`docs/operations.md`, "Access"). `PECIA_IDLE_TIMEOUT` (default `2 hours`), `PECIA_FORK_SETTLE` (`10 minutes`), `PECIA_SWEEP_RETRY` (`5 minutes`) and `PECIA_SANDBOX_TOKEN_TTL` (`1 hour`) are optional; deploys use the defaults.
 
-Tests run the real workspace logic and real `git` against bare repos served by `git http-backend` (`src/testing/FakeArtifacts.ts`); nothing in `task check` calls Cloudflare.
+### Tests
 
-A test file sits beside its source as `<Name>.test.ts` and imports `describe`, `it` and `expect` from `@effect/vitest`, never from `vitest`. A test of an effect is an `it.effect`: it yields the effect, takes an expected failure with `Effect.flip`, and runs two calls at once with `Effect.forkChild` or `Effect.all`. Its helpers are effects too; a promise from a test double is wrapped once, in the helper, with `Effect.promise`. `it.effect` runs on a `TestClock` that starts at 0: move it with `TestClock.adjust` from `effect/testing/TestClock`, and use `it.live` for the rare test that has to wait in real time. The workspace tests move time with the clock of `src/testing/TestWorkspace.ts` instead, which also expires the fake Artifacts tokens. A test that drives the service from outside, with the built tools and HTTP (`packages/sandbox-tools/src/scenarios.test.ts`), is a plain `it` with promises. No task reports coverage; to see whether a module is tested, search the test files for its name.
+Pecia has no unit tests, and none may be added. Every test is a scenario in `e2e/`: it starts the Worker as it runs in production and drives it only from outside, the way its users do. A scenario is a file `e2e/<name>.test.ts`. `task check:tests-in-e2e` fails on any other `*.test.*` or `*.spec.*` file, including one in `e2e/fixtures` or `e2e/support`, and on any file of `e2e/` that imports from `packages/` or from `@pecia/control-worker`, `viewer`, `sandbox-tools` or `lint-rules`. A scenario may import `@pecia/wiki-api`, the contract every client is derived from, and use built output (`dist/`) by its path.
+
+- **The server.** `ServerLive(name, settings)` in `e2e/support/Server.ts` runs the bundle `task build:worker` writes (`packages/control-worker/dist`) in workerd on loopback, with SQLite Durable Object storage on disk and the viewer's assets. Each scenario file gets its own server and names its own workspaces. The time limits are settings, so a scenario of the idle alarm sets them to seconds instead of moving a clock.
+- **What stands in for Cloudflare.** Access is `e2e/support/Access.ts`, the one place auth lives: a local signing key served as Access's JWKS, and the assertions Access adds for a person (`access.person(email)`), the orchestrator token and a session's sandbox token. Artifacts is `e2e/support/Artifacts.ts`, bare repos served by `git http-backend` behind the binding; it can hold a call, refuse pushes, go down for a while, answer garbage, or answer a fork's fetches with deltas by object ID (`refDeltas`), and it records every call of the binding (`calls`). Nothing in `task check` calls Cloudflare.
+- **How a scenario drives it.** HTTP (`api` in `e2e/support/Wiki.ts`), a sandbox set up by the real `setup.sh` with the built `wiki-credential`, `wiki-land` and `wiki-comments` and real `git` (`openSandbox`), and Chrome through playwright-core for the viewer (`e2e/support/Browser.ts`; it finds Chrome from `PECIA_E2E_CHROME`, then `PATH`, then agent-browser's). What the Worker did is read from outside too: the usage events from its logs, in the order it logged them (`eventsOf`), as Workers Observability would show them; each run of a workspace's alarm, with when it was set for and what it logged (`alarmsOf`); and each request the edge received, with its status once answered (`server.requests`).
+- **Writing one.** A scenario file is a `layer(ServerLive(...))` from `@effect/vitest` and each scenario an `it.effect` that waits in real time: something that happens later is awaited with `eventually`, never a fixed sleep, unless the point is that nothing happens. Such a sleep is followed by an assertion that nothing did, and starts only once what it waits beside has observably begun (a request at the edge, a call held at the fake). Its title says what a user sees. Each scenario sets up its own state and assumes no order.
+- **Evidence.** Each server keeps `e2e/.evidence/<name>/` (ignored by git): `workerd.log` (workerd's output), `tail.jsonl` (every run of the Worker and its Durable Objects, as the tail gave it), `requests.log` (the edge), `artifacts.log` (every binding call and git request) and `sandboxes.log`. Look there first when a scenario fails. A run clears it when it starts, so two runs in one checkout overwrite each other's. The Durable Objects' storage is in a temporary directory that is deleted when the server stops.
+- **Coverage.** No task reports it. A behaviour is covered when a scenario shows it; to find which, search `e2e/` for the endpoint, tool or event.
 
 pnpm does not hoist: a package's dependencies, such as `effect`, are in `packages/<name>/node_modules`, and the root `node_modules` has only the root's tools.
 

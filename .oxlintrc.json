@@ -9,7 +9,7 @@
   "options": {
     "typeAware": true
   },
-  "ignorePatterns": ["**/.alchemy/**"],
+  "ignorePatterns": ["**/.alchemy/**", "e2e/fixtures/**"],
   "rules": {
     "vitest/no-standalone-expect": [
       "error",
@@ -76,7 +76,7 @@
   },
   "overrides": [
     {
-      "files": ["**/*.test.ts", "**/testing/**"],
+      "files": ["e2e/**"],
       "rules": {
         "pecia/run-at-the-edge": "off"
       }

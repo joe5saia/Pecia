@@ -5,7 +5,7 @@
 ## Gotchas
 
 - Each tool ships as one CommonJS file with no extension (`rolldown.config.ts`), with `effect` and `@pecia/wiki-api` bundled in. A sandbox keeps the tools it was set up with, so the service has to keep answering tools built from an older contract.
-- `scenarios.test.ts` builds both tools before its first test, so that file takes a few seconds before anything runs. It drives the built tools and the API from outside with real git, which is why it is plain `it` with promises and not `it.effect`.
+- The scenarios in `e2e/` run the built tools (`task build:tools`) in a sandbox that the real `setup.sh` sets up, with real git. A change here is tested only after a build; `task test` builds first.
 - The session is read through `Config` in `Session.ts`, never from `process.env`. A variable comes from the environment first and from `session.env` second, and an empty value counts as unset.
 - A tool touches the process only through Effect's `Stdio` service: `args`, `stdin`, and the `stdout` and `stderr` sinks (`printLine` in `Session.ts`). `runTool` provides the Node one. `process.argv`, `process.stdin`, `process.exitCode` and `process.exit` are lint errors.
 - A tool's result is its exit code. For anything but 0, `runTool` fails with an error carrying the code and `runMain` calls `process.exit` with it. That cuts off writes still queued, so write through `printLine`, which returns only once the line is written, and not through `Console`.

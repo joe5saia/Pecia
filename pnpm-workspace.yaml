@@ -1,5 +1,7 @@
 packages:
   - packages/*
+  # The E2E scenarios (AGENTS.md, "Tests"). Their only workspace dependency is the contract.
+  - e2e
 
 # Dependencies whose install scripts may run (pnpm blocks all others).
 allowBuilds:

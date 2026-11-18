@@ -19,6 +19,14 @@ export const Wikis = Effect.flatMap(Stage, (stage) =>
   Cloudflare.Artifacts.Namespace("Wikis", { namespace: `pecia-${stage}` }),
 );
 
+/** A time limit from the environment, or `fallback` when it is not set. */
+const duration = Effect.fnUntraced(function* (name: string, fallback: Duration.Duration) {
+  const value = yield* Effect.orDie(Config.Duration(name).pipe(Config.withDefault(fallback)));
+  // A limit of zero would end every session, delete a fork mid-push or retry a sweep without a pause.
+  if (!Duration.isPositive(value)) return yield* Effect.die(new Error(`${name} must be longer than zero`));
+  return value;
+});
+
 export interface WorkspaceShape extends Workspace.Workspace {
   readonly alarm: () => Effect.Effect<void>;
 }
@@ -31,11 +39,12 @@ export const WorkspaceObjectLive = WorkspaceObject.make(
   Effect.gen(function* () {
     const artifacts = yield* Cloudflare.Artifacts.ReadWriteNamespace(Wikis);
     const state = yield* Cloudflare.DurableObjectState;
-    // A session with no token request or land for this long is ended, e.g. PECIA_IDLE_TIMEOUT="30 minutes".
-    const idleTimeout = yield* Config.Duration("PECIA_IDLE_TIMEOUT").pipe(
-      Config.withDefault(Duration.hours(2)),
-      Effect.orDie,
-    );
+    // The time limits of WorkspaceConfig, e.g. PECIA_IDLE_TIMEOUT="30 minutes". Deploys use the
+    // defaults; the scenarios in e2e/ set them to seconds.
+    const idleTimeout = yield* duration("PECIA_IDLE_TIMEOUT", Duration.hours(2));
+    const forkSettle = yield* duration("PECIA_FORK_SETTLE", Duration.minutes(10));
+    const sweepRetry = yield* duration("PECIA_SWEEP_RETRY", Duration.minutes(5));
+    const sandboxTokenTtl = yield* duration("PECIA_SANDBOX_TOKEN_TTL", Duration.hours(1));
 
     return Effect.gen(function* () {
       const context = yield* Effect.context<RuntimeContext>();
@@ -52,6 +61,10 @@ export const WorkspaceObjectLive = WorkspaceObject.make(
         Effect.provideService(Repos, yield* ArtifactsRepos.make(artifacts)),
         Effect.provideService(Workspace.WorkspaceConfig, {
           idleTimeoutMs: Duration.toMillis(idleTimeout),
+          forkSettleMs: Duration.toMillis(forkSettle),
+          sweepRetryMs: Duration.toMillis(sweepRetry),
+          // Artifacts takes a token's lifetime in whole seconds.
+          sandboxTokenTtlSeconds: Math.ceil(Duration.toSeconds(sandboxTokenTtl)),
           wakeAt: (timeMs) =>
             Effect.provide(timeMs === undefined ? storage.deleteAlarm() : storage.setAlarm(timeMs), context),
         }),

@@ -1,0 +1,13 @@
+{
+  "name": "@pecia/e2e",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@effect/vitest": "4.1.4",
+    "@pecia/wiki-api": "workspace:*",
+    "effect": "4.1.4",
+    "jose": "6.2.17",
+    "playwright-core": "1.65.1",
+    "workerd": "1.20261026.1"
+  }
+}

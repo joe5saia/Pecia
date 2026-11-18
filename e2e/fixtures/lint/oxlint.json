@@ -1,0 +1,13 @@
+{
+  "$schema": "../../../node_modules/oxlint/configuration_schema.json",
+  "jsPlugins": ["../../../packages/lint-rules/src/index.ts"],
+  "categories": { "correctness": "off", "suspicious": "off" },
+  "rules": {
+    "pecia/no-tacit": "error",
+    "pecia/prefer-data-first": "error",
+    "pecia/prefer-fn": "error",
+    "pecia/prefer-for-each": "error",
+    "pecia/match-unions": "error",
+    "pecia/run-at-the-edge": "error"
+  }
+}

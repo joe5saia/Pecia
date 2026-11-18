@@ -153,29 +153,31 @@ export class WorkspaceConfig extends Context.Service<
   {
     /** A session with no token request or land for this long is ended. */
     readonly idleTimeoutMs: number;
+    /**
+     * How long a closed fork is kept before it is looked at again and deleted.
+     * Revoking a fork's tokens stops new pushes, but Artifacts does not say what
+     * happens to a push that was already authorized, and it has no way to make a
+     * repo read-only or to delete it only if its head is unchanged. So a fork is
+     * never deleted on the strength of a head read while such a push could still
+     * finish. The default, ten minutes, is far longer than a push within
+     * Artifacts' 64 MiB limit should take.
+     */
+    readonly forkSettleMs: number;
+    /** A sweep that could not end or settle a session tries again after this long. */
+    readonly sweepRetryMs: number;
+    /**
+     * Fork and main tokens handed to a sandbox live this long. A sandbox is
+     * handed new ones in the last twelfth of it (five minutes of the default
+     * hour), so none expires mid-push.
+     */
+    readonly sandboxTokenTtlSeconds: number;
     /** Ask for `sweep` to run at this time, replacing any earlier request; `undefined` cancels it. */
     readonly wakeAt: (timeMs: number | undefined) => Effect.Effect<void>;
   }
 >()("pecia/WorkspaceConfig") {}
 
-/** Fork and main tokens handed to a sandbox live this long. */
-const sandboxTokenTtlSeconds = 3600;
-/** A sandbox is handed new tokens once its tokens expire in less than this, so none expires mid-push. */
-const sandboxTokenMarginMs = 5 * 60_000;
 /** The tokens a land uses are revoked when it finishes; this bounds them if that fails. */
 const landTokenTtlSeconds = 300;
-/** A sweep that could not end or settle a session tries again after this long. */
-const sweepRetryMs = 5 * 60_000;
-/**
- * How long a closed fork is kept before it is looked at again and deleted.
- * Revoking a fork's tokens stops new pushes, but Artifacts does not say what
- * happens to a push that was already authorized, and it has no way to make a
- * repo read-only or to delete it only if its head is unchanged. So a fork is
- * never deleted on the strength of a head read while such a push could still
- * finish. Ten minutes is far longer than a push within Artifacts' 64 MiB limit
- * should take.
- */
-export const forkSettleMs = 10 * 60_000;
 
 const WorkspaceRow = Schema.Struct({
   name: WorkspaceName,
@@ -353,7 +355,7 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
       `SELECT MIN(CASE state WHEN 'active' THEN last_active_at + ? ELSE ended_at + ? END) AS next
         FROM sessions WHERE state IN ('active', 'closed')`,
       config.idleTimeoutMs,
-      forkSettleMs,
+      config.forkSettleMs,
     );
     const next = rows[0]?.next ?? null;
     yield* config.wakeAt(next === null ? undefined : Math.max(next, notBefore));
@@ -574,8 +576,8 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     // The only tokens a sandbox ever holds: write to its fork, read from main.
     const [fork, main] = yield* Effect.all(
       [
-        repos.mintToken(session.fork_name, "write", sandboxTokenTtlSeconds),
-        repos.mintToken(base.name, "read", sandboxTokenTtlSeconds),
+        repos.mintToken(session.fork_name, "write", config.sandboxTokenTtlSeconds),
+        repos.mintToken(base.name, "read", config.sandboxTokenTtlSeconds),
       ],
       { concurrency: 2 },
     );
@@ -584,7 +586,7 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
       main_read_token: main.token,
       // By the service's clock, which also decides when to replace them; the
       // replacement margin covers a difference from Artifacts' clock.
-      expires_at: (yield* Clock.currentTimeMillis) + sandboxTokenTtlSeconds * 1000,
+      expires_at: (yield* Clock.currentTimeMillis) + config.sandboxTokenTtlSeconds * 1000,
     };
     yield* sql.exec(
       `INSERT INTO session_tokens (session_id, fork_write_token, main_read_token, expires_at)
@@ -611,7 +613,7 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
         sessionId,
       );
       const tokens =
-        stored !== undefined && stored.expires_at - sandboxTokenMarginMs > now
+        stored !== undefined && stored.expires_at - (config.sandboxTokenTtlSeconds * 1000) / 12 > now
           ? stored
           : yield* mintSandboxTokens(session, base);
       return {
@@ -697,7 +699,7 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
       const closed = yield* select(
         SessionRow,
         "SELECT * FROM sessions WHERE state = 'closed' AND ended_at <= ? ORDER BY ended_at, session_id",
-        now - forkSettleMs,
+        now - config.forkSettleMs,
       );
       const settled = yield* Effect.forEach(closed, (session) => attempt("settled", session, settle(session, base)));
       const idle = yield* select(
@@ -706,7 +708,7 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
         now - config.idleTimeoutMs,
       );
       const ended = yield* Effect.forEach(idle, (session) => attempt("ended", session, end(session, base, "idle")));
-      yield* scheduleSweep([...settled, ...ended].includes(false) ? now + sweepRetryMs : 0);
+      yield* scheduleSweep([...settled, ...ended].includes(false) ? now + config.sweepRetryMs : 0);
     },
     (effect) => lock.withPermit(effect),
   );

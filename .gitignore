@@ -158,5 +158,8 @@ vite.config.ts.timestamp-*
 .amp/in/
 .amp/portals/*
 
+# What a failed E2E scenario leaves (e2e/support/Server.ts)
+e2e/.evidence/
+
 # Pecia wiki session checkouts (.agents/skills/using-pecia-wiki)
 .pecia/
