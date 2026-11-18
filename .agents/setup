@@ -35,6 +35,12 @@ install_task_wrapper() {
     printf '%s\n' "$wrapper" >"$bin"
     chmod +x "$bin"
   fi
+  # Some orb images put ~/.local/bin on PATH only in interactive shells
+  # (~/.bashrc), not in the shell that runs this script.
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) export PATH="$HOME/.local/bin:$PATH" ;;
+  esac
   task --version
 }
 step "task on PATH" install_task_wrapper
