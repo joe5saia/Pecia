@@ -17,7 +17,26 @@ import { promisify } from "node:util";
 // expired, for another repo or read-only on a push. Git asks its credential
 // helper to `erase` only after a 401.
 
-const run = promisify(execFile);
+const execFileAsync = promisify(execFile);
+
+/**
+ * The environment of the fake's own git, the same on every machine: none of
+ * the machine's git config, and an identity of its own for the commits it
+ * makes, as Artifacts makes them with its own.
+ */
+const gitEnv = {
+  PATH: process.env["PATH"],
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_AUTHOR_NAME: "Artifacts",
+  GIT_AUTHOR_EMAIL: "artifacts@example.com",
+  GIT_COMMITTER_NAME: "Artifacts",
+  GIT_COMMITTER_EMAIL: "artifacts@example.com",
+};
+
+/** Run git as the fake does. */
+const run = (file: string, args: ReadonlyArray<string>, options: { readonly maxBuffer?: number } = {}) =>
+  execFileAsync(file, args, { ...options, env: gitEnv });
 
 /** Git's tree entry modes, as Artifacts names them. */
 const entryTypes: Readonly<Record<string, string>> = {
