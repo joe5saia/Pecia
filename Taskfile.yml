@@ -94,13 +94,13 @@ tasks:
     cmd: pnpm exec vitest
 
   build:tools:
-    desc: Bundle wiki-credential and wiki-land into single Node scripts in packages/sandbox-tools/dist
+    desc: Bundle wiki-credential, wiki-land and wiki-comments into single Node scripts in packages/sandbox-tools/dist
     dir: packages/sandbox-tools
     sources: ["src/**/*.ts", "../wiki-api/src/**/*.ts", rolldown.config.ts, ../../pnpm-lock.yaml]
-    generates: [dist/wiki-credential, dist/wiki-land, dist/package.json]
+    generates: [dist/wiki-credential, dist/wiki-land, dist/wiki-comments, dist/package.json]
     cmds:
       - pnpm exec rolldown --config rolldown.config.ts
-      - chmod +x dist/wiki-credential dist/wiki-land
+      - chmod +x dist/wiki-credential dist/wiki-land dist/wiki-comments
       # The scripts are CommonJS with no extension. This keeps Node from reading
       # them as ES modules here, under this package's "type": "module".
       - echo '{"type":"commonjs"}' >dist/package.json

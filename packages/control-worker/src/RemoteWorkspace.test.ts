@@ -23,6 +23,14 @@ const createThrough = Effect.fnUntraced(function* (create: RemoteWorkspace.Stub[
     endSession: unused,
     mintTokens: unused,
     land: unused,
+    sessionAuthor: unused,
+    listThreads: unused,
+    createThread: unused,
+    reply: unused,
+    setThreadState: unused,
+    editComment: unused,
+    deleteComment: unused,
+    moveThreads: unused,
   };
   const { handler } = yield* Effect.acquireRelease(
     Effect.sync(() =>

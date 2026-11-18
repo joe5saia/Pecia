@@ -6,7 +6,11 @@ import { fileURLToPath } from "node:url";
 
 const source = (file: string) => fileURLToPath(new URL(`./src/${file}`, import.meta.url));
 
-export const tools = { "wiki-credential": source("credential.ts"), "wiki-land": source("land.ts") };
+export const tools = {
+  "wiki-credential": source("credential.ts"),
+  "wiki-land": source("land.ts"),
+  "wiki-comments": source("comments.ts"),
+};
 
 export const configs = (dir: string): BuildOptions[] =>
   Object.entries(tools).map(([name, input]) => ({

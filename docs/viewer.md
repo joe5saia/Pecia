@@ -8,6 +8,7 @@ A read-only web UI for people to browse a stage's wikis. It is served by the Con
 - Renders markdown as GitHub does: tables, task lists, footnotes, strikethrough, autolinks, syntax-highlighted code, heading anchors, YAML front matter (folded away), raw HTML after GitHub's sanitizing rules, and Mermaid diagrams. Other text files are shown highlighted, images are shown, anything else is a download.
 - Follows links between pages relative to the page, as GitHub and a git checkout do. A link that climbs out of the wiki is shown as plain text.
 - Shows main's history and any commit of it: `?at=<sha>` reads the whole wiki at that commit.
+- Shows each page's comment threads beside it and takes new comments and replies ([comments.md](comments.md)). Comments are the one thing a reader writes; they are not in git.
 
 Every page and image is read at one commit: the tree names it, and everything shown with it is read at that hash. A wiki that lands while someone reads it does not mix two versions on one page.
 
@@ -15,7 +16,7 @@ Every page and image is read at one commit: the tree names it, and everything sh
 
 The reader endpoints take the stage's orchestrator key, the same key as the orchestrator endpoints, so a staging key never reads prod. A script sends it as `Authorization: Bearer <key>`. A browser trades it once at `POST /auth/login` for the cookie `pecia_viewer` and never stores the key:
 
-- The cookie is `<expires>.<signature>`: an expiry seven days out, signed with HMAC-SHA-256 under the key (`src/Login.ts`). The Worker keeps no login state.
+- The cookie is `<expires>.<name>.<signature>`: an expiry seven days out and the name the reader gave for their comments, signed with HMAC-SHA-256 under the key (`src/Login.ts`). The Worker keeps no login state.
 - It is `HttpOnly`, `Secure` and `SameSite=Strict`, so page scripts cannot read it and other sites cannot send it.
 - Changing the key ends every login. A stolen cookie stops working when it expires; logging out (`POST /auth/logout`) only clears this browser's copy.
 
@@ -35,7 +36,7 @@ The route exists only in `vite dev`: `vite build` leaves it out, so no deployed 
 | `GET /workspaces/:ws/tree?ref=` | `{ "workspace", "commit", "files": [{ "path", "sha" }], "truncated" }` |
 | `GET /workspaces/:ws/file?ref=&path=` | The file's bytes, with a content type from its name |
 | `GET /workspaces/:ws/history?limit=` | Main's commits, newest first, along first parents |
-| `POST /auth/login` | `{ "expiresAt" }` and the cookie, for `{ "key" }` |
+| `POST /auth/login` | `{ "expiresAt" }` and the cookie, for `{ "key", "name"? }`; the name signs the reader's comments |
 | `POST /auth/logout` | 204, and the cookie cleared |
 
 `ref` is `main` (the default) or a full commit hash. A read of a hash is cached by the browser for good; a read of `main` is checked again each time. A file is served with `Content-Security-Policy: sandbox`, so an SVG or HTML file an agent wrote cannot run script when opened on its own.

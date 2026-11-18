@@ -1,6 +1,6 @@
 # Operating pecia
 
-How to deploy the Control Worker, run a session, read a wiki and see how the wiki is used. The design is in [mvp.md](mvp.md); the viewer's is in [viewer.md](viewer.md).
+How to deploy the Control Worker, run a session, read a wiki and see how the wiki is used. The design is in [mvp.md](mvp.md); the viewer's is in [viewer.md](viewer.md), comments' in [comments.md](comments.md).
 
 ## Deploy
 
@@ -59,7 +59,7 @@ The orchestrator holds the stage's orchestrator key and sends it as `Authorizati
 
 1. Create the workspace once: `POST /workspaces` with `{ "name": "eng-wiki" }`. Repeating the call changes nothing.
 2. Create a session per sandbox: `POST /workspaces/eng-wiki/sessions` with `{ "agent", "model" }`.
-3. In the sandbox, install `wiki-credential` and `wiki-land` (built by `task build:tools`, they need only Node) and run `packages/sandbox-tools/setup.sh` with `WIKI_URL`, `SESSION_ID`, `SESSION_KEY`, `FORK_REMOTE` and `MAIN_REMOTE` set from the response. It clones the fork to `./docs`.
+3. In the sandbox, install `wiki-credential`, `wiki-land` and `wiki-comments` (built by `task build:tools`, they need only Node) and run `packages/sandbox-tools/setup.sh` with `WIKI_URL`, `SESSION_ID`, `SESSION_KEY`, `FORK_REMOTE` and `MAIN_REMOTE` set from the response. It clones the fork to `./docs`.
 4. Give the agent `packages/sandbox-tools/agent-instructions.md`.
 5. When the sandbox ends, call `DELETE /sessions/<id>`. If it never does, the idle alarm ends the session.
 
@@ -83,10 +83,12 @@ Open the stage's URL in a browser and log in with the stage's orchestrator key. 
 | 200 | The endpoint's response | The call succeeded. `wiki-land`'s `behind` and `nothing_to_land` are 200s: they are answers, not errors. | |
 | 400 | Problem with `errors: [{ path, message }]` | The path, or the JSON body, does not match the endpoint: a malformed workspace name or session ID, a missing field, invalid JSON. | No |
 | 401 | `{ "_tag": "Unauthorized" }`, with `WWW-Authenticate: Bearer` | The bearer credential is missing or wrong. It is checked before anything else, so a wrong credential never gets a 400, 404 or 409. | No |
-| 404 | `{ "_tag": "NotFound", "resource", "id" }` | The workspace or session does not exist; for a reader endpoint, the commit or file does not either. | No |
+| 404 | `{ "_tag": "NotFound", "resource", "id" }` | The workspace, session, comment thread or comment does not exist; for a reader endpoint or a comment's anchor, the commit or file does not either. | No |
 | 404 | Problem | The API has no such path and method. | No |
 | 409 | `{ "_tag": "SessionNotActive", "sessionId", "state" }` | The session has ended: it is `closed`, `parked` or `deleted`. It does not become active again. | No |
 | 422 | `{ "_tag": "ForkTooLarge", "limit", "max" }` | `land` only: the fork's new commits are over a landing limit (see "Landing limits"). | No |
+| 403 | `{ "_tag": "NotYourComment", "commentId", "action" }` | A comment's edit or delete by someone other than its writer, or an edit by an agent ([comments.md](comments.md)). | No |
+| 422 | `{ "_tag": "AnchorMismatch", "path", "reason" }` | A comment's anchor does not fit its page: `not_text`, `out_of_range`, `quote_not_found` or `quote_ambiguous` ([comments.md](comments.md)). | No |
 | 413 | Empty | The request body is over 64 kB. | No |
 | 415 | Text | The request body is not `application/json`. | No |
 | 500 | Problem | A bug in the service. The cause is in Workers Logs under `request failed with a defect`. | No |
@@ -97,7 +99,7 @@ A problem is an RFC 9457 body, `{ "type": "about:blank", "status", "title", "det
 
 After a 502 or 503 the call may or may not have been applied. Repeating it does no harm: creating a workspace and asking for tokens repeat cleanly, a repeated land answers `nothing_to_land` if the first one landed, a repeated end answers 409 if the first one ended the session, and a repeated session create leaves an extra session for the idle timeout to end.
 
-`wiki-land` and `wiki-credential` print the error's message to stderr and exit 1; neither retries.
+`wiki-land`, `wiki-credential` and `wiki-comments` print the error's message to stderr and exit 1; neither retries.
 
 ## Landing limits
 
@@ -138,6 +140,11 @@ There are three records of what happened, from the most to the least detailed.
 | `land` | Every `wiki-land` call that gets an answer | `workspace`, `sessionId`, `agent`, `model`, `status` (`landed`, `behind`, `nothing_to_land`), `mainSha`, `forkHead`; for `landed`, and for `behind` when the fork has main's head, also `packBytes`, `objects` and `inflatedBytes`: the size of the commits it fetched, which are those main lacked |
 | `land.refused` | A land is refused because the fork's new commits are over a landing limit | `workspace`, `sessionId`, `agent`, `model`, `limit`, `max`, `mainSha`, `forkHead` |
 | `session.ended` | A session is closed or times out | `workspace`, `sessionId`, `agent`, `model`, `state` (`closed`, `parked`), `reason` (`closed`, `idle`), `forkHead` |
+| `thread.created` | A thread is created | `workspace`, `threadId`, `path`, `anchored`, `author` (`person`, `agent`), `sessionId` for an agent |
+| `thread.replied` | A reply is added | `workspace`, `threadId`, `repinned`, `author`, `sessionId` for an agent |
+| `thread.resolved`, `thread.reopened` | A thread changes state | `workspace`, `threadId`, `author`, `sessionId` for an agent |
+| `comment.edited`, `comment.deleted` | A comment is edited or deleted | `workspace`, `threadId`, `commentId`, `author`, `sessionId` for an agent |
+| `threads.moved` | `wiki-comments move` | `workspace`, `from`, `to`, `moved` |
 | `session.settled` | A closed fork's ten minutes are over | `workspace`, `sessionId`, `agent`, `model`, `state` (`deleted`, `parked`), `forkHead` |
 
 An entry can take up to ten minutes to show up in Workers Logs after the call that wrote it.
@@ -150,7 +157,7 @@ Warnings are logged the same way: `land: note not recorded`, `sweep: session not
 
 `alchemy logs --stage <stage>` (run in `packages/control-worker`) prints each entry's message, which is the event name, without its fields. Use the Workers Observability query builder or its API for the fields.
 
-**The Durable Object's SQLite tables.** `sessions` has every session with its agent, model, state and times; `lands` has every successful land with its `from_sha` and `to_sha`. `GET /workspaces/:ws/sessions` returns the sessions.
+**The Durable Object's SQLite tables.** `sessions` has every session with its agent, model, state and times; `lands` has every successful land with its `from_sha` and `to_sha`; `threads` and `comments` hold the comment threads. `GET /workspaces/:ws/sessions` returns the sessions.
 
 **Git.** Each landed head on main carries a git note naming its session, agent and model:
 

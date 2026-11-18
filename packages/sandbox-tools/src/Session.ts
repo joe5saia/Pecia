@@ -30,6 +30,8 @@ export interface Session {
   readonly sessionKey: Redacted.Redacted;
   readonly forkRemote: RemoteUrl;
   readonly mainRemote: RemoteUrl;
+  /** The wiki checkout, as setup.sh cloned it. `wiki-comments` reads pages from it. */
+  readonly wikiDir: string;
 }
 
 export class ToolError extends Data.TaggedError("ToolError")<{ readonly message: string }> {}
@@ -82,6 +84,8 @@ export const loadSession: Effect.Effect<Session, ToolError, FileSystem.FileSyste
     sessionKey: yield* variable("SESSION_KEY", (name) => Config.Redacted(name)),
     forkRemote: yield* variable("FORK_REMOTE", (name) => Config.schema(RemoteUrl, name)),
     mainRemote: yield* variable("MAIN_REMOTE", (name) => Config.schema(RemoteUrl, name)),
+    // A session set up before comments has no WIKI_DIR; setup.sh's default was ./docs.
+    wikiDir: yield* variable("WIKI_DIR", (name) => Config.withDefault(Config.String(name), "docs")),
   };
 });
 

@@ -6,6 +6,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "approx-string-match": "2.0.3",
     "effect": "4.1.4"
   }
 }

@@ -1,7 +1,7 @@
 import { type HistoryResponse, Ref, type TreeResponse, WorkspaceName } from "@pecia/wiki-api";
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import {
   type Failure,
   fileUrl,
@@ -15,9 +15,11 @@ import {
   run,
   useRead,
 } from "./api.ts";
+import { Comments } from "./Comments.tsx";
 import { fenced, Markdown, type OutlineEntry, type Page } from "./Markdown.tsx";
 import { buildTree, type Directory, homePage, isImage, isMarkdown, titleOf } from "./paths.ts";
 import { fileHref, navigate, onLinkClick, type Route, useRoute } from "./router.ts";
+import { timeAgo } from "./time.ts";
 
 // The viewer's pages. Every read is of one commit: the tree names it, and the
 // page and its images are read at that commit.
@@ -30,20 +32,6 @@ const Link = ({ href, className, children }: { href: string; className?: string;
     {children}
   </a>
 );
-
-const timeAgo = (iso: string): string => {
-  const seconds = (Date.now() - Date.parse(iso)) / 1000;
-  const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
-    ["year", 31_536_000],
-    ["month", 2_592_000],
-    ["day", 86_400],
-    ["hour", 3600],
-    ["minute", 60],
-  ];
-  const format = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-  for (const [unit, size] of units) if (seconds >= size) return format.format(-Math.floor(seconds / size), unit);
-  return "just now";
-};
 
 const LoggedOut = () => {
   useEffect(() => {
@@ -91,12 +79,13 @@ const Header = ({ children }: { children?: ReactNode }) => (
 
 const Login = ({ next }: { next: string }) => {
   const [key, setKey] = useState("");
+  const [name, setName] = useState("");
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
-    void run(login(key.trim())).then((result) => {
+    void run(login(key.trim(), name.trim() === "" ? undefined : name.trim())).then((result) => {
       setBusy(false);
       if (result.ok) {
         // Only a path on this site: `next` comes from the URL.
@@ -120,6 +109,16 @@ const Login = ({ next }: { next: string }) => {
           value={key}
           onChange={(event) => setKey(event.target.value)}
           autoFocus
+        />
+        <input
+          type="text"
+          autoComplete="name"
+          name="name"
+          aria-label="Your name, shown on your comments"
+          placeholder="Your name, shown on your comments"
+          maxLength={80}
+          value={name}
+          onChange={(event) => setName(event.target.value)}
         />
         <button type="submit" disabled={busy || key.trim() === ""}>
           {busy ? "Checking…" : "Log in"}
@@ -222,12 +221,19 @@ const languageOf = (path: string): string | undefined => {
 const FileView = ({
   page,
   onHeadings,
+  onSource,
+  articleRef,
 }: {
   page: Page;
   onHeadings: (headings: ReadonlyArray<OutlineEntry>) => void;
+  /** The page's markdown source once it is read, for comments to anchor in; `undefined` for any other file. */
+  onSource: (text: string | undefined) => void;
+  articleRef: RefObject<HTMLElement | null>;
 }) => {
   const language = isMarkdown(page.path) ? "markdown" : languageOf(page.path);
   const state = useRead(`file:${page.ws}:${page.sha}:${page.path}`, () => readText(page.ws, page.sha, page.path));
+  const loaded = state._tag === "Loaded" ? state.value : undefined;
+  useEffect(() => onSource(language === "markdown" ? loaded : undefined), [loaded, language, onSource]);
   if (isImage(page.path))
     return (
       <figure className="image-file">
@@ -243,7 +249,12 @@ const FileView = ({
   return (
     <Loaded state={state}>
       {(text) => (
-        <Markdown page={page} text={language === "markdown" ? text : fenced(text, language)} onHeadings={onHeadings} />
+        <Markdown
+          page={page}
+          text={language === "markdown" ? text : fenced(text, language)}
+          onHeadings={onHeadings}
+          articleRef={articleRef}
+        />
       )}
     </Loaded>
   );
@@ -285,6 +296,9 @@ const Wiki = ({ ws, path, at }: { ws: WorkspaceName; path: string; at: string | 
   const [outline, setOutline] = useState<ReadonlyArray<OutlineEntry>>([]);
   const [menuOpen, setMenuOpen] = useState(false);
   const onHeadings = useCallback((headings: ReadonlyArray<OutlineEntry>) => setOutline(headings), []);
+  const [source, setSource] = useState<string | undefined>();
+  const onSource = useCallback((text: string | undefined) => setSource(text), []);
+  const article = useRef<HTMLElement>(null);
   useEffect(() => setMenuOpen(false), [path]);
 
   return (
@@ -325,12 +339,18 @@ const Wiki = ({ ws, path, at }: { ws: WorkspaceName; path: string; at: string | 
                 {current === "" && <p>This wiki is empty.</p>}
                 {current !== "" &&
                   (paths.includes(current) ? (
-                    <FileView key={`${page.sha}:${current}`} page={page} onHeadings={onHeadings} />
+                    <FileView
+                      key={`${page.sha}:${current}`}
+                      page={page}
+                      onHeadings={onHeadings}
+                      onSource={onSource}
+                      articleRef={article}
+                    />
                   ) : (
                     <DirectoryView tree={tree} page={page} />
                   ))}
               </main>
-              <aside className="outline" aria-label="On this page">
+              <aside className="outline" aria-label="On this page and comments">
                 {outline.length > 1 && isMarkdown(current) && paths.includes(current) && (
                   <>
                     <h2>On this page</h2>
@@ -342,6 +362,14 @@ const Wiki = ({ ws, path, at }: { ws: WorkspaceName; path: string; at: string | 
                       ))}
                     </ul>
                   </>
+                )}
+                {paths.includes(current) && (
+                  <Comments
+                    key={current}
+                    page={page}
+                    text={isMarkdown(current) ? source : undefined}
+                    article={article}
+                  />
                 )}
               </aside>
             </div>

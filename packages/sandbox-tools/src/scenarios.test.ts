@@ -11,6 +11,7 @@ import {
   HistoryResponse,
   ListSessionsResponse,
   ListWorkspacesResponse,
+  Thread,
   TokenResponse,
   tokenSecret,
   TreeResponse,
@@ -411,11 +412,11 @@ const read = async (path: string, headers: Record<string, string> = {}) => {
   return { status: response.status, body, headers: response.headers };
 };
 const bearer = () => ({ authorization: `Bearer ${service.orchestratorKey}` });
-const login = (key: string) =>
+const login = (key: string, name?: string) =>
   fetch(`${service.url}/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ key }),
+    body: JSON.stringify(name === undefined ? { key } : { key, name }),
   });
 const decodeWorkspaces = Schema.decodeUnknownSync(ListWorkspacesResponse);
 const decodeTree = Schema.decodeUnknownSync(TreeResponse);
@@ -504,5 +505,72 @@ describe("the reader", () => {
     const loggedOut = await fetch(`${service.url}/auth/logout`, { method: "POST", headers: { cookie } });
     expect(loggedOut.status).toBe(204);
     expect(loggedOut.headers.get("set-cookie")).toMatch(/pecia_viewer=;.*Max-Age=0/i);
+  });
+});
+
+describe("comments", () => {
+  const decodeThread = Schema.decodeUnknownSync(Thread);
+
+  it("a person comments from the viewer, and the agent finds, answers and resolves the thread from its checkout", async () => {
+    await createWorkspace("comments");
+    const agent = await openSandbox("comments");
+    await agent.commit("deploy.md", "# Deploy\n\nRun `task deploy:prod` after the tests pass.\n");
+    expect((await agent.land()).exitCode).toBe(0);
+
+    // The person logs in under a name; the cookie signs it, so it cannot be swapped.
+    const cookie = (await login(service.orchestratorKey, "Joe")).headers.get("set-cookie")?.split(";")[0] ?? "";
+    const [expires = "", , signature = ""] = (cookie.split("=")[1] ?? "").split(".");
+    const renamed = `pecia_viewer=${expires}.${Buffer.from("Mallory").toString("base64url")}.${signature}`;
+    expect((await read("/workspaces/comments/threads", { cookie: renamed })).status).toBe(401);
+
+    const created = await fetch(`${service.url}/workspaces/comments/threads`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        path: "deploy.md",
+        body: "CI deploys prod; reword this.",
+        anchor: { _tag: "Quote", quote: "Run `task deploy:prod`" },
+      }),
+    });
+    expect(created.status).toBe(200);
+    const thread = decodeThread(await created.json());
+    expect(thread.comments[0]?.author).toEqual({ _tag: "Person", name: "Joe" });
+
+    // The agent's checkout has moved on: the passage is now on line 5, not 3.
+    await agent.commit("deploy.md", "# Deploy\n\nIntro.\n\nRun `task deploy:prod` after the tests pass.\n");
+    const listed = await agent.sandbox.exec("wiki-comments", ["list"]);
+    expect(listed.exitCode).toBe(0);
+    expect(listed.stdout).toContain(`${thread.id}  open  deploy.md:5 (moved)`);
+    expect(listed.stdout).toContain("Joe (person)");
+
+    const landed = await agent.land();
+    expect(landed.exitCode).toBe(0);
+    expect(landed.output).toMatch(/^landed [0-9a-f]{40}$/);
+    expect(landed.error).toBe("1 open comment thread on this wiki: run wiki-comments list");
+
+    const replied = await agent.sandbox.exec("wiki-comments", ["reply", thread.id, "Reworded."]);
+    expect(replied.exitCode).toBe(0);
+    // The agent deletes its own comment, but not the person's, and has no way to edit either.
+    const replyId = /\[([0-9a-f]{12})\] amp test-model \(agent\)/.exec(replied.stdout)?.[1] ?? "";
+    const rootId = thread.comments[0]?.id ?? "";
+    const notMine = await agent.sandbox.exec("wiki-comments", ["delete", rootId]);
+    expect(notMine).toMatchObject({ exitCode: 1, stderr: `wiki-comments: you may not delete comment '${rootId}'\n` });
+    expect((await agent.sandbox.exec("wiki-comments", ["edit", replyId, "x"])).exitCode).toBe(1);
+    const deleted = await agent.sandbox.exec("wiki-comments", ["delete", replyId]);
+    expect(deleted.stdout).toContain(`[${replyId}] (deleted)`);
+    expect((await agent.sandbox.exec("wiki-comments", ["reply", thread.id, "Reworded."])).exitCode).toBe(0);
+    const resolved = await agent.sandbox.exec("wiki-comments", ["resolve", thread.id, "Done."]);
+    expect(resolved.stdout).toContain("resolved by amp test-model (agent)");
+
+    const all = await read("/workspaces/comments/threads?state=all", { cookie });
+    expect(all.body).toMatchObject([
+      {
+        id: thread.id,
+        state: "resolved",
+        comments: [{ body: "CI deploys prod; reword this." }, { body: "" }, { body: "Reworded." }, { body: "Done." }],
+      },
+    ]);
+    expect((await agent.sandbox.exec("wiki-comments", ["list"])).stdout.trim()).toBe("no threads");
+    expect((await agent.sandbox.exec("wiki-comments", ["reply", "nope", "x"])).exitCode).toBe(1);
   });
 });

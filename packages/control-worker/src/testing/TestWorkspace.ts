@@ -78,6 +78,15 @@ export const makeTestWorkspace = (
     mintTokens: (sessionId, sessionKey) => onTestClock(made.mintTokens(sessionId, sessionKey)),
     land: (sessionId, sessionKey) => onTestClock(made.land(sessionId, sessionKey)),
     sweep: () => onTestClock(made.sweep()),
+    sessionAuthor: (sessionId, sessionKey) => onTestClock(made.sessionAuthor(sessionId, sessionKey)),
+    listThreads: (name, filter) => onTestClock(made.listThreads(name, filter)),
+    createThread: (name, author, request) => onTestClock(made.createThread(name, author, request)),
+    reply: (name, author, threadId, request) => onTestClock(made.reply(name, author, threadId, request)),
+    setThreadState: (name, author, threadId, request) =>
+      onTestClock(made.setThreadState(name, author, threadId, request)),
+    editComment: (name, author, commentId, request) => onTestClock(made.editComment(name, author, commentId, request)),
+    deleteComment: (name, author, commentId) => onTestClock(made.deleteComment(name, author, commentId)),
+    moveThreads: (name, request) => onTestClock(made.moveThreads(name, request)),
   };
   return {
     workspace,

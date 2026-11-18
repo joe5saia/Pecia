@@ -8,9 +8,24 @@ import * as HttpApiSecurity from "effect/http-api/HttpApiSecurity";
 import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import {
+  CommentId,
+  CreateThreadRequest,
+  EditCommentRequest,
+  MoveThreadsRequest,
+  MoveThreadsResponse,
+  ReplyRequest,
+  SetThreadStateRequest,
+  Thread,
+  ThreadFilter,
+  ThreadId,
+  ThreadList,
+} from "./Comments.ts";
+import {
+  AnchorMismatch,
   ArtifactsUnavailable,
   ForkTooLarge,
   NotFound,
+  NotYourComment,
   SessionNotActive,
   Unauthorized,
   WorkspaceUnavailable,
@@ -20,6 +35,7 @@ import {
   CreateSessionResponse,
   CreateWorkspaceRequest,
   CreateWorkspaceResponse,
+  CurrentReader,
   EndSessionResponse,
   FilePath,
   HistoryResponse,
@@ -67,16 +83,27 @@ export class SessionAuth extends HttpApiMiddleware.Service<SessionAuth, { provid
 export const ViewerCookie = HttpApiSecurity.apiKey({ key: "pecia_viewer", in: "cookie" });
 
 /**
+ * The name a reader goes by in comments: the one given at login, which nothing
+ * checks (docs/comments.md, "Auth"). A caller with the key as a bearer token is
+ * `Orchestrator`.
+ */
+export class ReaderName extends Context.Service<ReaderName, string>()("pecia/ReaderName") {}
+
+/**
  * Reader endpoints: the orchestrator key as a bearer token, or the cookie
  * `login` sets after a browser presented that key.
  */
-export class ReaderAuth extends HttpApiMiddleware.Service<ReaderAuth>()("pecia/ReaderAuth", {
+export class ReaderAuth extends HttpApiMiddleware.Service<ReaderAuth, { provides: ReaderName }>()("pecia/ReaderAuth", {
   error: Unauthorized,
   security: { bearer: HttpApiSecurity.bearer, cookie: ViewerCookie },
 }) {}
 
 const WorkspaceParams = Schema.Struct({ ws: WorkspaceName });
 const SessionParams = Schema.Struct({ id: SessionId });
+const WorkspaceThreadParams = Schema.Struct({ ws: WorkspaceName, thread: ThreadId });
+const SessionThreadParams = Schema.Struct({ id: SessionId, thread: ThreadId });
+const WorkspaceCommentParams = Schema.Struct({ ws: WorkspaceName, comment: CommentId });
+const SessionCommentParams = Schema.Struct({ id: SessionId, comment: CommentId });
 
 export class OrchestratorGroup extends HttpApiGroup.make("orchestrator")
   .add(
@@ -116,6 +143,43 @@ export class SandboxGroup extends HttpApiGroup.make("sandbox")
       success: LandResponse,
       error: [NotFound, SessionNotActive, ForkTooLarge, ArtifactsUnavailable, WorkspaceUnavailable],
     }),
+    // The comments on the session's wiki, for the agent (docs/comments.md). An agent writes as its session.
+    HttpApiEndpoint.get("listSessionThreads", "/sessions/:id/threads", {
+      params: SessionParams,
+      query: ThreadFilter,
+      success: ThreadList,
+      error: [NotFound, SessionNotActive, WorkspaceUnavailable],
+    }),
+    HttpApiEndpoint.post("createSessionThread", "/sessions/:id/threads", {
+      params: SessionParams,
+      payload: CreateThreadRequest,
+      success: Thread,
+      error: [NotFound, SessionNotActive, AnchorMismatch, ArtifactsUnavailable, WorkspaceUnavailable],
+    }),
+    HttpApiEndpoint.post("replyInSession", "/sessions/:id/threads/:thread/comments", {
+      params: SessionThreadParams,
+      payload: ReplyRequest,
+      success: Thread,
+      error: [NotFound, SessionNotActive, AnchorMismatch, ArtifactsUnavailable, WorkspaceUnavailable],
+    }),
+    HttpApiEndpoint.post("setThreadStateInSession", "/sessions/:id/threads/:thread/state", {
+      params: SessionThreadParams,
+      payload: SetThreadStateRequest,
+      success: Thread,
+      error: [NotFound, SessionNotActive, WorkspaceUnavailable],
+    }),
+    // An agent deletes its own comments but never edits one, so there is no edit endpoint here.
+    HttpApiEndpoint.delete("deleteCommentInSession", "/sessions/:id/comments/:comment", {
+      params: SessionCommentParams,
+      success: Thread,
+      error: [NotFound, SessionNotActive, NotYourComment, WorkspaceUnavailable],
+    }),
+    HttpApiEndpoint.post("moveThreads", "/sessions/:id/threads/move", {
+      params: SessionParams,
+      payload: MoveThreadsRequest,
+      success: MoveThreadsResponse,
+      error: [NotFound, SessionNotActive, WorkspaceUnavailable],
+    }),
   )
   .middleware(SessionAuth) {}
 
@@ -152,6 +216,49 @@ export class ReaderGroup extends HttpApiGroup.make("reader")
   )
   .middleware(ReaderAuth) {}
 
+/** Comment threads on a wiki's pages, for people (docs/comments.md). A comment is written under the `ReaderName`. */
+export class CommentsGroup extends HttpApiGroup.make("comments")
+  .add(
+    HttpApiEndpoint.get("listThreads", "/workspaces/:ws/threads", {
+      params: WorkspaceParams,
+      query: ThreadFilter,
+      success: ThreadList,
+      error: [NotFound, WorkspaceUnavailable],
+    }),
+    HttpApiEndpoint.post("createThread", "/workspaces/:ws/threads", {
+      params: WorkspaceParams,
+      payload: CreateThreadRequest,
+      success: Thread,
+      error: [NotFound, AnchorMismatch, ArtifactsUnavailable, WorkspaceUnavailable],
+    }),
+    HttpApiEndpoint.post("reply", "/workspaces/:ws/threads/:thread/comments", {
+      params: WorkspaceThreadParams,
+      payload: ReplyRequest,
+      success: Thread,
+      error: [NotFound, AnchorMismatch, ArtifactsUnavailable, WorkspaceUnavailable],
+    }),
+    HttpApiEndpoint.post("setThreadState", "/workspaces/:ws/threads/:thread/state", {
+      params: WorkspaceThreadParams,
+      payload: SetThreadStateRequest,
+      success: Thread,
+      error: [NotFound, WorkspaceUnavailable],
+    }),
+    HttpApiEndpoint.patch("editComment", "/workspaces/:ws/comments/:comment", {
+      params: WorkspaceCommentParams,
+      payload: EditCommentRequest,
+      success: Thread,
+      error: [NotFound, NotYourComment, WorkspaceUnavailable],
+    }),
+    HttpApiEndpoint.delete("deleteComment", "/workspaces/:ws/comments/:comment", {
+      params: WorkspaceCommentParams,
+      success: Thread,
+      error: [NotFound, NotYourComment, WorkspaceUnavailable],
+    }),
+    // The name the reader's comments go under, so the viewer offers edit and delete on theirs.
+    HttpApiEndpoint.get("currentReader", "/auth/me", { success: CurrentReader }),
+  )
+  .middleware(ReaderAuth) {}
+
 /** A browser trades the orchestrator key for the reader cookie, and drops it. */
 export class ViewerGroup extends HttpApiGroup.make("viewer").add(
   HttpApiEndpoint.post("login", "/auth/login", {
@@ -163,7 +270,7 @@ export class ViewerGroup extends HttpApiGroup.make("viewer").add(
 ) {}
 
 export class WikiApi extends HttpApi.make("WikiApi")
-  .add(OrchestratorGroup, SandboxGroup, ReaderGroup, ViewerGroup)
+  .add(OrchestratorGroup, SandboxGroup, ReaderGroup, CommentsGroup, ViewerGroup)
   // A request that does not match its endpoint's schemas answers 400, and a
   // failure inside the service answers 500, both as RFC 9457 problems.
   .middleware(HttpApiMiddleware.ProblemDetails) {}

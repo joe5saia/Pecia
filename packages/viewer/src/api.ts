@@ -1,4 +1,15 @@
-import { type Ref, WikiApi, type WorkspaceName } from "@pecia/wiki-api";
+import {
+  type CommentId,
+  type CreateThreadRequest,
+  type PersonName,
+  type Ref,
+  type ReplyRequest,
+  type SetThreadStateRequest,
+  type ThreadFilter,
+  type ThreadId,
+  WikiApi,
+  type WorkspaceName,
+} from "@pecia/wiki-api";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
@@ -80,8 +91,31 @@ export const readText = (ws: WorkspaceName, ref: Ref, path: string) =>
 export const readHistory = (ws: WorkspaceName) =>
   Effect.flatMap(client, (api) => api.reader.readHistory({ params: { ws }, query: { limit: 50 } }));
 
-export const login = (key: string) =>
-  Effect.flatMap(client, (api) => api.viewer.login({ payload: { key: Redacted.make(key) } }));
+export const login = (key: string, name: PersonName | undefined) =>
+  Effect.flatMap(client, (api) =>
+    api.viewer.login({ payload: { key: Redacted.make(key), ...(name === undefined ? {} : { name }) } }),
+  );
+
+export const listThreads = (ws: WorkspaceName, filter: ThreadFilter) =>
+  Effect.flatMap(client, (api) => api.comments.listThreads({ params: { ws }, query: filter }));
+
+export const createThread = (ws: WorkspaceName, request: CreateThreadRequest) =>
+  Effect.flatMap(client, (api) => api.comments.createThread({ params: { ws }, payload: request }));
+
+export const replyToThread = (ws: WorkspaceName, thread: ThreadId, request: ReplyRequest) =>
+  Effect.flatMap(client, (api) => api.comments.reply({ params: { ws, thread }, payload: request }));
+
+export const editComment = (ws: WorkspaceName, comment: CommentId, body: string) =>
+  Effect.flatMap(client, (api) => api.comments.editComment({ params: { ws, comment }, payload: { body } }));
+
+export const deleteComment = (ws: WorkspaceName, comment: CommentId) =>
+  Effect.flatMap(client, (api) => api.comments.deleteComment({ params: { ws, comment } }));
+
+/** The name the logged-in reader's comments go under. */
+export const currentReader = () => Effect.flatMap(client, (api) => api.comments.currentReader());
+
+export const setThreadState = (ws: WorkspaceName, thread: ThreadId, request: SetThreadStateRequest) =>
+  Effect.flatMap(client, (api) => api.comments.setThreadState({ params: { ws, thread }, payload: request }));
 
 export const logout = () => Effect.flatMap(client, (api) => api.viewer.logout());
 

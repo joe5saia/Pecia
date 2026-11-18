@@ -194,8 +194,24 @@ export type TreeResponse = typeof TreeResponse.Type;
 export const HistoryResponse = Schema.Array(Commit);
 export type HistoryResponse = typeof HistoryResponse.Type;
 
-export const LoginRequest = Schema.Struct({ key: Schema.Redacted(Schema.String) });
+/** The name a person gave when logging in. Nothing checks it: anyone with the stage's key can give any name. */
+export const PersonName = Schema.String.check(
+  Schema.isPattern(/^\P{Cc}*\S\P{Cc}*$/u, {
+    description: "a name with no control characters that is not only white space",
+  }),
+  Schema.isMaxLength(80),
+);
+export type PersonName = typeof PersonName.Type;
+
+export const LoginRequest = Schema.Struct({
+  key: Schema.Redacted(Schema.String),
+  /** The name the reader's comments are signed with (docs/comments.md, "Auth"). */
+  name: Schema.optional(PersonName),
+});
 export type LoginRequest = typeof LoginRequest.Type;
+
+export const CurrentReader = Schema.Struct({ name: Schema.String });
+export type CurrentReader = typeof CurrentReader.Type;
 
 export const LoginResponse = Schema.Struct({
   /** When the login cookie expires. */

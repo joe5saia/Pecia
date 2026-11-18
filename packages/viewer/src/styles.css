@@ -251,7 +251,7 @@ code {
 
 .wiki {
   display: grid;
-  grid-template-columns: 270px minmax(0, 1fr) 220px;
+  grid-template-columns: 270px minmax(0, 1fr) 320px;
   align-items: start;
 }
 .sidebar {
@@ -370,11 +370,219 @@ code {
   display: none;
 }
 
+/* Comments, in the right column under the outline (Comments.tsx) */
+
+.comments-panel {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.outline > .comments-panel:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+.comments-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.comments-head h2 {
+  margin: 0;
+}
+.comments-panel .tabs {
+  display: flex;
+  gap: 2px;
+}
+.comments-panel .tabs button {
+  padding: 2px 8px;
+  font-size: 12px;
+  background: none;
+  border-color: transparent;
+  color: var(--fg-soft);
+}
+.comments-panel .tabs button.current {
+  border-color: var(--border);
+  background: var(--bg-soft);
+  color: var(--fg);
+}
+.comments-panel button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+}
+.comments-panel .problem {
+  margin: 0 0 10px;
+}
+.new-comment {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.new-comment .note {
+  margin: 0;
+  width: 100%;
+}
+.comments-panel blockquote {
+  margin: 0 0 8px;
+  padding: 2px 8px;
+  border-left: 3px solid #e3b341;
+  color: var(--fg-soft);
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  max-height: 5.5em;
+  overflow: hidden;
+}
+.comments-panel blockquote.outdated {
+  border-left-color: var(--border);
+  text-decoration: line-through;
+}
+.comments-panel .scope {
+  margin: 0 0 8px;
+  color: var(--fg-soft);
+  font-size: 12px;
+  font-style: italic;
+}
+.draft {
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+}
+.composer {
+  display: grid;
+  gap: 6px;
+}
+.composer textarea {
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.composer textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.composer .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.threads {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.thread {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  cursor: pointer;
+}
+.thread.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  cursor: default;
+}
+.thread.resolved {
+  opacity: 0.85;
+}
+.thread .chip {
+  display: inline-block;
+  margin-bottom: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.thread .chip.outdated {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+}
+.thread .comments {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.thread .who {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-soft);
+}
+.thread .who strong {
+  color: var(--fg);
+}
+.thread .who strong.agent::before {
+  content: "◆ ";
+  color: var(--accent);
+}
+.thread .body {
+  white-space: pre-wrap;
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.thread .comment-actions {
+  display: flex;
+  gap: 2px;
+  margin-top: 2px;
+}
+.thread .comment-actions button {
+  padding: 0 6px;
+  font-size: 12px;
+}
+.thread .comments li.deleted .note {
+  font-style: italic;
+}
+.thread .resolved-by {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--fg-soft);
+}
+.thread-actions {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  justify-items: start;
+}
+.thread-actions .composer {
+  width: 100%;
+}
+::highlight(pecia-comment) {
+  background-color: rgb(227 179 65 / 0.3);
+}
+::highlight(pecia-comment-active) {
+  background-color: rgb(227 179 65 / 0.65);
+}
+
 @media (max-width: 1180px) {
   .wiki {
     grid-template-columns: 250px minmax(0, 1fr);
   }
   .outline {
+    grid-column: 2;
+    position: static;
+    max-height: none;
+    padding: 0 48px 48px;
+  }
+  .outline > h2,
+  .outline > ul {
     display: none;
   }
 }
@@ -408,6 +616,9 @@ code {
   }
   .page {
     padding: 20px 18px 80px;
+  }
+  .outline {
+    padding: 0 18px 80px;
   }
 }
 

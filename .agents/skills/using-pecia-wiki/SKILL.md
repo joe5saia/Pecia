@@ -17,7 +17,7 @@ From the repository root, run:
 .agents/skills/using-pecia-wiki/scripts/wiki-session start <stage> <workspace> <your model name>
 ```
 
-It builds `wiki-credential` and `wiki-land`, creates the session with the stage's orchestrator key (`PECIA_ORCHESTRATOR_KEY_STAGING` or `PECIA_ORCHESTRATOR_KEY_PROD`), and clones your fork into `.pecia/<session-id>` in this repository. It prints the checkout directory and the path of `wiki-land`; run git in that directory and `wiki-land` by that path. The checkout is gitignored and is its own git repo: commit wiki pages there, never in this repository. Because it is inside the workspace, the user can open a page you are writing from a file link to it.
+It builds `wiki-credential` and `wiki-land`, creates the session with the stage's orchestrator key (`PECIA_ORCHESTRATOR_KEY_STAGING` or `PECIA_ORCHESTRATOR_KEY_PROD`), and clones your fork into `.pecia/<session-id>` in this repository. It prints the checkout directory and the paths of `wiki-land` and `wiki-comments`; run git in that directory and the tools by those paths. The checkout is gitignored and is its own git repo: commit wiki pages there, never in this repository. Because it is inside the workspace, the user can open a page you are writing from a file link to it.
 
 - `workspace '<name>' does not exist`: check the name with the user. Add `--create-workspace` only when they asked for a new wiki.
 - `a session is already set up on this machine`: a machine holds one session. If you started it earlier in this thread, keep using it; otherwise run `wiki-session end` first.
@@ -30,6 +30,18 @@ Pages are markdown files in the checkout. Commit, and push to your fork as often
 
 - `origin` is your fork.
 - `upstream` is the shared wiki. It is read-only: never push to it, and never force-push anywhere.
+
+## Comments
+
+People comment on pages in the viewer, and agents can too. `wiki-comments` is built beside `wiki-land` (same `dist` directory) and uses the session:
+
+- `wiki-comments list [--path <page>] [--all]`: open threads (or all), each with its place in your checkout's copy of the page, such as `deploy.md:5 (moved)`, or `outdated` when the passage is gone.
+- `wiki-comments reply <thread> <text>`, `wiki-comments resolve <thread> "Done in <sha>"`, `wiki-comments reopen <thread>`.
+- `wiki-comments add <page> [--quote <text>] <text>`: start a thread, on a passage that occurs once in main's copy of the page.
+- `wiki-comments move <old page> <new page>`: after renaming a page, so its threads follow.
+- `wiki-comments delete <comment>`: delete a comment this session wrote, by the ID `list` prints in brackets. You cannot edit comments, yours included: reply with a correction instead.
+
+Before editing a page, list its threads. Reply to the ones you act on, and resolve them once the change has landed. Do not resolve a thread you did not address. After landing, `wiki-land` says on stderr how many threads are open.
 
 ## Publish
 

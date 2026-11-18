@@ -1,8 +1,11 @@
 import {
+  type Author,
   OrchestratorAuth,
   ReaderAuth,
+  ReaderName,
   type Ref,
   SessionAuth,
+  type SessionId,
   SessionKey,
   Unauthorized,
   ViewerCookie,
@@ -72,12 +75,17 @@ const ReaderAuthLive = Layer.effect(
   Effect.gen(function* () {
     const key = Redacted.value(yield* OrchestratorKey);
     return {
+      // A script with the key comments as the orchestrator.
       bearer: (httpEffect, { credential }) =>
-        Login.isKey(key, Redacted.value(credential)) ? httpEffect : Effect.fail(new Unauthorized()),
+        Login.isKey(key, Redacted.value(credential))
+          ? Effect.provideService(httpEffect, ReaderName, "orchestrator")
+          : Effect.fail(new Unauthorized()),
       cookie: (httpEffect, { credential }) =>
         Effect.gen(function* () {
-          if (!(yield* Login.verify(key, Redacted.value(credential)))) return yield* new Unauthorized();
-          return yield* httpEffect;
+          const login = yield* Login.verify(key, Redacted.value(credential));
+          if (login === undefined) return yield* new Unauthorized();
+          // A cookie from before comments has no name.
+          return yield* Effect.provideService(httpEffect, ReaderName, login.name ?? "anonymous");
         }),
     };
   }),
@@ -105,6 +113,18 @@ const OrchestratorLive = HttpApiBuilder.group(WikiApi, "orchestrator", (handlers
 const SandboxLive = HttpApiBuilder.group(WikiApi, "sandbox", (handlers) =>
   Effect.gen(function* () {
     const workspaces = yield* Workspaces;
+    /** Run `call` on the session's workspace as the session's agent, once the session key is checked. */
+    const asAgent = <A, E>(
+      sessionId: SessionId,
+      call: (workspace: RemoteWorkspace, author: Author, name: WorkspaceName) => Effect.Effect<A, E>,
+    ) =>
+      Effect.flatMap(SessionKey, (key) => {
+        const name = workspaceOfSession(sessionId);
+        const workspace = workspaces.get(name);
+        return Effect.flatMap(workspace.sessionAuthor(sessionId, Redacted.value(key)), (author) =>
+          call(workspace, author, name),
+        );
+      });
     return handlers
       .handle("mintTokens", ({ params }) =>
         Effect.flatMap(SessionKey, (key) =>
@@ -115,7 +135,55 @@ const SandboxLive = HttpApiBuilder.group(WikiApi, "sandbox", (handlers) =>
         Effect.flatMap(SessionKey, (key) =>
           workspaces.get(workspaceOfSession(params.id)).land(params.id, Redacted.value(key)),
         ),
+      )
+      .handle("listSessionThreads", ({ params, query }) =>
+        asAgent(params.id, (workspace, _author, name) => workspace.listThreads(name, query)),
+      )
+      .handle("createSessionThread", ({ params, payload }) =>
+        asAgent(params.id, (workspace, author, name) => workspace.createThread(name, author, payload)),
+      )
+      .handle("replyInSession", ({ params, payload }) =>
+        asAgent(params.id, (workspace, author, name) => workspace.reply(name, author, params.thread, payload)),
+      )
+      .handle("setThreadStateInSession", ({ params, payload }) =>
+        asAgent(params.id, (workspace, author, name) => workspace.setThreadState(name, author, params.thread, payload)),
+      )
+      .handle("deleteCommentInSession", ({ params }) =>
+        asAgent(params.id, (workspace, author, name) => workspace.deleteComment(name, author, params.comment)),
+      )
+      .handle("moveThreads", ({ params, payload }) =>
+        asAgent(params.id, (workspace, _author, name) => workspace.moveThreads(name, payload)),
       );
+  }),
+);
+
+/** A person's comments, written under the name of their login. */
+const CommentsLive = HttpApiBuilder.group(WikiApi, "comments", (handlers) =>
+  Effect.gen(function* () {
+    const workspaces = yield* Workspaces;
+    const person = Effect.map(ReaderName, (name): Author => ({ _tag: "Person", name }));
+    return handlers
+      .handle("listThreads", ({ params, query }) => workspaces.get(params.ws).listThreads(params.ws, query))
+      .handle("createThread", ({ params, payload }) =>
+        Effect.flatMap(person, (author) => workspaces.get(params.ws).createThread(params.ws, author, payload)),
+      )
+      .handle("reply", ({ params, payload }) =>
+        Effect.flatMap(person, (author) => workspaces.get(params.ws).reply(params.ws, author, params.thread, payload)),
+      )
+      .handle("setThreadState", ({ params, payload }) =>
+        Effect.flatMap(person, (author) =>
+          workspaces.get(params.ws).setThreadState(params.ws, author, params.thread, payload),
+        ),
+      )
+      .handle("editComment", ({ params, payload }) =>
+        Effect.flatMap(person, (author) =>
+          workspaces.get(params.ws).editComment(params.ws, author, params.comment, payload),
+        ),
+      )
+      .handle("deleteComment", ({ params }) =>
+        Effect.flatMap(person, (author) => workspaces.get(params.ws).deleteComment(params.ws, author, params.comment)),
+      )
+      .handle("currentReader", () => Effect.map(ReaderName, (name) => ({ name })));
   }),
 );
 
@@ -200,7 +268,7 @@ const ViewerLive = HttpApiBuilder.group(WikiApi, "viewer", (handlers) =>
       .handle("login", ({ payload }) =>
         Effect.gen(function* () {
           if (!Login.isKey(key, Redacted.value(payload.key))) return yield* new Unauthorized();
-          const cookie = yield* Login.issue(key);
+          const cookie = yield* Login.issue(key, payload.name?.trim());
           yield* HttpApiBuilder.securitySetCookie(ViewerCookie, cookie.value, {
             ...cookieOptions,
             expires: DateTime.toDateUtc(cookie.expiresAt),
@@ -256,7 +324,7 @@ const Failures = HttpRouter.middleware(
 
 /** The API as a router layer, for `HttpRouter.toHttpEffect` in the Worker and `toWebHandler` in tests. */
 export const ApiLive = HttpApiBuilder.layer(WikiApi).pipe(
-  Layer.provide([OrchestratorLive, SandboxLive, ReaderLive, ViewerLive]),
+  Layer.provide([OrchestratorLive, SandboxLive, ReaderLive, CommentsLive, ViewerLive]),
   Layer.provide([
     OrchestratorAuthLive,
     SessionAuthLive,

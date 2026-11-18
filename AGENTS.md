@@ -1,13 +1,13 @@
 # Pecia
 
-Agent wiki on Cloudflare Artifacts. The design is in `docs/mvp.md`.
+Agent wiki on Cloudflare Artifacts. The design is in `docs/mvp.md`; comments on pages are in `docs/comments.md`.
 
 ## Layout
 
 - `packages/wiki-api`: the shared Effect Schema contract for the Control Worker API.
 - `packages/control-worker`: the Control Worker, the workspace Durable Object and its Alchemy stack (`alchemy.run.ts`). `src/Workspace.ts` holds the session and landing logic; `src/testing` holds the fakes the tests run it on.
 - `packages/viewer`: the read-only web UI (React and Vite), served as the Control Worker's static assets. Its design, login and the way to add editing are in `docs/viewer.md`. `src/App.tsx` has every page as a component (`Workspaces` is the list of wikis, `Wiki` a wiki, `History` its commits), `src/styles.css` every style, with the fonts and colors as variables at its top. It is type-checked as its own project (`packages/viewer/tsconfig.json`), with the DOM's types; `task typecheck` covers it, and there is no viewer-only check.
-- `packages/sandbox-tools`: what runs in a sandbox: `wiki-credential`, `wiki-land`, `setup.sh` and `agent-instructions.md`.
+- `packages/sandbox-tools`: what runs in a sandbox: `wiki-credential`, `wiki-land`, `wiki-comments`, `setup.sh` and `agent-instructions.md`.
 - `.agents/skills/using-pecia-wiki`: the project skill that lets an Amp thread read and publish to a deployed wiki.
 - `packages/lint-rules`: the oxlint plugin `pecia`, which enforces the Effect style below. `.oxlintrc.json` loads it.
 

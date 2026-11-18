@@ -1,6 +1,6 @@
 import type { CommitSha, WorkspaceName } from "@pecia/wiki-api";
 import * as Predicate from "effect/Predicate";
-import { type ComponentProps, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { type ComponentProps, type ReactNode, type RefObject, useEffect, useId, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import rehypeRaw from "rehype-raw";
@@ -25,6 +25,39 @@ export interface Page {
   readonly at: string | undefined;
   readonly path: string;
 }
+
+/**
+ * Mark every element with the range of the page's source it was rendered from,
+ * as UTF-16 offsets of the whole file: `data-src-start` and `data-src-end`.
+ * Comments map a selection to the source with them (Comments.tsx). It runs
+ * after the sanitizer, which would remove the attributes, and keeps each
+ * node's position. `offset` is the length of the front matter left out of `body`.
+ */
+const sourceRanges = (offset: number) => () => (tree: unknown) => {
+  const visit = (node: unknown) => {
+    if (!Predicate.hasProperty(node, "type")) return;
+    if (
+      node.type === "element" &&
+      Predicate.hasProperty(node, "properties") &&
+      Predicate.isObject(node.properties) &&
+      Predicate.hasProperty(node, "position") &&
+      Predicate.hasProperty(node.position, "start") &&
+      Predicate.hasProperty(node.position, "end") &&
+      Predicate.hasProperty(node.position.start, "offset") &&
+      Predicate.hasProperty(node.position.end, "offset") &&
+      Predicate.isNumber(node.position.start.offset) &&
+      Predicate.isNumber(node.position.end.offset)
+    ) {
+      Object.assign(node.properties, {
+        dataSrcStart: offset + node.position.start.offset,
+        dataSrcEnd: offset + node.position.end.offset,
+      });
+    }
+    if (Predicate.hasProperty(node, "children") && Array.isArray(node.children))
+      for (const child of node.children) visit(child);
+  };
+  visit(tree);
+};
 
 /** The YAML front matter of a page, which GitHub shows as a table and other renderers hide. */
 const splitFrontMatter = (text: string): { readonly frontMatter: string | undefined; readonly body: string } => {
@@ -131,14 +164,13 @@ const Heading = ({
   level,
   id,
   children,
-}: {
+  ...rest
+}: ComponentProps<"h1"> & {
   level: 1 | 2 | 3 | 4 | 5 | 6;
-  id: string | undefined;
-  children: ReactNode;
 }) => {
   const Tag = `h${level}` as const;
   return (
-    <Tag id={id}>
+    <Tag {...rest} id={id}>
       {children}
       {id !== undefined && (
         <a className="anchor" href={`#${id}`} aria-label="Link to this section">
@@ -151,8 +183,9 @@ const Heading = ({
 
 const heading =
   (level: 1 | 2 | 3 | 4 | 5 | 6) =>
-  ({ id, children }: ComponentProps<"h1">) => (
-    <Heading level={level} id={id}>
+  // `rest` carries the source range the comments need (`sourceRanges`).
+  ({ id, children, node: _node, ...rest }: ComponentProps<"h1"> & { node?: unknown }) => (
+    <Heading {...rest} level={level} id={id}>
       {children}
     </Heading>
   );
@@ -233,12 +266,16 @@ export const Markdown = ({
   page,
   text,
   onHeadings,
+  articleRef,
 }: {
   readonly page: Page;
   readonly text: string;
   readonly onHeadings?: (headings: ReadonlyArray<OutlineEntry>) => void;
+  /** The rendered page, for comments to select in and highlight. */
+  readonly articleRef?: RefObject<HTMLElement | null>;
 }) => {
-  const article = useRef<HTMLElement>(null);
+  const ownArticle = useRef<HTMLElement>(null);
+  const article = articleRef ?? ownArticle;
   const { frontMatter, body } = splitFrontMatter(text);
 
   useEffect(() => {
@@ -273,6 +310,7 @@ export const Markdown = ({
           [rehypeSanitize, schema],
           rehypeSlug,
           [rehypeHighlight, { detect: false, plainText: ["mermaid", "text", "txt"] }],
+          sourceRanges(text.length - body.length),
         ]}
         components={components(page)}
       >

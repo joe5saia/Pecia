@@ -14,10 +14,10 @@ export class Unauthorized extends Schema.TaggedError<Unauthorized>()("Unauthoriz
   }
 }
 
-/** 404: unknown workspace or session, or a commit or file a wiki does not have. */
+/** 404: unknown workspace, session, comment thread or comment, or a commit or file a wiki does not have. */
 export class NotFound extends Schema.TaggedError<NotFound>()(
   "NotFound",
-  { resource: Schema.Literals(["workspace", "session", "commit", "file"]), id: Schema.String },
+  { resource: Schema.Literals(["workspace", "session", "commit", "file", "thread", "comment"]), id: Schema.String },
   { httpApiStatus: 404 },
 ) {
   override get message(): string {
@@ -61,6 +61,45 @@ export class ForkTooLarge extends Schema.TaggedError<ForkTooLarge>()(
     } as const satisfies Record<ForkTooLarge["limit"], string>;
     const unit = this.limit === "objects" ? "" : " bytes";
     return `the fork is too large to land: ${what[this.limit]} ${this.max}${unit}`;
+  }
+}
+
+/**
+ * 422: a comment's anchor does not fit the page it is for: the page is not
+ * text, the range is not inside it, or the quoted text is not in it exactly
+ * once. Repeating the call does not help; change the anchor.
+ */
+export class AnchorMismatch extends Schema.TaggedError<AnchorMismatch>()(
+  "AnchorMismatch",
+  {
+    path: Schema.String,
+    reason: Schema.Literals(["not_text", "out_of_range", "quote_not_found", "quote_ambiguous"]),
+  },
+  { httpApiStatus: 422 },
+) {
+  override get message(): string {
+    const why = {
+      not_text: "is not text",
+      out_of_range: "has no such range",
+      quote_not_found: "does not contain the quoted text",
+      quote_ambiguous: "contains the quoted text more than once; quote more of it",
+    } as const satisfies Record<AnchorMismatch["reason"], string>;
+    return `'${this.path}' ${why[this.reason]}`;
+  }
+}
+
+/**
+ * 403: the caller may not change this comment. A person edits and deletes only
+ * comments under their own name; an agent never edits, and deletes only its
+ * own session's comments.
+ */
+export class NotYourComment extends Schema.TaggedError<NotYourComment>()(
+  "NotYourComment",
+  { commentId: Schema.String, action: Schema.Literals(["edit", "delete"]) },
+  { httpApiStatus: 403 },
+) {
+  override get message(): string {
+    return `you may not ${this.action} comment '${this.commentId}'`;
   }
 }
 

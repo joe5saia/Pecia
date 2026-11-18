@@ -65,6 +65,16 @@ export const WorkspaceObjectLive = WorkspaceObject.make(
         mintTokens: (sessionId, sessionKey) => Logs.structured(workspace.mintTokens(sessionId, sessionKey)),
         land: (sessionId, sessionKey) => Logs.structured(workspace.land(sessionId, sessionKey)),
         sweep: () => Logs.structured(workspace.sweep()),
+        sessionAuthor: (sessionId, sessionKey) => Logs.structured(workspace.sessionAuthor(sessionId, sessionKey)),
+        listThreads: (name, filter) => Logs.structured(workspace.listThreads(name, filter)),
+        createThread: (name, author, request) => Logs.structured(workspace.createThread(name, author, request)),
+        reply: (name, author, threadId, request) => Logs.structured(workspace.reply(name, author, threadId, request)),
+        setThreadState: (name, author, threadId, request) =>
+          Logs.structured(workspace.setThreadState(name, author, threadId, request)),
+        editComment: (name, author, commentId, request) =>
+          Logs.structured(workspace.editComment(name, author, commentId, request)),
+        deleteComment: (name, author, commentId) => Logs.structured(workspace.deleteComment(name, author, commentId)),
+        moveThreads: (name, request) => Logs.structured(workspace.moveThreads(name, request)),
         alarm: () => Logs.structured(workspace.sweep()),
       } satisfies WorkspaceShape;
     });

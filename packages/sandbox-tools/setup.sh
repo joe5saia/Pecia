@@ -17,6 +17,8 @@ if [ -z "$helper" ]; then
   exit 1
 fi
 wiki_dir="${WIKI_DIR:-docs}"
+# Absolute, so wiki-comments finds the pages from any directory.
+case "$wiki_dir" in /*) ;; *) wiki_dir="$PWD/$wiki_dir" ;; esac
 
 # Keep the session for shells that start without these variables. The file is
 # outside the wiki checkout and readable only by this user.
@@ -26,7 +28,7 @@ mkdir -p "$state_dir"
   umask 077
   printf '%s=%s\n' \
     WIKI_URL "$WIKI_URL" SESSION_ID "$SESSION_ID" SESSION_KEY "$SESSION_KEY" \
-    FORK_REMOTE "$FORK_REMOTE" MAIN_REMOTE "$MAIN_REMOTE" >"$state_dir/session.env"
+    FORK_REMOTE "$FORK_REMOTE" MAIN_REMOTE "$MAIN_REMOTE" WIKI_DIR "$wiki_dir" >"$state_dir/session.env"
 )
 
 # Use the wiki credential helper only for Artifacts URLs, and pass the repo path

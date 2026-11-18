@@ -54,4 +54,30 @@ export const schema: ReadonlyArray<string> = [
     landed_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS lands_to_sha ON lands (to_sha)`,
+  // Comment threads on the wiki's pages (docs/comments.md). `anchor` is the
+  // JSON of an `Anchor`, NULL for a comment on the whole page; `resolved_by`
+  // and `comments.author` are the JSON of an `Author`.
+  `CREATE TABLE IF NOT EXISTS threads (
+    thread_id TEXT PRIMARY KEY,
+    path TEXT NOT NULL,
+    anchor TEXT,
+    state TEXT NOT NULL CHECK (state IN ('open', 'resolved')),
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    resolved_by TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS threads_path ON threads (path, state)`,
+  // A thread's first comment and its replies, in the order of `seq`.
+  `CREATE TABLE IF NOT EXISTS comments (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    comment_id TEXT NOT NULL UNIQUE,
+    thread_id TEXT NOT NULL,
+    author TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    edited_at INTEGER,
+    -- A deleted comment keeps its place in the thread with an empty body.
+    deleted_at INTEGER
+  )`,
+  `CREATE INDEX IF NOT EXISTS comments_thread ON comments (thread_id, seq)`,
 ];

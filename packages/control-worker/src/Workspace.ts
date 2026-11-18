@@ -1,6 +1,28 @@
 import {
+  type Anchor,
+  AnchorMismatch,
+  type AnchorRequest,
+  anchorAt,
   ArtifactsUnavailable,
+  Anchor as AnchorSchema,
+  Author,
+  CommentId,
   CommitSha,
+  type CreateThreadRequest,
+  type EditCommentRequest,
+  FilePath,
+  findQuote,
+  type MoveThreadsRequest,
+  NotYourComment,
+  sameAuthor,
+  type MoveThreadsResponse,
+  type ReplyRequest,
+  type SetThreadStateRequest,
+  type Thread,
+  type ThreadFilter,
+  ThreadId,
+  type ThreadList,
+  ThreadState,
   type CreateSessionRequest,
   type CreateSessionResponse,
   type CreateWorkspaceResponse,
@@ -37,7 +59,15 @@ import { schema, Sql, type SqlValue } from "./Sql.ts";
 // Object in WorkspaceObject.ts hosts one of these per workspace name.
 
 /** The errors a workspace call can fail with. The Durable Object declares them so they survive RPC. */
-export const WorkspaceErrors = [Unauthorized, NotFound, SessionNotActive, ForkTooLarge, ArtifactsUnavailable] as const;
+export const WorkspaceErrors = [
+  Unauthorized,
+  NotFound,
+  SessionNotActive,
+  ForkTooLarge,
+  AnchorMismatch,
+  NotYourComment,
+  ArtifactsUnavailable,
+] as const;
 
 export interface Workspace {
   /** Create the main repo and its first commit. Safe to repeat. */
@@ -71,6 +101,51 @@ export interface Workspace {
    * closed fork whose settle period is over. The Durable Object's alarm calls it.
    */
   readonly sweep: () => Effect.Effect<void>;
+
+  // Comment threads (docs/comments.md). The Worker passes who writes: a person
+  // by the name in their login, an agent by `sessionAuthor`.
+
+  /** The agent of an active session, for a sandbox presenting its session key. Counts as activity. */
+  readonly sessionAuthor: (
+    sessionId: SessionId,
+    sessionKey: string,
+  ) => Effect.Effect<Author, Unauthorized | NotFound | SessionNotActive>;
+  readonly listThreads: (name: WorkspaceName, filter: ThreadFilter) => Effect.Effect<ThreadList, NotFound>;
+  readonly createThread: (
+    name: WorkspaceName,
+    author: Author,
+    request: CreateThreadRequest,
+  ) => Effect.Effect<Thread, NotFound | AnchorMismatch | ArtifactsUnavailable>;
+  readonly reply: (
+    name: WorkspaceName,
+    author: Author,
+    threadId: ThreadId,
+    request: ReplyRequest,
+  ) => Effect.Effect<Thread, NotFound | AnchorMismatch | ArtifactsUnavailable>;
+  readonly setThreadState: (
+    name: WorkspaceName,
+    author: Author,
+    threadId: ThreadId,
+    request: SetThreadStateRequest,
+  ) => Effect.Effect<Thread, NotFound>;
+  /** Change a comment's text. Only the person who wrote it may; an agent never edits. */
+  readonly editComment: (
+    name: WorkspaceName,
+    author: Author,
+    commentId: CommentId,
+    request: EditCommentRequest,
+  ) => Effect.Effect<Thread, NotFound | NotYourComment>;
+  /** Delete a comment, leaving its place in the thread. Only its writer may: a person by name, an agent by session. */
+  readonly deleteComment: (
+    name: WorkspaceName,
+    author: Author,
+    commentId: CommentId,
+  ) => Effect.Effect<Thread, NotFound | NotYourComment>;
+  /** Point every thread on the page `from` at the page `to`, after a page was renamed. */
+  readonly moveThreads: (
+    name: WorkspaceName,
+    request: MoveThreadsRequest,
+  ) => Effect.Effect<MoveThreadsResponse, NotFound>;
 }
 
 export class WorkspaceConfig extends Context.Service<
@@ -133,6 +208,55 @@ const TokensRow = Schema.Struct({
 type TokensRow = typeof TokensRow.Type;
 
 const NextRow = Schema.Struct({ next: Schema.NullOr(Schema.Number) });
+
+const ThreadRow = Schema.Struct({
+  thread_id: ThreadId,
+  path: FilePath,
+  anchor: Schema.NullOr(Schema.fromJsonString(AnchorSchema)),
+  state: ThreadState,
+  created_at: Schema.Number,
+  resolved_at: Schema.NullOr(Schema.Number),
+  resolved_by: Schema.NullOr(Schema.fromJsonString(Author)),
+});
+type ThreadRow = typeof ThreadRow.Type;
+
+const CommentRow = Schema.Struct({
+  comment_id: CommentId,
+  thread_id: ThreadId,
+  author: Schema.fromJsonString(Author),
+  body: Schema.String,
+  created_at: Schema.Number,
+  edited_at: Schema.NullOr(Schema.Number),
+  deleted_at: Schema.NullOr(Schema.Number),
+});
+type CommentRow = typeof CommentRow.Type;
+
+const timeOf = (ms: number) => timestampOf(DateTime.makeUnsafe(ms));
+
+const threadOf = (row: ThreadRow, comments: ReadonlyArray<CommentRow>): Thread => ({
+  id: row.thread_id,
+  path: row.path,
+  anchor: row.anchor,
+  state: row.state,
+  createdAt: timeOf(row.created_at),
+  resolvedAt: row.resolved_at === null ? null : timeOf(row.resolved_at),
+  resolvedBy: row.resolved_by,
+  comments: comments.map((comment) => ({
+    id: comment.comment_id,
+    author: comment.author,
+    body: comment.body,
+    createdAt: timeOf(comment.created_at),
+    editedAt: comment.edited_at === null ? null : timeOf(comment.edited_at),
+    deletedAt: comment.deleted_at === null ? null : timeOf(comment.deleted_at),
+  })),
+});
+
+/** Who wrote something, for usage events: a person's name stays out of the logs. */
+const authorField = (author: Author) =>
+  Match.valueTags(author, {
+    Person: () => ({ author: "person" }),
+    Agent: ({ sessionId }) => ({ author: "agent", sessionId }),
+  });
 
 /** One log line per event, with the fields usage is measured by. */
 const record = (event: string, fields: Record<string, unknown>): Effect.Effect<void> =>
@@ -587,5 +711,264 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     (effect) => lock.withPermit(effect),
   );
 
-  return { create, createSession, listSessions, endSession, mintTokens, land, sweep };
+  const sessionAuthor: Workspace["sessionAuthor"] = Effect.fn("Workspace.sessionAuthor")(function* (
+    sessionId: SessionId,
+    sessionKey: string,
+  ) {
+    const { session } = yield* authorize(sessionId, sessionKey);
+    yield* touch(sessionId);
+    return { _tag: "Agent", sessionId, agent: session.agent, model: session.model } as const;
+  });
+
+  /** The threads `condition` selects, each with its comments. Its bindings are used once in each of two queries. */
+  const threadsWhere = Effect.fnUntraced(function* (condition: string, ...bindings: ReadonlyArray<SqlValue>) {
+    const threads = yield* select(
+      ThreadRow,
+      `SELECT * FROM threads WHERE ${condition} ORDER BY path, created_at, thread_id`,
+      ...bindings,
+    );
+    const comments = yield* select(
+      CommentRow,
+      `SELECT comment_id, thread_id, author, body, created_at, edited_at, deleted_at FROM comments
+        WHERE thread_id IN (SELECT thread_id FROM threads WHERE ${condition}) ORDER BY seq`,
+      ...bindings,
+    );
+    const byThread = Map.groupBy(comments, (comment) => comment.thread_id);
+    return threads.map((row) => threadOf(row, byThread.get(row.thread_id) ?? []));
+  });
+
+  const requireThread = Effect.fnUntraced(function* (threadId: ThreadId): Effect.fn.Return<Thread, NotFound> {
+    const [thread] = yield* threadsWhere("thread_id = ?", threadId);
+    if (thread === undefined) return yield* new NotFound({ resource: "thread", id: threadId });
+    return thread;
+  });
+
+  /** The anchor a request names, made from the page as it is at the request's commit. */
+  const resolveAnchor = Effect.fnUntraced(function* (
+    base: WorkspaceRow,
+    path: FilePath,
+    request: AnchorRequest,
+  ): Effect.fn.Return<Anchor, NotFound | AnchorMismatch | ArtifactsUnavailable> {
+    const ref = request.ref ?? "main";
+    const [commit] = yield* repos.log(base.name, { ref, limit: 1 });
+    if (commit === undefined) return yield* new NotFound({ resource: "commit", id: ref });
+    const bytes = yield* repos.readFile(base.name, commit.sha, path);
+    if (bytes === undefined) return yield* new NotFound({ resource: "file", id: path });
+    const text = yield* Effect.try({
+      try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      catch: () => new AnchorMismatch({ path, reason: "not_text" }),
+    });
+    const range = Match.valueTags(request, {
+      Range: (selected) => ({ start: selected.start, end: selected.end }),
+      Quote: ({ quote }) => findQuote(text, quote),
+    });
+    if (range === "not_found") return yield* new AnchorMismatch({ path, reason: "quote_not_found" });
+    if (range === "ambiguous") return yield* new AnchorMismatch({ path, reason: "quote_ambiguous" });
+    const anchor = anchorAt(text, commit.sha, range.start, range.end);
+    if (anchor === undefined) return yield* new AnchorMismatch({ path, reason: "out_of_range" });
+    return anchor;
+  });
+
+  const insertComment = Effect.fnUntraced(function* (threadId: ThreadId, author: Author, body: string, now: number) {
+    yield* sql.exec(
+      "INSERT INTO comments (comment_id, thread_id, author, body, created_at) VALUES (?, ?, ?, ?, ?)",
+      CommentId.make(yield* randomHex(6)),
+      threadId,
+      JSON.stringify(author),
+      body,
+      now,
+    );
+  });
+
+  const listThreads: Workspace["listThreads"] = Effect.fn("Workspace.listThreads")(function* (
+    name: WorkspaceName,
+    filter: ThreadFilter,
+  ) {
+    yield* requireWorkspace(name);
+    const state = filter.state ?? "open";
+    const conditions: Array<readonly [string, SqlValue]> = [
+      ...(filter.path === undefined ? [] : [["path = ?", filter.path] as const]),
+      ...(state === "all" ? [] : [["state = ?", state] as const]),
+    ];
+    return yield* threadsWhere(
+      conditions.length === 0 ? "1" : conditions.map(([condition]) => condition).join(" AND "),
+      ...conditions.map(([, binding]) => binding),
+    );
+  });
+
+  const createThread: Workspace["createThread"] = Effect.fn("Workspace.createThread")(function* (
+    name: WorkspaceName,
+    author: Author,
+    request: CreateThreadRequest,
+  ) {
+    const base = yield* requireWorkspace(name);
+    const anchor = request.anchor === undefined ? null : yield* resolveAnchor(base, request.path, request.anchor);
+    const threadId = ThreadId.make(yield* randomHex(6));
+    const now = yield* Clock.currentTimeMillis;
+    yield* sql.exec(
+      "INSERT INTO threads (thread_id, path, anchor, state, created_at) VALUES (?, ?, ?, 'open', ?)",
+      threadId,
+      request.path,
+      anchor === null ? null : JSON.stringify(anchor),
+      now,
+    );
+    yield* insertComment(threadId, author, request.body, now);
+    yield* record("thread.created", {
+      workspace: base.name,
+      threadId,
+      path: request.path,
+      anchored: anchor !== null,
+      ...authorField(author),
+    });
+    return yield* requireThread(threadId);
+  });
+
+  const reply: Workspace["reply"] = Effect.fn("Workspace.reply")(function* (
+    name: WorkspaceName,
+    author: Author,
+    threadId: ThreadId,
+    request: ReplyRequest,
+  ) {
+    const base = yield* requireWorkspace(name);
+    const thread = yield* requireThread(threadId);
+    // A reply can say where the thread's passage is now, so the anchor follows the page (re-pinning).
+    if (request.anchor !== undefined) {
+      const anchor = yield* resolveAnchor(base, thread.path, request.anchor);
+      yield* sql.exec("UPDATE threads SET anchor = ? WHERE thread_id = ?", JSON.stringify(anchor), threadId);
+    }
+    yield* insertComment(threadId, author, request.body, yield* Clock.currentTimeMillis);
+    yield* record("thread.replied", {
+      workspace: base.name,
+      threadId,
+      repinned: request.anchor !== undefined,
+      ...authorField(author),
+    });
+    return yield* requireThread(threadId);
+  });
+
+  const setThreadState: Workspace["setThreadState"] = Effect.fn("Workspace.setThreadState")(function* (
+    name: WorkspaceName,
+    author: Author,
+    threadId: ThreadId,
+    request: SetThreadStateRequest,
+  ) {
+    const base = yield* requireWorkspace(name);
+    const thread = yield* requireThread(threadId);
+    const now = yield* Clock.currentTimeMillis;
+    if (request.body !== undefined) yield* insertComment(threadId, author, request.body, now);
+    if (thread.state !== request.state) {
+      yield* request.state === "resolved"
+        ? sql.exec(
+            "UPDATE threads SET state = 'resolved', resolved_at = ?, resolved_by = ? WHERE thread_id = ?",
+            now,
+            JSON.stringify(author),
+            threadId,
+          )
+        : sql.exec(
+            "UPDATE threads SET state = 'open', resolved_at = NULL, resolved_by = NULL WHERE thread_id = ?",
+            threadId,
+          );
+      yield* record(`thread.${request.state === "resolved" ? "resolved" : "reopened"}`, {
+        workspace: base.name,
+        threadId,
+        ...authorField(author),
+      });
+    }
+    return yield* requireThread(threadId);
+  });
+
+  const moveThreads: Workspace["moveThreads"] = Effect.fn("Workspace.moveThreads")(function* (
+    name: WorkspaceName,
+    request: MoveThreadsRequest,
+  ) {
+    const base = yield* requireWorkspace(name);
+    const moved = yield* sql.exec(
+      "UPDATE threads SET path = ? WHERE path = ? RETURNING thread_id",
+      request.to,
+      request.from,
+    );
+    yield* record("threads.moved", { workspace: base.name, from: request.from, to: request.to, moved: moved.length });
+    return { moved: moved.length };
+  });
+
+  /** A comment that is not deleted, if `author` may do `action` to it. */
+  const ownComment = Effect.fnUntraced(function* (
+    author: Author,
+    commentId: CommentId,
+    action: "edit" | "delete",
+  ): Effect.fn.Return<CommentRow, NotFound | NotYourComment> {
+    const [comment] = yield* select(
+      CommentRow,
+      "SELECT comment_id, thread_id, author, body, created_at, edited_at, deleted_at FROM comments WHERE comment_id = ?",
+      commentId,
+    );
+    if (comment === undefined || comment.deleted_at !== null)
+      return yield* new NotFound({ resource: "comment", id: commentId });
+    // An agent never edits a comment, its own included: what a person read stays what the agent said.
+    if ((action === "edit" && author._tag === "Agent") || !sameAuthor(author, comment.author))
+      return yield* new NotYourComment({ commentId, action });
+    return comment;
+  });
+
+  const editComment: Workspace["editComment"] = Effect.fn("Workspace.editComment")(function* (
+    name: WorkspaceName,
+    author: Author,
+    commentId: CommentId,
+    request: EditCommentRequest,
+  ) {
+    const base = yield* requireWorkspace(name);
+    const comment = yield* ownComment(author, commentId, "edit");
+    yield* sql.exec(
+      "UPDATE comments SET body = ?, edited_at = ? WHERE comment_id = ?",
+      request.body,
+      yield* Clock.currentTimeMillis,
+      commentId,
+    );
+    yield* record("comment.edited", {
+      workspace: base.name,
+      threadId: comment.thread_id,
+      commentId,
+      ...authorField(author),
+    });
+    return yield* requireThread(comment.thread_id);
+  });
+
+  const deleteComment: Workspace["deleteComment"] = Effect.fn("Workspace.deleteComment")(function* (
+    name: WorkspaceName,
+    author: Author,
+    commentId: CommentId,
+  ) {
+    const base = yield* requireWorkspace(name);
+    const comment = yield* ownComment(author, commentId, "delete");
+    yield* sql.exec(
+      "UPDATE comments SET body = '', deleted_at = ? WHERE comment_id = ?",
+      yield* Clock.currentTimeMillis,
+      commentId,
+    );
+    yield* record("comment.deleted", {
+      workspace: base.name,
+      threadId: comment.thread_id,
+      commentId,
+      ...authorField(author),
+    });
+    return yield* requireThread(comment.thread_id);
+  });
+
+  return {
+    editComment,
+    deleteComment,
+    create,
+    createSession,
+    listSessions,
+    endSession,
+    mintTokens,
+    land,
+    sweep,
+    sessionAuthor,
+    listThreads,
+    createThread,
+    reply,
+    setThreadState,
+    moveThreads,
+  };
 });

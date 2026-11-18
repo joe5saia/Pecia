@@ -1,6 +1,6 @@
 # Sandbox tools
 
-`wiki-credential`, `wiki-land`, `setup.sh` and the instructions an agent is given. Repo-wide rules are in the root `AGENTS.md`.
+`wiki-credential`, `wiki-land`, `wiki-comments`, `setup.sh` and the instructions an agent is given. Repo-wide rules are in the root `AGENTS.md`.
 
 ## Gotchas
 
@@ -14,6 +14,7 @@
 - `wiki-credential` answers only `get`. `store`, `erase` and any verb git adds later exit 0 and do nothing, because the helper keeps nothing.
 - The helper tells the fork from main by the repo path, which git sends only because `setup.sh` sets `credential.<host>.useHttpPath`. For any other remote it prints nothing, and git moves on to its next helper.
 - Nothing is cached in the sandbox. Every git operation asks the service for the session's tokens, which also counts as activity and keeps the session from timing out.
+- `wiki-comments` reads pages from `WIKI_DIR`, which `setup.sh` writes to `session.env` as an absolute path; a session set up before it falls back to `./docs`. `wiki-land`'s note about open threads goes to stderr, so its stdout stays one line.
 - `wiki-land` exits 0 for `landed` and `nothing to land`, 2 for `behind` and 1 for an error. The `using-pecia-wiki` skill and `agent-instructions.md` rely on those.
 - A machine holds one session: a second `setup.sh` overwrites `session.env` and the global git credential settings.
 

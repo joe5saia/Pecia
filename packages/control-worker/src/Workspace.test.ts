@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
-import { type CreateSessionResponse, SessionId, tokenSecret, WorkspaceName } from "@pecia/wiki-api";
+import { type CreateSessionResponse, FilePath, SessionId, ThreadId, tokenSecret, WorkspaceName } from "@pecia/wiki-api";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import { landLimits } from "./Git.ts";
@@ -538,6 +538,177 @@ describe("sweep", () => {
       yield* wiki.workspace.sweep();
       expect(yield* stateOf(wiki, a)).toBe("deleted");
       expect(yield* exists(forkNameOf(a))).toBe(false);
+    }),
+  );
+});
+
+describe("comment threads", () => {
+  const person = { _tag: "Person", name: "Joe" } as const;
+  const page = FilePath.make("deploy.md");
+  // The emoji is one code point and two UTF-16 units, so an offset counted in units lands one late.
+  const text = "# Deploy 🚀\n\nRun `task deploy:prod` after the tests pass.\n";
+  const quote = "Run `task deploy:prod`";
+
+  /** A wiki whose main has `page`, landed by a session that stays open. */
+  const wikiWithPage = Effect.fnUntraced(function* (name: string) {
+    const wiki = yield* makeWiki(name);
+    const session = yield* openSession(wiki);
+    yield* session.commit(page, text);
+    const landed = yield* session.land;
+    if (landed.status !== "landed") return yield* Effect.die(`the page did not land: ${landed.status}`);
+    return { wiki, session };
+  });
+
+  it.effect("anchors a person's thread in code points, takes an agent's reply and resolve, and filters by state", () =>
+    Effect.gen(function* () {
+      const { wiki, session } = yield* wikiWithPage("threads");
+      const start = Array.from(text.slice(0, text.indexOf(quote))).length;
+      const thread = yield* wiki.workspace.createThread(wiki.id, person, {
+        path: page,
+        body: "CI deploys prod; reword this.",
+        anchor: { _tag: "Range", ref: "main", start, end: start + quote.length },
+      });
+      expect(thread.anchor).toMatchObject({
+        commit: yield* wiki.head,
+        start: 12,
+        exact: quote,
+        prefix: "# Deploy 🚀\n\n",
+      });
+
+      const agent = yield* wiki.workspace.sessionAuthor(session.sessionId, session.sessionKey);
+      expect(agent).toEqual({ _tag: "Agent", sessionId: session.sessionId, agent: "amp", model: "test-model" });
+      yield* wiki.workspace.reply(wiki.id, agent, thread.id, { body: "Will do." });
+      const resolved = yield* wiki.workspace.setThreadState(wiki.id, agent, thread.id, {
+        state: "resolved",
+        body: "Done.",
+      });
+      expect(resolved.comments.map((comment) => [comment.author._tag, comment.body])).toEqual([
+        ["Person", "CI deploys prod; reword this."],
+        ["Agent", "Will do."],
+        ["Agent", "Done."],
+      ]);
+      expect(resolved).toMatchObject({ state: "resolved", resolvedBy: agent });
+
+      expect(yield* wiki.workspace.listThreads(wiki.id, {})).toEqual([]);
+      expect(yield* wiki.workspace.listThreads(wiki.id, { state: "resolved", path: page })).toEqual([resolved]);
+      const reopened = yield* wiki.workspace.setThreadState(wiki.id, person, thread.id, { state: "open" });
+      expect(reopened).toMatchObject({ state: "open", resolvedAt: null, resolvedBy: null });
+      expect(reopened.comments).toHaveLength(3);
+    }),
+  );
+
+  it.effect("refuses an anchor that does not fit the page, and names what is missing", () =>
+    Effect.gen(function* () {
+      const { wiki } = yield* wikiWithPage("anchors");
+      const attempt = (path: FilePath, anchor: Parameters<typeof wiki.workspace.createThread>[2]["anchor"]) =>
+        Effect.flip(wiki.workspace.createThread(wiki.id, person, { path, body: "?", ...(anchor ? { anchor } : {}) }));
+      expect(yield* attempt(page, { _tag: "Quote", quote: "`" })).toMatchObject({ reason: "quote_ambiguous" });
+      expect(yield* attempt(page, { _tag: "Quote", quote: "rollback" })).toMatchObject({ reason: "quote_not_found" });
+      expect(yield* attempt(page, { _tag: "Range", ref: "main", start: 10, end: 1000 })).toMatchObject({
+        reason: "out_of_range",
+      });
+      expect(yield* attempt(FilePath.make("missing.md"), { _tag: "Quote", quote: "x" })).toMatchObject({
+        _tag: "NotFound",
+        resource: "file",
+      });
+      expect(
+        yield* Effect.flip(wiki.workspace.reply(wiki.id, person, ThreadId.make("0".repeat(12)), { body: "hi" })),
+      ).toMatchObject({ _tag: "NotFound", resource: "thread" });
+      expect(wiki.rows("SELECT * FROM threads")).toEqual([]);
+    }),
+  );
+
+  it.effect("re-pins a thread to the page as it is now when a reply says where its passage went", () =>
+    Effect.gen(function* () {
+      const { wiki, session } = yield* wikiWithPage("repin");
+      const thread = yield* wiki.workspace.createThread(wiki.id, person, {
+        path: page,
+        body: "Reword.",
+        anchor: { _tag: "Quote", quote },
+      });
+      yield* session.commit(page, `Intro.\n\n${text}`);
+      expect((yield* session.land).status).toBe("landed");
+
+      const replied = yield* wiki.workspace.reply(wiki.id, person, thread.id, {
+        body: "Still here.",
+        anchor: { _tag: "Quote", quote },
+      });
+      expect(replied.anchor).toMatchObject({
+        commit: yield* wiki.head,
+        start: 20,
+        exact: quote,
+        prefix: "Intro.\n\n# Deploy 🚀\n\n",
+      });
+      expect(thread.anchor?.commit).not.toBe(replied.anchor?.commit);
+
+      expect(yield* wiki.workspace.moveThreads(wiki.id, { from: page, to: FilePath.make("deploying.md") })).toEqual({
+        moved: 1,
+      });
+      expect(yield* wiki.workspace.listThreads(wiki.id, { path: page })).toEqual([]);
+    }),
+  );
+
+  it.effect("lets a person edit and delete only their own comments, and an agent delete but never edit its own", () =>
+    Effect.gen(function* () {
+      const { wiki, session } = yield* wikiWithPage("ownership");
+      const other = yield* openSession(wiki);
+      const agent = yield* wiki.workspace.sessionAuthor(session.sessionId, session.sessionKey);
+      const otherAgent = yield* wiki.workspace.sessionAuthor(other.sessionId, other.sessionKey);
+      const thread = yield* wiki.workspace.createThread(wiki.id, person, { path: page, body: "First." });
+      const replied = yield* wiki.workspace.reply(wiki.id, agent, thread.id, { body: "From the agent." });
+      const [root, reply] = replied.comments.map((comment) => comment.id);
+      if (root === undefined || reply === undefined) throw new Error("the thread lost a comment");
+      const refused = { _tag: "NotYourComment" };
+
+      // Another person with a different name, and an agent, may not touch Joe's comment.
+      const ann = { _tag: "Person", name: "Ann" } as const;
+      expect(yield* Effect.flip(wiki.workspace.editComment(wiki.id, ann, root, { body: "x" }))).toMatchObject(refused);
+      expect(yield* Effect.flip(wiki.workspace.deleteComment(wiki.id, ann, root))).toMatchObject(refused);
+      expect(yield* Effect.flip(wiki.workspace.editComment(wiki.id, agent, root, { body: "x" }))).toMatchObject(
+        refused,
+      );
+      // An agent may not edit even its own comment, and only its own session deletes it.
+      expect(yield* Effect.flip(wiki.workspace.editComment(wiki.id, agent, reply, { body: "x" }))).toMatchObject({
+        ...refused,
+        action: "edit",
+      });
+      expect(yield* Effect.flip(wiki.workspace.deleteComment(wiki.id, otherAgent, reply))).toMatchObject(refused);
+      // A person may not delete an agent's comment either.
+      expect(yield* Effect.flip(wiki.workspace.deleteComment(wiki.id, person, reply))).toMatchObject(refused);
+
+      const edited = yield* wiki.workspace.editComment(wiki.id, person, root, { body: "First, reworded." });
+      expect(edited.comments[0]).toMatchObject({ body: "First, reworded.", deletedAt: null });
+      expect(edited.comments[0]?.editedAt).not.toBeNull();
+
+      // Deleting the root keeps the thread and the reply after it.
+      yield* wiki.workspace.deleteComment(wiki.id, person, root);
+      const after = yield* wiki.workspace.deleteComment(wiki.id, agent, reply);
+      expect(after.comments.map((comment) => [comment.body, comment.deletedAt === null])).toEqual([
+        ["", false],
+        ["", false],
+      ]);
+      expect(yield* Effect.flip(wiki.workspace.editComment(wiki.id, person, root, { body: "back" }))).toMatchObject({
+        _tag: "NotFound",
+        resource: "comment",
+      });
+    }),
+  );
+
+  it.effect("names no agent for a session that has ended, and finds no threads in a workspace nobody created", () =>
+    Effect.gen(function* () {
+      const { wiki, session } = yield* wikiWithPage("ended-agent");
+      yield* wiki.workspace.endSession(session.sessionId);
+      expect(yield* Effect.flip(wiki.workspace.sessionAuthor(session.sessionId, session.sessionKey))).toMatchObject({
+        _tag: "SessionNotActive",
+      });
+      expect((yield* Effect.flip(wiki.workspace.sessionAuthor(session.sessionId, "wrong")))._tag).toBe("Unauthorized");
+
+      const nobody = makeTestWorkspace(artifacts, { idleTimeoutMs });
+      expect(yield* Effect.flip(nobody.workspace.listThreads(WorkspaceName.make("nobody"), {}))).toMatchObject({
+        _tag: "NotFound",
+        resource: "workspace",
+      });
+      expect(nobody.rows("SELECT name FROM sqlite_master WHERE type = 'table'")).toEqual([]);
     }),
   );
 });

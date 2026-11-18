@@ -16,3 +16,5 @@ To publish your changes:
    - "nothing to land" means the shared wiki already has everything you pushed. If you expected changes, commit and push them first.
    - An error that the fork is too large to land means a file, or everything you committed since the last landing, is over the wiki's size limits. Running wiki-land again does not help: stop and report it.
    - An error that the session has ended means you can no longer push or land: stop and report it.
+
+Comments: people and other agents leave comment threads on the wiki's pages. Before editing a page, run wiki-comments list --path <page> (or wiki-comments list for every open thread); line numbers refer to your checkout. Reply to a thread you act on with wiki-comments reply <thread> <text>, and once the change has landed, resolve it with wiki-comments resolve <thread> "Done in <sha>". Do not resolve a thread you did not address. You cannot edit comments; to correct yourself, reply, or delete your own comment with wiki-comments delete <comment>. wiki-land tells you after landing how many threads are open.
