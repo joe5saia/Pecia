@@ -165,14 +165,25 @@ const Composer = ({
   onSubmit,
   onCancel,
   initial = "",
+  focus = false,
 }: {
   readonly label: string;
   readonly placeholder: string;
   readonly onSubmit: (body: string) => Promise<boolean>;
   readonly onCancel?: () => void;
   readonly initial?: string;
+  /** Put the cursor in the box when it opens, after any text it starts with, so the reader can type at once. */
+  readonly focus?: boolean;
 }) => {
   const [body, setBody] = useState(initial);
+  const box = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const textarea = box.current;
+    if (!focus || textarea === null) return;
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    textarea.scrollIntoView({ block: "nearest" });
+  }, [focus]);
   const [busy, setBusy] = useState(false);
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -185,6 +196,7 @@ const Composer = ({
   return (
     <form className="composer" onSubmit={submit}>
       <textarea
+        ref={box}
         value={body}
         placeholder={placeholder}
         aria-label={placeholder}
@@ -242,6 +254,7 @@ const CommentItem = ({
             label="Save"
             placeholder="Edit your comment…"
             initial={comment.body}
+            focus
             onCancel={() => setEditing(false)}
             onSubmit={async (body) => {
               const ok = await onEdit(body);
@@ -522,6 +535,7 @@ export const Comments = ({
           <Composer
             label="Comment"
             placeholder="Write a comment…"
+            focus
             onCancel={() => setDraft(undefined)}
             onSubmit={async (body) => {
               const anchor: AnchorRequest | undefined =
