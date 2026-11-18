@@ -7,8 +7,8 @@ services:
     command: pnpm exec task dev:viewer
     health: /
     portal:
-      # The development login in packages/viewer/vite.config.ts. It needs
-      # PECIA_ORCHESTRATOR_KEY_STAGING; without it, open / and type the key.
-      url: /__dev/log-me-in?returnTo=/
+      # The proxy sends staging's orchestrator token from the file
+      # `task access:token` writes (packages/viewer/vite.config.ts).
+      url: /
       title: Viewer (staging)
-      description: Logs in with staging's key and shows staging's wikis. Read-only.
+      description: Shows staging's wikis through staging's orchestrator token. Run `task access:token` first.

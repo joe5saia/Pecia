@@ -502,7 +502,9 @@ export const Comments = ({
       </div>
       {problem !== undefined && (
         <p className="problem" role="alert">
-          {problem._tag === "LoggedOut" ? "Your login has expired: log in again to comment." : problem.message}
+          {problem._tag === "LoggedOut"
+            ? "Your sign-in has expired: reload the page to sign in again."
+            : problem.message}
         </p>
       )}
       {draft === undefined ? (

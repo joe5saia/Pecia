@@ -17,12 +17,14 @@ From the repository root, run:
 .agents/skills/using-pecia-wiki/scripts/wiki-session start <stage> <workspace> <your model name>
 ```
 
-It builds `wiki-credential` and `wiki-land`, creates the session with the stage's orchestrator key (`PECIA_ORCHESTRATOR_KEY_STAGING` or `PECIA_ORCHESTRATOR_KEY_PROD`), and clones your fork into `.pecia/<session-id>` in this repository. It prints the checkout directory and the paths of `wiki-land` and `wiki-comments`; run git in that directory and the tools by those paths. The checkout is gitignored and is its own git repo: commit wiki pages there, never in this repository. Because it is inside the workspace, the user can open a page you are writing from a file link to it.
+It builds `wiki-credential` and `wiki-land`, creates the session through Cloudflare Access with the stage's orchestrator service token (from `~/.config/pecia/access-<stage>.env`, which it writes with `task access:token` from the Alchemy state if it is missing; that needs the `SAIAAI_CLOUDFLARE_*` credentials), and clones your fork into `.pecia/<session-id>` in this repository. It prints the checkout directory and the paths of `wiki-land` and `wiki-comments`; run git in that directory and the tools by those paths. The checkout is gitignored and is its own git repo: commit wiki pages there, never in this repository. Because it is inside the workspace, the user can open a page you are writing from a file link to it.
 
 - `workspace '<name>' does not exist`: check the name with the user. Add `--create-workspace` only when they asked for a new wiki.
 - `a session is already set up on this machine`: a machine holds one session. If you started it earlier in this thread, keep using it; otherwise run `wiki-session end` first.
 
-Never print the orchestrator keys, the session key or `~/.config/pecia/session.env`.
+- `could not read <stage>'s orchestrator token`: this thread has no Cloudflare credentials. Report it; do not look for another way in.
+
+Never print the Access tokens, the session key, `~/.config/pecia/session.env` or `~/.config/pecia/access-*.env`.
 
 ## Edit
 
@@ -73,4 +75,4 @@ A session also ends by itself two hours after you last pushed, fetched or ran `w
 
 - `the fork is too large to land`: running `wiki-land` again does not help. Stop and report it.
 - An Artifacts call failed, or the workspace is overloaded or restarting: wait a few seconds and run the command again. Repeating any step does no harm.
-- `the credential is missing or wrong`: the session or the key does not belong to this stage. Report it.
+- `the credential is missing or wrong`: the session or its token does not belong to this stage, or the token was rotated. Report it.

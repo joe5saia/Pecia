@@ -95,7 +95,7 @@ Everything is TypeScript: built on Effect, deployed with Alchemy, checked, linte
 
 ## Sandbox setup
 
-The orchestrator runs a setup script in each new sandbox, passing the session-create response as environment variables: `WIKI_URL` (the Worker), `SESSION_ID`, `SESSION_KEY`, `FORK_REMOTE`, `MAIN_REMOTE`.
+The orchestrator runs a setup script in each new sandbox, passing the session-create response as environment variables: `WIKI_URL` (the Worker), `SESSION_ID`, `SESSION_KEY`, `ACCESS_CLIENT_ID` and `ACCESS_CLIENT_SECRET` (the sandbox's service token for Cloudflare Access), `FORK_REMOTE`, `MAIN_REMOTE`.
 
 ```bash
 # Use the wiki credential helper only for Artifacts URLs, and pass the repo path
@@ -139,15 +139,15 @@ Merge, not rebase, so the agent never rewrites commits it has already pushed to 
 
 ## Control Worker API
 
-Two kinds of caller, each with its own credential. Neither ever receives a write token for main.
+Cloudflare Access stands in front of the Worker, and the Worker checks the JWT Access adds to each call ([operations.md](operations.md), "Access"). Two kinds of caller, each with its own credential. Neither ever receives a write token for main.
 
-- **Orchestrator:** `Authorization: Bearer <orchestrator API key>`, stored as a Worker secret.
-- **Sandbox:** `Authorization: Bearer <session key>`, a random secret returned once at session creation and valid only for that session. It is the service's own credential, not an Artifacts token.
+- **Orchestrator:** the stage's orchestrator service token, as `CF-Access-Client-Id` and `CF-Access-Client-Secret`.
+- **Sandbox:** the stage's sandbox service token, which the session-create response carries, and `Authorization: Bearer <session key>`, a random secret returned once at session creation and valid only for that session. The key is the service's own credential, not an Artifacts token; the token only gets the call through Access.
 
 | Endpoint | Caller | Request body | Response |
 | --- | --- | --- | --- |
 | `POST /workspaces` | Orchestrator | `{ "name": "eng-wiki" }` | `{ "workspace", "mainRemote" }`; creates the main repo |
-| `POST /workspaces/:ws/sessions` | Orchestrator | `{ "agent", "model" }` | `{ "sessionId", "sessionKey", "forkRemote", "mainRemote" }` |
+| `POST /workspaces/:ws/sessions` | Orchestrator | `{ "agent", "model" }` | `{ "sessionId", "sessionKey", "accessClientId", "accessClientSecret", "forkRemote", "mainRemote" }` |
 | `POST /sessions/:id/token` | Sandbox | none | `{ "forkWriteToken", "mainReadToken", "expiresAt" }` |
 | `POST /sessions/:id/land` | Sandbox | none | `{ "status": "landed", "sha" }`, `{ "status": "behind", "mainSha" }` or `{ "status": "nothing_to_land" }` |
 | `DELETE /sessions/:id` | Orchestrator | none | `{ "state": "closed" }` or `{ "state": "parked" }` |
@@ -155,7 +155,7 @@ Two kinds of caller, each with its own credential. Neither ever receives a write
 
 Session IDs embed the workspace (e.g. `<ws>.<random>`) so the Worker can route `/sessions/:id` calls to the right Durable Object.
 
-Errors: 400 malformed request; 401 missing or wrong credential; 404 unknown workspace or session; 409 session not active (closed, parked or deleted); 422 the fork is too large to land; 500 a bug in the service; 502 an Artifacts call failed (safe to retry); 503 the workspace is overloaded or restarting (safe to retry). [operations.md](operations.md) has the bodies.
+Errors: 400 malformed request; 401 an Access assertion that does not verify or is for another kind of caller, or a missing or wrong session key; 404 unknown workspace or session; 409 session not active (closed, parked or deleted); 422 the fork is too large to land; 500 a bug in the service; 502 an Artifacts call failed (safe to retry); 503 the workspace is overloaded or restarting (safe to retry). [operations.md](operations.md) has the bodies.
 
 ## Workspace Durable Object
 

@@ -13,7 +13,7 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import * as Layer from "effect/Layer";
 import type { PlatformError } from "effect/PlatformError";
-import type * as Redacted from "effect/Redacted";
+import * as Redacted from "effect/Redacted";
 import * as Runtime from "effect/Runtime";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
@@ -28,6 +28,9 @@ export interface Session {
   readonly wikiUrl: string;
   readonly sessionId: SessionId;
   readonly sessionKey: Redacted.Redacted;
+  /** The stage's sandbox service token, which gets each call through Cloudflare Access. */
+  readonly accessClientId: string;
+  readonly accessClientSecret: Redacted.Redacted;
   readonly forkRemote: RemoteUrl;
   readonly mainRemote: RemoteUrl;
   /** The wiki checkout, as setup.sh cloned it. `wiki-comments` reads pages from it. */
@@ -82,6 +85,8 @@ export const loadSession: Effect.Effect<Session, ToolError, FileSystem.FileSyste
     wikiUrl: yield* variable("WIKI_URL", (name) => Config.String(name)),
     sessionId: yield* variable("SESSION_ID", (name) => Config.schema(SessionId, name)),
     sessionKey: yield* variable("SESSION_KEY", (name) => Config.Redacted(name)),
+    accessClientId: yield* variable("ACCESS_CLIENT_ID", (name) => Config.String(name)),
+    accessClientSecret: yield* variable("ACCESS_CLIENT_SECRET", (name) => Config.Redacted(name)),
     forkRemote: yield* variable("FORK_REMOTE", (name) => Config.schema(RemoteUrl, name)),
     mainRemote: yield* variable("MAIN_REMOTE", (name) => Config.schema(RemoteUrl, name)),
     // A session set up before comments has no WIKI_DIR; setup.sh's default was ./docs.
@@ -89,13 +94,22 @@ export const loadSession: Effect.Effect<Session, ToolError, FileSystem.FileSyste
   };
 });
 
-/** The sandbox endpoints of the Control Worker, called with the session key. */
+/** The sandbox endpoints of the Control Worker, called through Access with the sandbox token and the session key. */
 export const sandboxClient = (session: Session) =>
   Effect.map(
     HttpApiClient.make(WikiApi, {
       baseUrl: session.wikiUrl,
       transformClient: (client) =>
-        HttpClient.mapRequest(client, (request) => HttpClientRequest.bearerToken(request, session.sessionKey)),
+        HttpClient.mapRequest(client, (request) =>
+          request.pipe(
+            HttpClientRequest.bearerToken(session.sessionKey),
+            HttpClientRequest.setHeaders({
+              "cf-access-client-id": session.accessClientId,
+              // The header needs the text; it goes only to the stage's own URL.
+              "cf-access-client-secret": Redacted.value(session.accessClientSecret),
+            }),
+          ),
+        ),
     }),
     (client) => client.sandbox,
   );

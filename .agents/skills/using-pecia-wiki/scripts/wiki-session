@@ -2,11 +2,14 @@
 # Starts and ends a pecia wiki session on this machine, as the orchestrator
 # would for a sandbox (docs/operations.md, "Run a session").
 #
-#   wiki-session start <staging|prod> <workspace> <model> [--create-workspace]
+#   wiki-session start <staging|prod|pr-<n>> <workspace> <model> [--create-workspace]
 #   wiki-session end
 #
-# The stage's orchestrator key comes from PECIA_ORCHESTRATOR_KEY_STAGING or
-# PECIA_ORCHESTRATOR_KEY_PROD. Neither it nor the session key is ever printed.
+# Every stage is behind Cloudflare Access. The script calls it with the stage's
+# orchestrator service token, from $PECIA_HOME/access-<stage>.env, which
+# `task access:token` writes from the Alchemy state when it is missing. A
+# preview stage also needs PECIA_URL, the URL its deploy printed. No token or
+# session key is ever printed.
 set -euo pipefail
 
 repo_root="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
@@ -26,25 +29,34 @@ die() {
   exit 1
 }
 
-# Sets url and key for a stage.
+# Sets stage, url and the orchestrator token for a stage.
 use_stage() {
-  case "$1" in
-    staging) url="$staging_url" key_var=PECIA_ORCHESTRATOR_KEY_STAGING ;;
-    prod) url="$prod_url" key_var=PECIA_ORCHESTRATOR_KEY_PROD ;;
-    *) die "unknown stage '$1': use staging or prod" ;;
+  stage="$1"
+  case "$stage" in
+    staging) url="$staging_url" ;;
+    prod) url="$prod_url" ;;
+    pr-[0-9]*) url="${PECIA_URL:-}" && [ -n "$url" ] || die "set PECIA_URL to the URL of preview $stage" ;;
+    *) die "unknown stage '$stage': use staging, prod or pr-<n>" ;;
   esac
-  key="${!key_var:-}"
-  [ -n "$key" ] || die "$key_var is not set"
+  local token_file="$state_dir/access-$stage.env"
+  if [ ! -f "$token_file" ]; then
+    (cd "$repo_root" && node_modules/.bin/task --silent access:token STAGE="$stage") >&2 ||
+      die "could not read $stage's orchestrator token; it needs Cloudflare credentials (docs/operations.md, \"Access\")"
+  fi
+  client_id="$(sed -n 's/^PECIA_ACCESS_CLIENT_ID=//p' "$token_file")"
+  client_secret="$(sed -n 's/^PECIA_ACCESS_CLIENT_SECRET=//p' "$token_file")"
+  [ -n "$client_id" ] && [ -n "$client_secret" ] || die "$token_file has no token; run 'task access:token STAGE=$stage'"
 }
 
 # call METHOD PATH [JSON]: prints the response body, then its status on the last line.
+# The token goes in a header file on a pipe, so it is never in curl's arguments.
 call() {
-  curl -sS -X "$1" -H "Authorization: Bearer $key" -H 'content-type: application/json' \
-    ${3:+--data "$3"} -w '\n%{http_code}' "$url$2"
+  curl -sS -X "$1" -H @<(printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' "$client_id" "$client_secret") \
+    -H 'content-type: application/json' ${3:+--data "$3"} -w '\n%{http_code}' "$url$2"
 }
 
 start() {
-  [ $# -ge 3 ] || die "usage: wiki-session start <staging|prod> <workspace> <model> [--create-workspace]"
+  [ $# -ge 3 ] || die "usage: wiki-session start <staging|prod|pr-<n>> <workspace> <model> [--create-workspace]"
   local stage="$1" workspace="$2" model="$3" create="${4:-}"
   use_stage "$stage"
   [ ! -e "$session_file" ] || die "a session is already set up on this machine ($session_file). Run 'wiki-session end' first."
@@ -67,7 +79,7 @@ start() {
   if [ "$status" = 404 ]; then
     die "workspace '$workspace' does not exist on $stage. Add --create-workspace only if the user asked for a new wiki."
   fi
-  [ "$status" = 200 ] || die "creating a session answered $status: $body"
+  [ "$status" = 200 ] || die "creating a session answered $status: $(head -c 300 <<<"$body")"
 
   local session_id
   session_id="$(jq -r .sessionId <<<"$body")"
@@ -76,6 +88,7 @@ start() {
   local wiki_dir="$repo_root/.pecia/$session_id"
   # A session that could not be set up would otherwise wait for the idle timeout.
   if ! WIKI_URL="$url" SESSION_ID="$session_id" SESSION_KEY="$(jq -r .sessionKey <<<"$body")" \
+    ACCESS_CLIENT_ID="$(jq -r .accessClientId <<<"$body")" ACCESS_CLIENT_SECRET="$(jq -r .accessClientSecret <<<"$body")" \
     FORK_REMOTE="$(jq -r .forkRemote <<<"$body")" MAIN_REMOTE="$(jq -r .mainRemote <<<"$body")" \
     WIKI_CREDENTIAL="$tools/dist/wiki-credential" WIKI_DIR="$wiki_dir" "$tools/setup.sh" >&2; then
     call DELETE "/sessions/$session_id" >/dev/null || true
@@ -97,6 +110,8 @@ end() {
   case "$wiki_url" in
     "$staging_url" | "$staging_workers_dev") use_stage staging ;;
     "$prod_url" | "$prod_workers_dev") use_stage prod ;;
+    # A preview's own name is in its workers.dev hostname.
+    *-controlworker-pr-*) PECIA_URL="$wiki_url" use_stage "$(sed -E 's|.*-controlworker-(pr-[0-9]+)-.*|\1|' <<<"$wiki_url")" ;;
     *) die "$session_file names an unknown Worker: $wiki_url" ;;
   esac
 

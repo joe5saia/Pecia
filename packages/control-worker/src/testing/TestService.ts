@@ -1,12 +1,13 @@
 import type { WorkspaceName } from "@pecia/wiki-api";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as Layer from "effect/Layer";
-import * as Redacted from "effect/Redacted";
 import { createServer } from "node:http";
-import { ApiLive, OrchestratorKey, Workspaces } from "../Handlers.ts";
+import { Access } from "../Access.ts";
+import { ApiLive, Workspaces } from "../Handlers.ts";
 import * as Reader from "../Reader.ts";
 import { Repos } from "../Repos.ts";
 import { type FakeArtifacts, portOf, startFakeArtifacts } from "./FakeArtifacts.ts";
+import { makeTestAccess, type TestAccess } from "./TestAccess.ts";
 import { makeTestWorkspace, type TestWorkspace } from "./TestWorkspace.ts";
 
 // The whole service on localhost for end-to-end tests: the real API handlers
@@ -16,7 +17,8 @@ import { makeTestWorkspace, type TestWorkspace } from "./TestWorkspace.ts";
 export interface TestService {
   /** The base URL sandboxes and the orchestrator call. */
   readonly url: string;
-  readonly orchestratorKey: string;
+  /** The assertions Access would add for each caller; a test sends them itself. */
+  readonly access: TestAccess;
   readonly artifacts: FakeArtifacts;
   /** The workspace behind a name, to move its clock or run its sweep. */
   readonly workspace: (name: WorkspaceName) => TestWorkspace;
@@ -25,7 +27,7 @@ export interface TestService {
 
 export const startTestService = async (options: { readonly idleTimeoutMs: number }): Promise<TestService> => {
   const artifacts = await startFakeArtifacts();
-  const orchestratorKey = "test-orchestrator-key";
+  const access = await makeTestAccess();
   const workspaces = new Map<WorkspaceName, TestWorkspace>();
   // Like addressing a Durable Object: every name has a workspace, started on first use.
   const workspace = (name: WorkspaceName): TestWorkspace => {
@@ -39,7 +41,7 @@ export const startTestService = async (options: { readonly idleTimeoutMs: number
 
   const { handler, dispose } = HttpRouter.toWebHandler(
     ApiLive.pipe(
-      Layer.provide(Layer.succeed(OrchestratorKey, Redacted.make(orchestratorKey))),
+      Layer.provide(Layer.succeed(Access, access.service)),
       Layer.provide(Layer.succeed(Workspaces, { get: (name) => workspace(name).workspace })),
       HttpRouter.provideRequest(
         Layer.provide(Layer.effect(Reader.Readers, Reader.make), Layer.succeed(Repos, artifacts.repos)),
@@ -56,13 +58,16 @@ export const startTestService = async (options: { readonly idleTimeoutMs: number
     const chunks: Buffer[] = [];
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
     request.on("end", () => {
-      const hasBody = request.method !== "GET" && request.method !== "HEAD";
-      const webRequest = new Request(`http://${request.headers.host}${request.url}`, {
-        method: request.method ?? "GET",
-        headers,
-        ...(hasBody ? { body: Buffer.concat(chunks) } : {}),
-      });
-      void handler(webRequest).then(async (webResponse) => {
+      // The request as it leaves Access: a service token's headers are its assertion now.
+      void access.edge(headers).then(async () => {
+        const hasBody = request.method !== "GET" && request.method !== "HEAD";
+        const webResponse = await handler(
+          new Request(`http://${request.headers.host}${request.url}`, {
+            method: request.method ?? "GET",
+            headers,
+            ...(hasBody ? { body: Buffer.concat(chunks) } : {}),
+          }),
+        );
         response.writeHead(webResponse.status, Object.fromEntries(webResponse.headers));
         response.end(Buffer.from(await webResponse.arrayBuffer()));
       });
@@ -72,7 +77,7 @@ export const startTestService = async (options: { readonly idleTimeoutMs: number
 
   return {
     url: `http://127.0.0.1:${portOf(server)}`,
-    orchestratorKey,
+    access,
     artifacts,
     workspace,
     close: async () => {

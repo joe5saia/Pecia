@@ -3,13 +3,15 @@
 #
 # The orchestrator runs this once, passing the session-create response as
 # environment variables: WIKI_URL (the Control Worker), SESSION_ID, SESSION_KEY,
-# FORK_REMOTE and MAIN_REMOTE. It expects wiki-credential and wiki-land on PATH,
+# ACCESS_CLIENT_ID, ACCESS_CLIENT_SECRET (the stage's sandbox service token for
+# Cloudflare Access), FORK_REMOTE and MAIN_REMOTE. It expects wiki-credential and wiki-land on PATH,
 # or WIKI_CREDENTIAL set to the helper's absolute path.
 #
 #   WIKI_DIR  where to clone the wiki (default: ./docs)
 set -euo pipefail
 
-: "${WIKI_URL:?}" "${SESSION_ID:?}" "${SESSION_KEY:?}" "${FORK_REMOTE:?}" "${MAIN_REMOTE:?}"
+: "${WIKI_URL:?}" "${SESSION_ID:?}" "${SESSION_KEY:?}" "${ACCESS_CLIENT_ID:?}" "${ACCESS_CLIENT_SECRET:?}"
+: "${FORK_REMOTE:?}" "${MAIN_REMOTE:?}"
 
 helper="${WIKI_CREDENTIAL:-$(command -v wiki-credential || true)}"
 if [ -z "$helper" ]; then
@@ -28,6 +30,7 @@ mkdir -p "$state_dir"
   umask 077
   printf '%s=%s\n' \
     WIKI_URL "$WIKI_URL" SESSION_ID "$SESSION_ID" SESSION_KEY "$SESSION_KEY" \
+    ACCESS_CLIENT_ID "$ACCESS_CLIENT_ID" ACCESS_CLIENT_SECRET "$ACCESS_CLIENT_SECRET" \
     FORK_REMOTE "$FORK_REMOTE" MAIN_REMOTE "$MAIN_REMOTE" WIKI_DIR "$wiki_dir" >"$state_dir/session.env"
 )
 

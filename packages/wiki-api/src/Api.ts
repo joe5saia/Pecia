@@ -42,8 +42,6 @@ import {
   LandResponse,
   ListSessionsResponse,
   ListWorkspacesResponse,
-  LoginRequest,
-  LoginResponse,
   Ref,
   SessionId,
   TokenResponse,
@@ -58,16 +56,29 @@ import {
 // in its `error` list, 401 from its group's auth middleware, and 400 and 500
 // from `ProblemDetails`. docs/operations.md has the table.
 
-/** Orchestrator endpoints: `Authorization: Bearer <orchestrator API key>`. */
+/**
+ * The JWT Cloudflare Access puts on every request it lets through to a stage
+ * (docs/operations.md, "Access"). Callers never send it themselves: a person
+ * signs in with Google, a script or sandbox sends its service token's
+ * `CF-Access-Client-Id` and `CF-Access-Client-Secret`, and Access swaps either
+ * for this assertion. The Worker checks it, and who it names, on every call.
+ */
+export const AccessAssertion = HttpApiSecurity.apiKey({ key: "Cf-Access-Jwt-Assertion", in: "header" });
+
+/** Orchestrator endpoints: the stage's orchestrator service token. */
 export class OrchestratorAuth extends HttpApiMiddleware.Service<OrchestratorAuth>()("pecia/OrchestratorAuth", {
   error: Unauthorized,
-  security: { bearer: HttpApiSecurity.bearer },
+  security: { access: AccessAssertion },
 }) {}
 
 /** The session key a sandbox presented. The session's workspace checks it against the stored hash. */
 export class SessionKey extends Context.Service<SessionKey, Redacted.Redacted>()("pecia/SessionKey") {}
 
-/** Sandbox endpoints: `Authorization: Bearer <session key>`. */
+/**
+ * Sandbox endpoints: `Authorization: Bearer <session key>`, through Access
+ * with the stage's sandbox service token. The Worker checks the assertion as
+ * well as the key.
+ */
 export class SessionAuth extends HttpApiMiddleware.Service<SessionAuth, { provides: SessionKey }>()(
   "pecia/SessionAuth",
   {
@@ -77,25 +88,16 @@ export class SessionAuth extends HttpApiMiddleware.Service<SessionAuth, { provid
 ) {}
 
 /**
- * The cookie a browser gets from `login`: a signed expiry, not the key itself
- * (docs/viewer.md, "Logging in").
- */
-export const ViewerCookie = HttpApiSecurity.apiKey({ key: "pecia_viewer", in: "cookie" });
-
-/**
- * The name a reader goes by in comments: the one given at login, which nothing
- * checks (docs/comments.md, "Auth"). A caller with the key as a bearer token is
- * `Orchestrator`.
+ * The name a reader's comments go under: a person's email as Access verified
+ * it (docs/comments.md, "Auth"), or `orchestrator` for a script with the
+ * orchestrator token.
  */
 export class ReaderName extends Context.Service<ReaderName, string>()("pecia/ReaderName") {}
 
-/**
- * Reader endpoints: the orchestrator key as a bearer token, or the cookie
- * `login` sets after a browser presented that key.
- */
+/** Reader endpoints: a person signed in through Access, or the orchestrator token. */
 export class ReaderAuth extends HttpApiMiddleware.Service<ReaderAuth, { provides: ReaderName }>()("pecia/ReaderAuth", {
   error: Unauthorized,
-  security: { bearer: HttpApiSecurity.bearer, cookie: ViewerCookie },
+  security: { access: AccessAssertion },
 }) {}
 
 const WorkspaceParams = Schema.Struct({ ws: WorkspaceName });
@@ -259,18 +261,8 @@ export class CommentsGroup extends HttpApiGroup.make("comments")
   )
   .middleware(ReaderAuth) {}
 
-/** A browser trades the orchestrator key for the reader cookie, and drops it. */
-export class ViewerGroup extends HttpApiGroup.make("viewer").add(
-  HttpApiEndpoint.post("login", "/auth/login", {
-    payload: LoginRequest,
-    success: LoginResponse,
-    error: [Unauthorized],
-  }),
-  HttpApiEndpoint.post("logout", "/auth/logout", { success: HttpApiSchema.NoContent }),
-) {}
-
 export class WikiApi extends HttpApi.make("WikiApi")
-  .add(OrchestratorGroup, SandboxGroup, ReaderGroup, CommentsGroup, ViewerGroup)
+  .add(OrchestratorGroup, SandboxGroup, ReaderGroup, CommentsGroup)
   // A request that does not match its endpoint's schemas answers 400, and a
   // failure inside the service answers 500, both as RFC 9457 problems.
   .middleware(HttpApiMiddleware.ProblemDetails) {}

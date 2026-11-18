@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
-import { type CreateSessionResponse, FilePath, SessionId, ThreadId, tokenSecret, WorkspaceName } from "@pecia/wiki-api";
+import { type SessionCreated, FilePath, SessionId, ThreadId, tokenSecret, WorkspaceName } from "@pecia/wiki-api";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import { landLimits } from "./Git.ts";
@@ -71,12 +71,11 @@ const openSession = Effect.fnUntraced(function* (wiki: Pick<Wiki, "workspace" | 
 });
 
 /** The session's fork, as its remote names it. */
-const forkNameOf = (session: CreateSessionResponse) =>
-  new URL(session.forkRemote).pathname.slice(1).replace(/\.git$/, "");
+const forkNameOf = (session: SessionCreated) => new URL(session.forkRemote).pathname.slice(1).replace(/\.git$/, "");
 
-const forkHead = (session: CreateSessionResponse) => git(forkNameOf(session), "rev-parse", "refs/heads/main");
+const forkHead = (session: SessionCreated) => git(forkNameOf(session), "rev-parse", "refs/heads/main");
 
-const stateOf = (wiki: Pick<Wiki, "workspace" | "id">, session: CreateSessionResponse) =>
+const stateOf = (wiki: Pick<Wiki, "workspace" | "id">, session: SessionCreated) =>
   Effect.map(
     wiki.workspace.listSessions(wiki.id),
     (sessions) => sessions.find((listed) => listed.sessionId === session.sessionId)?.state,
@@ -318,7 +317,7 @@ describe("usage events", () => {
       yield* wiki.workspace.endSession(a.sessionId);
       yield* wiki.workspace.endSession(b.sessionId);
 
-      const who = (session: CreateSessionResponse) => ({
+      const who = (session: SessionCreated) => ({
         workspace: wiki.name,
         sessionId: session.sessionId,
         agent: "amp",

@@ -5,13 +5,11 @@ import { useEffect, useState } from "react";
 // shared.
 //
 // - `/`: the workspaces
-// - `/login?next=<url>`
 // - `/w/<workspace>/<path>?at=<sha>`: a file, at main or at a commit
 // - `/history/<workspace>`: main's commits
 
 export type Route =
   | { readonly _tag: "Workspaces" }
-  | { readonly _tag: "Login"; readonly next: string }
   | { readonly _tag: "File"; readonly ws: string; readonly path: string; readonly at: string | undefined }
   | { readonly _tag: "History"; readonly ws: string };
 
@@ -25,7 +23,6 @@ const decode = (segment: string): string => {
 
 export const parseRoute = (url: URL): Route => {
   const [first, ws, ...rest] = url.pathname.split("/").slice(1);
-  if (first === "login") return { _tag: "Login", next: url.searchParams.get("next") ?? "/" };
   if (first === "w" && ws !== undefined && ws !== "")
     return {
       _tag: "File",

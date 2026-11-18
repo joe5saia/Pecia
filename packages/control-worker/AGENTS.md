@@ -4,6 +4,13 @@ The Worker, the workspace Durable Object and their Alchemy stack. Repo-wide rule
 
 ## Gotchas
 
+### Access (Access.ts)
+
+- Cloudflare Access gates every URL of a stage; the Worker still verifies `Cf-Access-Jwt-Assertion` on every call. Never trust `Cf-Access-Authenticated-User-Email` or any other header Access adds; only the verified JWT's claims.
+- A service token's JWT has `common_name` (its client ID) and an empty `sub`; a person's has `email`. `Caller` is decided from those, and each auth middleware in `Handlers.ts` admits only its kinds.
+- The tokens' secrets are in the Alchemy state, which Cloudflare reveals only at creation. The sandbox token's secret is also bound to the Worker, which hands it out with each new session.
+- A signing-key fetch that fails is a defect (500), not a 401: the caller did nothing wrong.
+
 ### Workspace.ts
 
 - There are two locks. `lock` is held by anything that reads main's head and acts on it (create, land, end, sweep). `access` is held by a token mint and by cutting a sandbox off. Code that needs both takes `lock` first; the other order can deadlock.
@@ -47,6 +54,7 @@ The Worker, the workspace Durable Object and their Alchemy stack. Repo-wide rule
 
 ## Debugging live
 
+- **Access.** A refused assertion is logged as `access assertion refused` with `reason`. The application `pecia-<stage>` and its tokens are in the Zero Trust dashboard under Access.
 - **Logs.** Workers Observability for the stage's Worker. Each usage event is one structured entry; filter on `annotations.event` (`docs/operations.md`, "Monitor usage", has the list). A 500 is logged as `request failed with a defect` with its cause. An entry can take ten minutes to show up. `pnpm exec alchemy logs --stage <stage>`, run here, prints the messages without their fields.
 - **State.** Each workspace's Durable Object has the tables `workspace`, `sessions`, `session_tokens`, `lands`, `threads` and `comments` in its SQLite storage. `GET /workspaces/:ws/sessions` returns the sessions. The repos are in the Artifacts namespace `pecia-<stage>`: a main repo per workspace and a fork `<workspace>--<session-id>` per session. Main's git notes name the session of each landed head.
 - **Trying a change.** `task deploy:preview PULL_REQUEST=<n>`, then `task smoke STAGE=pr-<n> URL=<the url it printed>`, then `task destroy:preview PULL_REQUEST=<n>`. A new Worker can answer `error code: 1104` for some seconds.

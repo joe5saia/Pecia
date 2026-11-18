@@ -8,9 +8,7 @@ import {
   type SessionId,
   SessionKey,
   Unauthorized,
-  ViewerCookie,
   WikiApi,
-  timestampOf,
   workspaceOfSession,
   type WorkspaceName,
   type WorkspaceUnavailable,
@@ -19,20 +17,21 @@ import * as Http from "alchemy/Http";
 import * as ByteSize from "effect/ByteSize";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
-import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as HttpEffect from "effect/http/HttpEffect";
 import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServerError from "effect/http/HttpServerError";
 import * as HttpServerRespondable from "effect/http/HttpServerRespondable";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiError from "effect/http-api/HttpApiError";
 import * as HttpApiMiddleware from "effect/http-api/HttpApiMiddleware";
 import * as Layer from "effect/Layer";
+import * as Match from "effect/Match";
 import * as Redacted from "effect/Redacted";
-import * as Login from "./Login.ts";
+import { Access } from "./Access.ts";
 import { Readers } from "./Reader.ts";
 import type { Workspace } from "./Workspace.ts";
 
@@ -57,54 +56,62 @@ export class Workspaces extends Context.Service<
   { readonly get: (name: WorkspaceName) => RemoteWorkspace }
 >()("pecia/Workspaces") {}
 
-export class OrchestratorKey extends Context.Service<OrchestratorKey, Redacted.Redacted>()("pecia/OrchestratorKey") {}
-
+/** The caller Access let through, if it may call the orchestrator endpoints. */
 const OrchestratorAuthLive = Layer.effect(
   OrchestratorAuth,
-  Effect.gen(function* () {
-    const key = Redacted.value(yield* OrchestratorKey);
-    return {
-      bearer: (httpEffect, { credential }) =>
-        Login.isKey(key, Redacted.value(credential)) ? httpEffect : Effect.fail(new Unauthorized()),
-    };
-  }),
+  Effect.map(Access, (access) => ({
+    access: (httpEffect, { credential }) =>
+      Effect.gen(function* () {
+        const caller = yield* access.verify(Redacted.value(credential));
+        if (caller._tag !== "Orchestrator") return yield* new Unauthorized();
+        return yield* httpEffect;
+      }),
+  })),
 );
 
 const ReaderAuthLive = Layer.effect(
   ReaderAuth,
-  Effect.gen(function* () {
-    const key = Redacted.value(yield* OrchestratorKey);
-    return {
-      // A script with the key comments as the orchestrator.
-      bearer: (httpEffect, { credential }) =>
-        Login.isKey(key, Redacted.value(credential))
-          ? Effect.provideService(httpEffect, ReaderName, "orchestrator")
-          : Effect.fail(new Unauthorized()),
-      cookie: (httpEffect, { credential }) =>
-        Effect.gen(function* () {
-          const login = yield* Login.verify(key, Redacted.value(credential));
-          if (login === undefined) return yield* new Unauthorized();
-          // A cookie from before comments has no name.
-          return yield* Effect.provideService(httpEffect, ReaderName, login.name ?? "anonymous");
+  Effect.map(Access, (access) => ({
+    access: (httpEffect, { credential }) =>
+      Effect.flatMap(access.verify(Redacted.value(credential)), (caller) =>
+        Match.valueTags(caller, {
+          Person: ({ email }) => Effect.provideService(httpEffect, ReaderName, email),
+          // A script with the orchestrator token reads, and comments as the orchestrator.
+          Orchestrator: () => Effect.provideService(httpEffect, ReaderName, "orchestrator"),
+          Sandbox: () => Effect.fail(new Unauthorized()),
         }),
-    };
-  }),
+      ),
+  })),
 );
 
-const SessionAuthLive = Layer.succeed(SessionAuth, {
-  // The session's workspace holds the key's hash and checks it there.
-  bearer: (httpEffect, { credential }) =>
-    Redacted.value(credential) === ""
-      ? Effect.fail(new Unauthorized())
-      : Effect.provideService(httpEffect, SessionKey, credential),
-});
+const SessionAuthLive = Layer.effect(
+  SessionAuth,
+  Effect.map(Access, (access) => ({
+    // Through Access with the sandbox token, and with a key: the session's workspace holds the key's hash and checks it there.
+    bearer: (httpEffect, { credential }) =>
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const caller = yield* access.verify(request.headers["cf-access-jwt-assertion"] ?? "");
+        if (caller._tag !== "Sandbox" || Redacted.value(credential) === "") return yield* new Unauthorized();
+        return yield* Effect.provideService(httpEffect, SessionKey, credential);
+      }),
+  })),
+);
 
 const OrchestratorLive = HttpApiBuilder.group(WikiApi, "orchestrator", (handlers) =>
   Effect.gen(function* () {
     const workspaces = yield* Workspaces;
+    const access = yield* Access;
     return handlers
       .handle("createWorkspace", ({ payload }) => workspaces.get(payload.name).create(payload.name))
-      .handle("createSession", ({ params, payload }) => workspaces.get(params.ws).createSession(params.ws, payload))
+      .handle("createSession", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const session = yield* workspaces.get(params.ws).createSession(params.ws, payload);
+          const token = yield* access.sandboxToken;
+          // In the clear for the sandbox, which sends it to Access with every call.
+          return { ...session, accessClientId: token.clientId, accessClientSecret: Redacted.value(token.clientSecret) };
+        }),
+      )
       .handle("listSessions", ({ params }) => workspaces.get(params.ws).listSessions(params.ws))
       .handle("endSession", ({ params }) => workspaces.get(workspaceOfSession(params.id)).endSession(params.id));
   }),
@@ -157,7 +164,7 @@ const SandboxLive = HttpApiBuilder.group(WikiApi, "sandbox", (handlers) =>
   }),
 );
 
-/** A person's comments, written under the name of their login. */
+/** A person's comments, written under the email Access verified. */
 const CommentsLive = HttpApiBuilder.group(WikiApi, "comments", (handlers) =>
   Effect.gen(function* () {
     const workspaces = yield* Workspaces;
@@ -197,7 +204,7 @@ const cacheFor = (ref: Ref) =>
     Effect.succeed(
       HttpServerResponse.setHeaders(response, {
         "cache-control": ref === "main" ? "private, no-cache" : "private, max-age=31536000, immutable",
-        vary: "authorization, cookie",
+        vary: "cf-access-jwt-assertion, cookie",
       }),
     ),
   );
@@ -259,27 +266,6 @@ const ReaderLive = HttpApiBuilder.group(WikiApi, "reader", (handlers) =>
   ),
 );
 
-const cookieOptions = { path: "/", sameSite: "strict" } as const;
-
-const ViewerLive = HttpApiBuilder.group(WikiApi, "viewer", (handlers) =>
-  Effect.gen(function* () {
-    const key = Redacted.value(yield* OrchestratorKey);
-    return handlers
-      .handle("login", ({ payload }) =>
-        Effect.gen(function* () {
-          if (!Login.isKey(key, Redacted.value(payload.key))) return yield* new Unauthorized();
-          const cookie = yield* Login.issue(key, payload.name?.trim());
-          yield* HttpApiBuilder.securitySetCookie(ViewerCookie, cookie.value, {
-            ...cookieOptions,
-            expires: DateTime.toDateUtc(cookie.expiresAt),
-          });
-          return { expiresAt: timestampOf(cookie.expiresAt) };
-        }),
-      )
-      .handle("logout", () => HttpApiBuilder.securitySetCookie(ViewerCookie, "", { ...cookieOptions, maxAge: 0 }));
-  }),
-);
-
 /** 404 for a path or method the API does not have, as distinct from `NotFound`, a workspace or session that does not exist. */
 class NoSuchEndpoint extends HttpApiError.Problem<NoSuchEndpoint>()("NoSuchEndpoint", {
   type: "about:blank",
@@ -324,7 +310,7 @@ const Failures = HttpRouter.middleware(
 
 /** The API as a router layer, for `HttpRouter.toHttpEffect` in the Worker and `toWebHandler` in tests. */
 export const ApiLive = HttpApiBuilder.layer(WikiApi).pipe(
-  Layer.provide([OrchestratorLive, SandboxLive, ReaderLive, CommentsLive, ViewerLive]),
+  Layer.provide([OrchestratorLive, SandboxLive, ReaderLive, CommentsLive]),
   Layer.provide([
     OrchestratorAuthLive,
     SessionAuthLive,

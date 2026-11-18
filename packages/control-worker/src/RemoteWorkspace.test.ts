@@ -4,10 +4,11 @@ import { RpcCallError } from "alchemy/Rpc";
 import * as Effect from "effect/Effect";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as Layer from "effect/Layer";
-import * as Redacted from "effect/Redacted";
-import { ApiLive, OrchestratorKey, Workspaces } from "./Handlers.ts";
+import { Access } from "./Access.ts";
+import { ApiLive, Workspaces } from "./Handlers.ts";
 import { Readers } from "./Reader.ts";
 import * as RemoteWorkspace from "./RemoteWorkspace.ts";
+import { makeTestAccess } from "./testing/TestAccess.ts";
 
 // What the API answers when a call to the workspace's Durable Object fails on
 // the way, which the tests over in-process workspaces never see.
@@ -32,11 +33,13 @@ const createThrough = Effect.fnUntraced(function* (create: RemoteWorkspace.Stub[
     deleteComment: unused,
     moveThreads: unused,
   };
+  const access = yield* Effect.promise(() => makeTestAccess());
+  const orchestrator = yield* Effect.promise(() => access.orchestrator());
   const { handler } = yield* Effect.acquireRelease(
     Effect.sync(() =>
       HttpRouter.toWebHandler(
         ApiLive.pipe(
-          Layer.provide(Layer.succeed(OrchestratorKey, Redacted.make("key"))),
+          Layer.provide(Layer.succeed(Access, access.service)),
           Layer.provide(Layer.succeed(Workspaces, { get: () => RemoteWorkspace.overRpc(stub) })),
           HttpRouter.provideRequest(
             Layer.succeed(Readers, {
@@ -56,7 +59,7 @@ const createThrough = Effect.fnUntraced(function* (create: RemoteWorkspace.Stub[
     handler(
       new Request("http://pecia.test/workspaces", {
         method: "POST",
-        headers: { authorization: "Bearer key", "content-type": "application/json" },
+        headers: { ...orchestrator, "content-type": "application/json" },
         body: JSON.stringify({ name: "eng-wiki" }),
       }),
     ),

@@ -1,7 +1,6 @@
 import {
   type CommentId,
   type CreateThreadRequest,
-  type PersonName,
   type Ref,
   type ReplyRequest,
   type SetThreadStateRequest,
@@ -18,11 +17,11 @@ import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
-import * as Redacted from "effect/Redacted";
 import { useEffect, useState } from "react";
 
 // The viewer's calls to the Control Worker, through a client derived from the
-// shared contract. The browser sends the login cookie with each one. This is
+// shared contract. Cloudflare Access signed the browser in before it loaded the
+// viewer, and the browser's Access cookie goes with each call. This is
 // the viewer's edge: React calls `useRead` and `run`, which run the effects.
 
 const runtime = ManagedRuntime.make(FetchHttpClient.layer);
@@ -31,7 +30,7 @@ const client = HttpApiClient.make(WikiApi, { baseUrl: globalThis.location.origin
 
 type Call<A, E> = Effect.Effect<A, E, HttpClient.HttpClient>;
 
-/** What a failed call shows: whether to log in again, or what went wrong. */
+/** What a failed call shows: whether to sign in again, or what went wrong. */
 export type Failure = { readonly _tag: "LoggedOut" } | { readonly _tag: "Failed"; readonly message: string };
 
 const failureOf = (error: unknown): Failure => {
@@ -91,11 +90,6 @@ export const readText = (ws: WorkspaceName, ref: Ref, path: string) =>
 export const readHistory = (ws: WorkspaceName) =>
   Effect.flatMap(client, (api) => api.reader.readHistory({ params: { ws }, query: { limit: 50 } }));
 
-export const login = (key: string, name: PersonName | undefined) =>
-  Effect.flatMap(client, (api) =>
-    api.viewer.login({ payload: { key: Redacted.make(key), ...(name === undefined ? {} : { name }) } }),
-  );
-
 export const listThreads = (ws: WorkspaceName, filter: ThreadFilter) =>
   Effect.flatMap(client, (api) => api.comments.listThreads({ params: { ws }, query: filter }));
 
@@ -117,8 +111,6 @@ export const currentReader = () => Effect.flatMap(client, (api) => api.comments.
 export const setThreadState = (ws: WorkspaceName, thread: ThreadId, request: SetThreadStateRequest) =>
   Effect.flatMap(client, (api) => api.comments.setThreadState({ params: { ws, thread }, payload: request }));
 
-export const logout = () => Effect.flatMap(client, (api) => api.viewer.logout());
-
-/** The URL of a file's bytes, for an `<img>` or a download. The browser sends the cookie. */
+/** The URL of a file's bytes, for an `<img>` or a download. The browser sends its Access cookie. */
 export const fileUrl = (ws: WorkspaceName, ref: Ref, path: string): string =>
   `/workspaces/${ws}/file?${new URLSearchParams({ ref, path }).toString()}`;

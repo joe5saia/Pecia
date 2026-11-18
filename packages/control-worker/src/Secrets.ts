@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 
 // What the service does with the secrets it issues and checks: session keys
-// (Workspace.ts) and the orchestrator key with its login cookie (Login.ts).
+// (Workspace.ts).
 
 /** Whether two strings are equal, in time that does not depend on where they differ. */
 export const sameText = (a: string, b: string): boolean => {

@@ -49,11 +49,16 @@ afterAll(async () => {
   await service.close();
 });
 
-/** Call the API as the orchestrator does. */
-const orchestrator = async (method: string, path: string, body?: unknown, key = service.orchestratorKey) => {
+/** Call the API as the orchestrator does, with its service token, or with the headers `as` gives. */
+const orchestrator = async (
+  method: string,
+  path: string,
+  body?: unknown,
+  as: Readonly<Record<string, string>> = service.access.orchestratorToken,
+) => {
   const response = await fetch(`${service.url}${path}`, {
     method,
-    headers: { authorization: `Bearer ${key}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    headers: { ...as, ...(body === undefined ? {} : { "content-type": "application/json" }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const answer: unknown = await response.json().catch(() => undefined);
@@ -61,6 +66,13 @@ const orchestrator = async (method: string, path: string, body?: unknown, key = 
 };
 
 const decodeSession = Schema.decodeUnknownSync(CreateSessionResponse);
+
+/** What a sandbox sends: the sandbox token the session came with, and a session key. */
+const asSandbox = (session: CreateSessionResponse, key = session.sessionKey) => ({
+  "cf-access-client-id": session.accessClientId,
+  "cf-access-client-secret": session.accessClientSecret,
+  authorization: `Bearer ${key}`,
+});
 const decodeSessions = Schema.decodeUnknownSync(ListSessionsResponse);
 const decodeTokens = Schema.decodeUnknownSync(TokenResponse);
 
@@ -91,6 +103,8 @@ const openSandbox = async (workspace: string) => {
     WIKI_URL: service.url,
     SESSION_ID: session.sessionId,
     SESSION_KEY: session.sessionKey,
+    ACCESS_CLIENT_ID: session.accessClientId,
+    ACCESS_CLIENT_SECRET: session.accessClientSecret,
     FORK_REMOTE: session.forkRemote,
     MAIN_REMOTE: session.mainRemote,
   });
@@ -117,7 +131,7 @@ const openSandbox = async (workspace: string) => {
   /** The tokens the service hands this sandbox now, as `wiki-credential` gets them. */
   const tokens = async () =>
     decodeTokens(
-      (await orchestrator("POST", `/sessions/${session.sessionId}/token`, undefined, session.sessionKey)).body,
+      (await orchestrator("POST", `/sessions/${session.sessionId}/token`, undefined, asSandbox(session))).body,
     );
   return { ...session, sandbox, commit, land, mergeUpstream, tokens };
 };
@@ -315,7 +329,7 @@ describe("the sandbox", () => {
     expect(land.exitCode).toBe(1);
     expect(land.error).toBe("wiki-land: the fork is too large to land: one of its files is more than 4194304 bytes");
     expect(await wiki.head()).toBe(base);
-    expect(await orchestrator("POST", `/sessions/${a.sessionId}/land`, undefined, a.sessionKey)).toMatchObject({
+    expect(await orchestrator("POST", `/sessions/${a.sessionId}/land`, undefined, asSandbox(a))).toMatchObject({
       status: 422,
       body: { _tag: "ForkTooLarge", limit: "objectBytes", max: 4_194_304 },
     });
@@ -323,25 +337,54 @@ describe("the sandbox", () => {
 });
 
 describe("the API", () => {
-  it("answers 401 without the orchestrator key or with a wrong session key", async () => {
+  it("answers 401 to a caller Access did not vouch for, or vouched for as someone else", async () => {
     await createWorkspace("auth");
-    expect(await orchestrator("POST", "/workspaces", { name: "intruder" }, "wrong")).toEqual({
+    const wrongSecret = { ...service.access.orchestratorToken, "cf-access-client-secret": "wrong" };
+    expect(await orchestrator("POST", "/workspaces", { name: "intruder" }, wrongSecret)).toEqual({
       status: 401,
       body: { _tag: "Unauthorized" },
       challenge: "Bearer",
     });
     // The credential is checked before the request: a caller without one learns nothing about the API.
-    expect((await orchestrator("POST", "/workspaces", { name: "Not A Name" }, "wrong")).status).toBe(401);
-    expect((await orchestrator("GET", "/workspaces/auth/sessions", undefined, "")).status).toBe(401);
+    expect((await orchestrator("POST", "/workspaces", { name: "Not A Name" }, {})).status).toBe(401);
+    expect((await orchestrator("GET", "/workspaces/auth/sessions", undefined, {})).status).toBe(401);
+    // An assertion Access did not sign, or one with no person or known token in it.
+    const forged = await service.access.assertion({ common_name: "orchestrator.access", sub: "" }, { forged: true });
+    expect((await orchestrator("GET", "/workspaces/auth/sessions", undefined, forged)).status).toBe(401);
+    const otherToken = await service.access.assertion({ common_name: "someone-else.access", sub: "" });
+    expect((await orchestrator("GET", "/workspaces/auth/sessions", undefined, otherToken)).status).toBe(401);
+    // A person reads and comments, but runs no sessions.
+    const person = await service.access.person("joe5saia@gmail.com");
+    expect((await orchestrator("GET", "/workspaces/auth/sessions", undefined, person)).status).toBe(401);
+
     const session = decodeSession(
       (await orchestrator("POST", "/workspaces/auth/sessions", { agent: "amp", model: "m" })).body,
     );
-    // The orchestrator key is no session key, and a session key is no orchestrator key.
-    expect((await orchestrator("POST", `/sessions/${session.sessionId}/land`)).status).toBe(401);
-    expect((await orchestrator("POST", `/sessions/${session.sessionId}/token`, undefined, "wrong")).status).toBe(401);
-    expect((await orchestrator("DELETE", `/sessions/${session.sessionId}`, undefined, session.sessionKey)).status).toBe(
+    const id = session.sessionId;
+    // The sandbox token opens the sandbox endpoints only, and only with the session's key.
+    const sandboxToken = {
+      "cf-access-client-id": session.accessClientId,
+      "cf-access-client-secret": session.accessClientSecret,
+    };
+    expect((await orchestrator("GET", "/workspaces/auth/sessions", undefined, sandboxToken)).status).toBe(401);
+    expect((await orchestrator("GET", "/workspaces", undefined, sandboxToken)).status).toBe(401);
+    expect((await orchestrator("DELETE", `/sessions/${id}`, undefined, asSandbox(session))).status).toBe(401);
+    expect((await orchestrator("POST", `/sessions/${id}/token`, undefined, sandboxToken)).status).toBe(401);
+    expect((await orchestrator("POST", `/sessions/${id}/token`, undefined, asSandbox(session, "wrong"))).status).toBe(
       401,
     );
+    // The session key without the sandbox token, or with the orchestrator's, is not enough either.
+    const keyOnly = { authorization: `Bearer ${session.sessionKey}` };
+    expect((await orchestrator("POST", `/sessions/${id}/land`, undefined, keyOnly)).status).toBe(401);
+    expect(
+      (
+        await orchestrator("POST", `/sessions/${id}/land`, undefined, {
+          ...service.access.orchestratorToken,
+          ...keyOnly,
+        })
+      ).status,
+    ).toBe(401);
+    expect((await orchestrator("POST", `/sessions/${id}/token`, undefined, asSandbox(session))).status).toBe(200);
     expect(await service.artifacts.exists("intruder")).toBe(false);
   });
 
@@ -360,10 +403,13 @@ describe("the API", () => {
     const again = await orchestrator("DELETE", `/sessions/${session.sessionId}`);
     expect(again).toMatchObject({ status: 409, body: { _tag: "SessionNotActive", state: "closed" } });
     expect(
-      (await orchestrator("POST", `/sessions/${session.sessionId}/token`, undefined, session.sessionKey)).status,
+      (await orchestrator("POST", `/sessions/${session.sessionId}/token`, undefined, asSandbox(session))).status,
     ).toBe(409);
     // Only the holder of the session key learns that the session has ended.
-    expect((await orchestrator("POST", `/sessions/${session.sessionId}/token`, undefined, "wrong")).status).toBe(401);
+    expect(
+      (await orchestrator("POST", `/sessions/${session.sessionId}/token`, undefined, asSandbox(session, "wrong")))
+        .status,
+    ).toBe(401);
   });
 
   it("answers 404 with a problem for a path or method the API does not have", async () => {
@@ -411,13 +457,7 @@ const read = async (path: string, headers: Record<string, string> = {}) => {
   }
   return { status: response.status, body, headers: response.headers };
 };
-const bearer = () => ({ authorization: `Bearer ${service.orchestratorKey}` });
-const login = (key: string, name?: string) =>
-  fetch(`${service.url}/auth/login`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(name === undefined ? { key } : { key, name }),
-  });
+const bearer = () => service.access.orchestratorToken;
 const decodeWorkspaces = Schema.decodeUnknownSync(ListWorkspacesResponse);
 const decodeTree = Schema.decodeUnknownSync(TreeResponse);
 const decodeHistory = Schema.decodeUnknownSync(HistoryResponse);
@@ -481,30 +521,20 @@ describe("the reader", () => {
     expect((await read("/workspaces/gaps/tree?ref=HEAD~1", bearer())).status).toBe(400);
   });
 
-  it("lets a browser in with the orchestrator key and a signed cookie, and nothing else", async () => {
+  it("lets in a person Access signed in, under their email, and nothing else", async () => {
     expect((await read("/workspaces")).status).toBe(401);
-    expect((await read("/workspaces", { authorization: "Bearer wrong" })).status).toBe(401);
-    expect((await login("wrong")).status).toBe(401);
+    const person = await service.access.person("joe5saia@gmail.com");
+    expect((await read("/workspaces", person)).status).toBe(200);
+    expect((await read("/auth/me", person)).body).toEqual({ name: "joe5saia@gmail.com" });
+    expect((await read("/auth/me", bearer())).body).toEqual({ name: "orchestrator" });
 
-    const loggedIn = await login(service.orchestratorKey);
-    expect(loggedIn.status).toBe(200);
-    const setCookie = loggedIn.headers.get("set-cookie") ?? "";
-    expect(setCookie).toMatch(/HttpOnly/i);
-    expect(setCookie).toMatch(/SameSite=Strict/i);
-    // The cookie is a signed expiry: the key is not in it.
-    expect(setCookie).not.toContain(service.orchestratorKey);
-    const cookie = setCookie.split(";")[0] ?? "";
-    expect((await read("/workspaces", { cookie })).status).toBe(200);
-
-    // A later expiry under the same signature is refused.
-    const [, value = ""] = cookie.split("=");
-    const [expires = "0", signature = ""] = value.split(".");
-    const forged = `pecia_viewer=${Number(expires) + 86_400}.${signature}`;
-    expect((await read("/workspaces", { cookie: forged })).status).toBe(401);
-
-    const loggedOut = await fetch(`${service.url}/auth/logout`, { method: "POST", headers: { cookie } });
-    expect(loggedOut.status).toBe(204);
-    expect(loggedOut.headers.get("set-cookie")).toMatch(/pecia_viewer=;.*Max-Age=0/i);
+    // An assertion signed by another key, or with no email, is no person.
+    const forged = await service.access.assertion({ email: "joe5saia@gmail.com", sub: "x" }, { forged: true });
+    expect((await read("/workspaces", forged)).status).toBe(401);
+    expect((await read("/workspaces", await service.access.assertion({ sub: "x" }))).status).toBe(401);
+    // The old login is gone: no cookie and no key opens anything.
+    expect((await read("/workspaces", { cookie: "pecia_viewer=1.x" })).status).toBe(401);
+    expect((await fetch(`${service.url}/auth/login`, { method: "POST" })).status).toBe(404);
   });
 });
 
@@ -517,15 +547,12 @@ describe("comments", () => {
     await agent.commit("deploy.md", "# Deploy\n\nRun `task deploy:prod` after the tests pass.\n");
     expect((await agent.land()).exitCode).toBe(0);
 
-    // The person logs in under a name; the cookie signs it, so it cannot be swapped.
-    const cookie = (await login(service.orchestratorKey, "Joe")).headers.get("set-cookie")?.split(";")[0] ?? "";
-    const [expires = "", , signature = ""] = (cookie.split("=")[1] ?? "").split(".");
-    const renamed = `pecia_viewer=${expires}.${Buffer.from("Mallory").toString("base64url")}.${signature}`;
-    expect((await read("/workspaces/comments/threads", { cookie: renamed })).status).toBe(401);
+    // The person comments under the email Access verified.
+    const person = await service.access.person("joe5saia@gmail.com");
 
     const created = await fetch(`${service.url}/workspaces/comments/threads`, {
       method: "POST",
-      headers: { cookie, "content-type": "application/json" },
+      headers: { ...person, "content-type": "application/json" },
       body: JSON.stringify({
         path: "deploy.md",
         body: "CI deploys prod; reword this.",
@@ -534,14 +561,14 @@ describe("comments", () => {
     });
     expect(created.status).toBe(200);
     const thread = decodeThread(await created.json());
-    expect(thread.comments[0]?.author).toEqual({ _tag: "Person", name: "Joe" });
+    expect(thread.comments[0]?.author).toEqual({ _tag: "Person", name: "joe5saia@gmail.com" });
 
     // The agent's checkout has moved on: the passage is now on line 5, not 3.
     await agent.commit("deploy.md", "# Deploy\n\nIntro.\n\nRun `task deploy:prod` after the tests pass.\n");
     const listed = await agent.sandbox.exec("wiki-comments", ["list"]);
     expect(listed.exitCode).toBe(0);
     expect(listed.stdout).toContain(`${thread.id}  open  deploy.md:5 (moved)`);
-    expect(listed.stdout).toContain("Joe (person)");
+    expect(listed.stdout).toContain("joe5saia@gmail.com (person)");
 
     const landed = await agent.land();
     expect(landed.exitCode).toBe(0);
@@ -562,7 +589,7 @@ describe("comments", () => {
     const resolved = await agent.sandbox.exec("wiki-comments", ["resolve", thread.id, "Done."]);
     expect(resolved.stdout).toContain("resolved by amp test-model (agent)");
 
-    const all = await read("/workspaces/comments/threads?state=all", { cookie });
+    const all = await read("/workspaces/comments/threads?state=all", person);
     expect(all.body).toMatchObject([
       {
         id: thread.id,

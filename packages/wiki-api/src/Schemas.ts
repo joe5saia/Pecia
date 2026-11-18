@@ -100,12 +100,25 @@ const Label = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(200));
 export const CreateSessionRequest = Schema.Struct({ agent: Label, model: Label });
 export type CreateSessionRequest = typeof CreateSessionRequest.Type;
 
-export const CreateSessionResponse = Schema.Struct({
+/** A new session, as its workspace creates it. */
+export const SessionCreated = Schema.Struct({
   sessionId: SessionId,
   /** Returned only here. The service stores a hash of it. */
   sessionKey: Schema.String,
   forkRemote: RemoteUrl,
   mainRemote: RemoteUrl,
+});
+export type SessionCreated = typeof SessionCreated.Type;
+
+export const CreateSessionResponse = Schema.Struct({
+  ...SessionCreated.fields,
+  /**
+   * The stage's sandbox service token, which the sandbox sends with every
+   * call to get through Cloudflare Access (docs/operations.md, "Access").
+   * It opens the sandbox endpoints only, and only with a session key.
+   */
+  accessClientId: Schema.String,
+  accessClientSecret: Schema.String,
 });
 export type CreateSessionResponse = typeof CreateSessionResponse.Type;
 
@@ -194,27 +207,5 @@ export type TreeResponse = typeof TreeResponse.Type;
 export const HistoryResponse = Schema.Array(Commit);
 export type HistoryResponse = typeof HistoryResponse.Type;
 
-/** The name a person gave when logging in. Nothing checks it: anyone with the stage's key can give any name. */
-export const PersonName = Schema.String.check(
-  Schema.isPattern(/^\P{Cc}*\S\P{Cc}*$/u, {
-    description: "a name with no control characters that is not only white space",
-  }),
-  Schema.isMaxLength(80),
-);
-export type PersonName = typeof PersonName.Type;
-
-export const LoginRequest = Schema.Struct({
-  key: Schema.Redacted(Schema.String),
-  /** The name the reader's comments are signed with (docs/comments.md, "Auth"). */
-  name: Schema.optional(PersonName),
-});
-export type LoginRequest = typeof LoginRequest.Type;
-
 export const CurrentReader = Schema.Struct({ name: Schema.String });
 export type CurrentReader = typeof CurrentReader.Type;
-
-export const LoginResponse = Schema.Struct({
-  /** When the login cookie expires. */
-  expiresAt: Timestamp,
-});
-export type LoginResponse = typeof LoginResponse.Type;

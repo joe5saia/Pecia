@@ -16,6 +16,7 @@
 - Nothing is cached in the sandbox. Every git operation asks the service for the session's tokens, which also counts as activity and keeps the session from timing out.
 - `wiki-comments` reads pages from `WIKI_DIR`, which `setup.sh` writes to `session.env` as an absolute path; a session set up before it falls back to `./docs`. `wiki-land`'s note about open threads goes to stderr, so its stdout stays one line.
 - `wiki-land` exits 0 for `landed` and `nothing to land`, 2 for `behind` and 1 for an error. The `using-pecia-wiki` skill and `agent-instructions.md` rely on those.
+- Every call goes through Cloudflare Access with the sandbox token from `session.env` (`ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET`) as well as the session key. Without it Access answers a 302 to its sign-in page, which the client reports as a decode failure, not a 401.
 - A machine holds one session: a second `setup.sh` overwrites `session.env` and the global git credential settings.
 
 ## Debugging live
@@ -23,4 +24,4 @@
 - **State in the sandbox.** `session.env` (above) has the session key: check that it exists, do not print it. `git config --global --get-regexp '^credential\.'` shows the helper and `useHttpPath`. `git -C docs remote -v` shows `origin` (the fork) and `upstream` (main, with its push URL disabled).
 - **A git operation fails.** The helper's line is above git's own message and says why, such as `session '<id>' has ended (parked)`. `GIT_TRACE=1 git -C docs fetch upstream` shows whether the helper ran.
 - **The helper by hand.** `printf 'protocol=https\nhost=<host>\npath=<repo path>\n' | wiki-credential get` prints a live token; look at whether it answers, and do not paste its output anywhere.
-- **The service's side.** Each mint is a `tokens.minted` event and each `wiki-land` a `land` event in Workers Logs (`docs/operations.md`, "Monitor usage"). `GET /workspaces/:ws/sessions` with the orchestrator key shows the session's state.
+- **The service's side.** Each mint is a `tokens.minted` event and each `wiki-land` a `land` event in Workers Logs (`docs/operations.md`, "Monitor usage"). `GET /workspaces/:ws/sessions` with the orchestrator token shows the session's state.

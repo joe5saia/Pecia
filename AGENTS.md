@@ -6,7 +6,7 @@ Agent wiki on Cloudflare Artifacts. The design is in `docs/mvp.md`; comments on 
 
 - `packages/wiki-api`: the shared Effect Schema contract for the Control Worker API.
 - `packages/control-worker`: the Control Worker, the workspace Durable Object and its Alchemy stack (`alchemy.run.ts`). `src/Workspace.ts` holds the session and landing logic; `src/testing` holds the fakes the tests run it on.
-- `packages/viewer`: the read-only web UI (React and Vite), served as the Control Worker's static assets. Its design, login and the way to add editing are in `docs/viewer.md`. `src/App.tsx` has every page as a component (`Workspaces` is the list of wikis, `Wiki` a wiki, `History` its commits), `src/styles.css` every style, with the fonts and colors as variables at its top. It is type-checked as its own project (`packages/viewer/tsconfig.json`), with the DOM's types; `task typecheck` covers it, and there is no viewer-only check.
+- `packages/viewer`: the read-only web UI (React and Vite), served as the Control Worker's static assets. Its design, sign-in and the way to add editing are in `docs/viewer.md`. `src/App.tsx` has every page as a component (`Workspaces` is the list of wikis, `Wiki` a wiki, `History` its commits), `src/styles.css` every style, with the fonts and colors as variables at its top. It is type-checked as its own project (`packages/viewer/tsconfig.json`), with the DOM's types; `task typecheck` covers it, and there is no viewer-only check.
 - `packages/sandbox-tools`: what runs in a sandbox: `wiki-credential`, `wiki-land`, `wiki-comments`, `setup.sh` and `agent-instructions.md`.
 - `.agents/skills/using-pecia-wiki`: the project skill that lets an Amp thread read and publish to a deployed wiki.
 - `packages/lint-rules`: the oxlint plugin `pecia`, which enforces the Effect style below. `.oxlintrc.json` loads it.
@@ -23,7 +23,8 @@ Every command runs through Task (`Taskfile.yml`); package.json files have no `sc
 - One test file: `pnpm exec vitest run packages/control-worker/src/Git.test.ts`; add `-t '<name>'` for one test. `task test:watch` never exits, so do not run it from an agent.
 - `task fmt`: format with oxfmt.
 - `task build:viewer`: build the viewer into `packages/viewer/dist`. The Alchemy tasks run it first.
-- `task dev:viewer`: serve the viewer with hot reload against a deployed Worker's API (`PECIA_VIEWER_API`, default staging). It runs until stopped; in an orb start it as a service (see "Running the viewer").
+- `task dev:viewer`: serve the viewer with hot reload against a deployed Worker's API (`PECIA_VIEWER_API`, default staging), through Access with staging's orchestrator token.
+- `task access:token STAGE=<stage>`: write a stage's orchestrator Access token to `~/.config/pecia/access-<stage>.env` without printing it (`docs/operations.md`, "Access"). It runs until stopped; in an orb start it as a service (see "Running the viewer").
 - `task build:tools`: bundle `wiki-credential` and `wiki-land` into `packages/sandbox-tools/dist`.
 - `task dev`: `alchemy dev` for the Control Worker.
 - `task ci`: `task check`, then `task deploy:preview` (needs `PULL_REQUEST`, the number that names the preview stage, and a Cloudflare profile). GitHub Actions does not run it.
@@ -34,14 +35,14 @@ oxlint runs the `pecia` rules in JS and reserves about 6 GiB of address space fo
 
 `.amp/services.yaml` declares the one development server, `viewer` (`task dev:viewer`). In an Amp orb, `amp orb services ensure` starts it and prints its portal URL; `amp orb service logs viewer` has its output. It serves `packages/viewer` with hot reload and passes API calls to staging, so the pages show staging's wikis.
 
-The portal link opens `/__dev/log-me-in?returnTo=<path>`, a route of the Vite dev server only (`packages/viewer/vite.config.ts`). It logs the browser in with `PECIA_ORCHESTRATOR_KEY_STAGING` from the server's environment, so nobody types the key. Open it in the browser used for testing; a `curl` of it does not log that browser in. In the orb, `agent-browser` can open either the portal URL or `http://localhost:<port>` with the port `ensure` prints; give a person only the portal URL. Each page reads from staging, so it shows "Loading…" for a few seconds: wait for the content before a screenshot. Without the key it answers 404, and the viewer's own login page at `/` takes the key by hand.
+Staging is behind Cloudflare Access, so the dev server's proxy sends staging's orchestrator token with each API call, from the file `task access:token` writes (`packages/viewer/vite.config.ts`). Run `task access:token` before starting the service; without the file every page says "Could not load this". The browser never signs in. In the orb, `agent-browser` can open either the portal URL or `http://localhost:<port>` with the port `ensure` prints; give a person only the portal URL. Each page reads from staging, so it shows "Loading…" for a few seconds: wait for the content before a screenshot.
 
 `task dev` (the Worker under `alchemy dev`) and the deploy tasks need Cloudflare credentials and are not declared as services.
 
 ## In an orb
 
 - `.agents/setup` installs the locked dependencies and puts `task` on `PATH`; `.agents/resume` sets `vm.overcommit_memory=1` (see Commands). Their logs are in `~/.cache/amp/logs/setup.log` and `resume.log`.
-- Secrets come from Amp settings, never from a file in the repository. `PECIA_ORCHESTRATOR_KEY_STAGING`, `PECIA_ORCHESTRATOR_KEY_PROD` and the `SAIAAI_CLOUDFLARE_*` credentials are Joe's personal secrets: a thread he owns has them, `.agents/setup` and other people's threads do not. `task check` and the viewer service need none of them.
+- Secrets come from Amp settings, never from a file in the repository. The `SAIAAI_CLOUDFLARE_*` credentials are Joe's personal secrets: a thread he owns has them, `.agents/setup` and other people's threads do not. They deploy, and `task access:token` reads a stage's Access token from the Alchemy state with them. `task check` needs none of them.
 - `.pecia/` holds wiki session checkouts (`using-pecia-wiki`) and `.amp/in/` holds scratch files; both are ignored by git.
 
 ## Landing changes
@@ -70,7 +71,7 @@ The code follows the Effect v4 code style pages, starting at https://effect.webs
 - Loop over effects with `Effect.forEach` and combine independent ones with `Effect.all`.
 - A Node entry point runs through `NodeRuntime.runMain` (`runTool` in `packages/sandbox-tools`). It reads its arguments and stdin and writes its output through the `Stdio` service, and it exits with a code by failing with an error that has `[Runtime.errorExitCode]`.
 - A time is a `DateTime` inside the program and a `Timestamp` (`packages/wiki-api`) where it leaves it, made with `timestampOf`. No `new Date(...)` and no `toISOString()`.
-- A secret is `Redacted` from where it enters the program to where it leaves it: the orchestrator key, a session key, an Artifacts token. `Redacted.value` appears only where the text is needed, with the reason beside it if it is not plain.
+- A secret is `Redacted` from where it enters the program to where it leaves it: an Access service token's secret, a session key, an Artifacts token. `Redacted.value` appears only where the text is needed, with the reason beside it if it is not plain.
 - Settings and secrets from the environment are read with `Config` (`worker.ts`, `WorkspaceObject.ts`, `packages/sandbox-tools/src/Session.ts`), a secret as `Config.Redacted`. `process.env` is for build and test tooling only (`vite.config.ts`, the test doubles).
 
 `task lint` enforces the parts of this that a linter without type information can see:
@@ -98,7 +99,7 @@ Fix what a rule reports instead of disabling it. A rule that reports good code h
 
 ## Environment and tests
 
-The Alchemy tasks (`dev`, `plan`, `deploy:*`) need the stage's orchestrator API key in the environment: `PECIA_ORCHESTRATOR_KEY_PROD` for prod, `PECIA_ORCHESTRATOR_KEY_STAGING` for every other stage. Each task passes it to the Worker as `PECIA_ORCHESTRATOR_KEY`. `PECIA_IDLE_TIMEOUT` (default `2 hours`) is optional.
+The Alchemy tasks (`dev`, `plan`, `deploy:*`) need only Cloudflare credentials; each stage's Access application and service tokens are resources of the stack (`docs/operations.md`, "Access"). `PECIA_IDLE_TIMEOUT` (default `2 hours`) is optional. Tests stand in for Access with `src/testing/TestAccess.ts`: a local signing key, and the assertions Access would add for a person, the orchestrator token and the sandbox token.
 
 Tests run the real workspace logic and real `git` against bare repos served by `git http-backend` (`src/testing/FakeArtifacts.ts`); nothing in `task check` calls Cloudflare.
 

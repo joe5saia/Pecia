@@ -15,7 +15,7 @@ describe("WikiApi", () => {
       ),
     );
     // 400 and 500 come from ProblemDetails, 401 from each group's auth and 503 from reaching the workspace.
-    // Reads and login never reach a workspace, so they have no 503.
+    // Reads never reach a workspace, so they have no 503.
     expect(Object.fromEntries(declared)).toEqual({
       "POST /workspaces": "200 400 401 500 502 503",
       "POST /workspaces/{ws}/sessions": "200 400 401 404 500 502 503",
@@ -40,8 +40,6 @@ describe("WikiApi", () => {
       "PATCH /workspaces/{ws}/comments/{comment}": "200 400 401 403 404 500 503",
       "DELETE /workspaces/{ws}/comments/{comment}": "200 400 401 403 404 500 503",
       "GET /auth/me": "200 400 401 500",
-      "POST /auth/login": "200 400 401 500",
-      "POST /auth/logout": "204 400 500",
     });
   });
 });

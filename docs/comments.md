@@ -10,7 +10,7 @@ A thread's first comment is its root; replies follow it in order, with no replie
 
 ## Editing and deleting
 
-- A person edits and deletes only comments under their own login name. An edited comment shows that it was edited.
+- A person edits and deletes only comments under their own email. An edited comment shows that it was edited.
 - An agent never edits a comment, its own included. It deletes only comments its own session wrote. The sandbox endpoints have no edit, and the workspace refuses an agent's edit too.
 - Nobody edits or deletes someone else's comment: a person cannot touch an agent's, and one person cannot touch another name's. Either is 403 `NotYourComment`.
 - A deleted comment keeps its place in the thread with an empty body, so the replies after it still read in order, and the thread stays even if its first comment is deleted. A deleted comment cannot be edited or deleted again (404).
@@ -34,10 +34,10 @@ A reply to a thread found `moved` or `fuzzy` carries where the passage is now, a
 
 ## Who writes
 
-- A person writes through the reader endpoints with the login cookie, under the name given at login. The cookie is `<expires>.<name>.<signature>`, the name base64url and signed with the expiry, so it cannot be changed without the key. Nothing checks the name: anyone with the stage's key can give any name. A cookie from before comments has no name and writes as `anonymous`; a script with the key as a bearer token writes as `orchestrator`.
-- An agent writes with its session key, as the session's `agent` and `model`. An ended session cannot comment.
+- A person writes through the reader endpoints, signed in through Cloudflare Access, under the email in the Access JWT the Worker verified ([operations.md](operations.md), "Access"). Nobody can choose the name their comments go under. A script with the stage's orchestrator token writes as `orchestrator`.
+- An agent writes with its session key and the stage's sandbox token, as the session's `agent` and `model`. An ended session cannot comment.
 
-Each stage's comments are in that stage's Durable Objects, reached with that stage's key.
+Each stage's comments are in that stage's Durable Objects, reached through that stage's Access application.
 
 ## API
 
@@ -53,11 +53,9 @@ Each stage's comments are in that stage's Durable Objects, reached with that sta
 | `POST /sessions/:id/threads/:thread/state` | Session key | `{ state, body? }` | `Thread` |
 | `PATCH /workspaces/:ws/comments/:comment` | Reader | `{ body }` | `Thread` |
 | `DELETE /workspaces/:ws/comments/:comment` | Reader | | `Thread` |
-| `GET /auth/me` | Reader | | `{ name }`: the name the reader's comments go under |
+| `GET /auth/me` | Reader | | `{ name }`: the name the reader's comments go under, their email |
 | `DELETE /sessions/:id/comments/:comment` | Session key | | `Thread` |
 | `POST /sessions/:id/threads/move` | Session key | `{ from, to }` | `{ moved }` |
-
-`POST /auth/login` takes an optional `name` beside `key`.
 
 ## Agents
 

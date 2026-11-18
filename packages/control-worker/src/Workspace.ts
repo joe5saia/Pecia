@@ -24,7 +24,7 @@ import {
   type ThreadList,
   ThreadState,
   type CreateSessionRequest,
-  type CreateSessionResponse,
+  type SessionCreated,
   type CreateWorkspaceResponse,
   type EndSessionResponse,
   ForkTooLarge,
@@ -79,7 +79,7 @@ export interface Workspace {
   readonly createSession: (
     name: WorkspaceName,
     request: CreateSessionRequest,
-  ) => Effect.Effect<CreateSessionResponse, NotFound | ArtifactsUnavailable>;
+  ) => Effect.Effect<SessionCreated, NotFound | ArtifactsUnavailable>;
   readonly listSessions: (name: WorkspaceName) => Effect.Effect<ListSessionsResponse, NotFound>;
   readonly endSession: (
     sessionId: SessionId,
@@ -103,7 +103,7 @@ export interface Workspace {
   readonly sweep: () => Effect.Effect<void>;
 
   // Comment threads (docs/comments.md). The Worker passes who writes: a person
-  // by the name in their login, an agent by `sessionAuthor`.
+  // by the email Access verified, an agent by `sessionAuthor`.
 
   /** The agent of an active session, for a sandbox presenting its session key. Counts as activity. */
   readonly sessionAuthor: (

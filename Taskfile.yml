@@ -12,6 +12,10 @@ vars:
   STAGING_DOMAIN: staging.pecia.joesaia.trade
   PROD_DOMAIN: pecia.joesaia.trade
   STAGING_URL: https://{{.STAGING_DOMAIN}}
+  # Where access:token writes a stage's orchestrator token, as setup.sh and
+  # wiki-session work out pecia's directory.
+  PECIA_HOME:
+    sh: echo "${PECIA_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/pecia}"
 
 # Cloudflare credentials for the Alchemy tasks. Alchemy uses them when both are
 # set (CI, orbs) and otherwise falls back to the local `alchemy profile`.
@@ -20,11 +24,10 @@ x-cloudflare-env: &cloudflare-env
   CLOUDFLARE_ACCOUNT_ID: "{{.CLOUDFLARE_ACCOUNT_ID | default .SAIAAI_CLOUDFLARE_ACCOUNT_ID}}"
   CLOUDFLARE_API_TOKEN: "{{.CLOUDFLARE_API_TOKEN | default .SAIAAI_CLOUDFLARE_API_TOKEN}}"
 
-# The Control Worker's secrets and settings. Each stage has its own orchestrator
-# API key: PECIA_ORCHESTRATOR_KEY_PROD for prod, PECIA_ORCHESTRATOR_KEY_STAGING
-# for every other stage (staging, previews, dev). Each Alchemy task passes its
-# stage's key to the Worker as PECIA_ORCHESTRATOR_KEY, bound as a secret.
-# PECIA_IDLE_TIMEOUT (default "2 hours") is optional.
+# The Control Worker's settings. Cloudflare Access gates each stage; the stack
+# declares its application and service tokens (docs/operations.md, "Access"),
+# so a deploy needs no key of its own. PECIA_IDLE_TIMEOUT (default "2 hours")
+# is optional.
 
 # Inputs shared by the checks: Task skips a check when none of them changed.
 x-check-sources: &check-sources
@@ -113,10 +116,11 @@ tasks:
     cmd: pnpm exec vite build
 
   dev:viewer:
-    desc: Serve the viewer with hot reload, calling a deployed Worker's API (PECIA_VIEWER_API, default staging's URL)
+    desc: Serve the viewer with hot reload, calling a deployed Worker's API (PECIA_VIEWER_API, default staging's URL) with staging's orchestrator token
     dir: packages/viewer
     interactive: true
-    cmd: PECIA_VIEWER_API="${PECIA_VIEWER_API:-{{.STAGING_URL}}}" pnpm exec vite --port "${PORT:-5173}" --strictPort
+    # The token file `task access:token` writes; without it the API calls answer Access's redirect.
+    cmd: PECIA_VIEWER_API="${PECIA_VIEWER_API:-{{.STAGING_URL}}}" PECIA_VIEWER_ACCESS="{{.PECIA_HOME}}/access-staging.env" pnpm exec vite --port "${PORT:-5173}" --strictPort
 
   check:
     desc: Local CI - every check except deploying
@@ -127,7 +131,7 @@ tasks:
       - task: test
 
   ci:
-    desc: Full CI - the local checks, then a preview deploy (needs PULL_REQUEST, PECIA_ORCHESTRATOR_KEY_STAGING and Cloudflare credentials)
+    desc: Full CI - the local checks, then a preview deploy (needs PULL_REQUEST and Cloudflare credentials)
     cmds:
       - task: check
       - task: deploy:preview
@@ -135,25 +139,19 @@ tasks:
   dev:
     deps: [build:viewer]
     desc: Run the Control Worker and Durable Objects locally with alchemy dev
-    requires:
-      vars: [PECIA_ORCHESTRATOR_KEY_STAGING]
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
     interactive: true
-    cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_STAGING" pnpm exec alchemy dev
+    cmd: pnpm exec alchemy dev
 
   plan:
     deps: [build:viewer]
     desc: Preview changes to a stage (STAGE, default staging) without deploying
     vars:
       STAGE: '{{.STAGE | default "staging"}}'
-      KEY_VAR: '{{if eq .STAGE "prod"}}PECIA_ORCHESTRATOR_KEY_PROD{{else}}PECIA_ORCHESTRATOR_KEY_STAGING{{end}}'
-    preconditions:
-      - sh: '[ -n "${{.KEY_VAR}}" ]'
-        msg: "{{.KEY_VAR}} is not set"
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
-    cmd: PECIA_ORCHESTRATOR_KEY="${{.KEY_VAR}}" PECIA_DOMAIN="{{if eq .STAGE "prod"}}{{.PROD_DOMAIN}}{{else if eq .STAGE "staging"}}{{.STAGING_DOMAIN}}{{end}}" pnpm exec alchemy plan --stage {{.STAGE}} --no-input
+    cmd: PECIA_DOMAIN="{{if eq .STAGE "prod"}}{{.PROD_DOMAIN}}{{else if eq .STAGE "staging"}}{{.STAGING_DOMAIN}}{{end}}" pnpm exec alchemy plan --stage {{.STAGE}} --no-input
 
   # PULL_REQUEST only numbers the preview stage: a Dependabot pull request's
   # number, or any unused number. Other changes have no pull request; they are
@@ -162,10 +160,10 @@ tasks:
     deps: [build:viewer]
     desc: Deploy the pr-<PULL_REQUEST> preview stage
     requires:
-      vars: [PULL_REQUEST, PECIA_ORCHESTRATOR_KEY_STAGING]
+      vars: [PULL_REQUEST]
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
-    cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_STAGING" pnpm exec alchemy deploy --stage pr-{{.PULL_REQUEST}} --yes --no-input
+    cmd: pnpm exec alchemy deploy --stage pr-{{.PULL_REQUEST}} --yes --no-input
 
   destroy:preview:
     desc: Destroy the pr-<PULL_REQUEST> preview stage
@@ -178,51 +176,72 @@ tasks:
   deploy:staging:
     deps: [build:viewer]
     desc: Deploy the staging stage
-    requires:
-      vars: [PECIA_ORCHESTRATOR_KEY_STAGING]
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
-    cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_STAGING" PECIA_DOMAIN={{.STAGING_DOMAIN}} pnpm exec alchemy deploy --stage staging --yes --no-input
+    cmd: PECIA_DOMAIN={{.STAGING_DOMAIN}} pnpm exec alchemy deploy --stage staging --yes --no-input
 
   deploy:prod:
     deps: [build:viewer]
     desc: Deploy the prod stage
-    requires:
-      vars: [PECIA_ORCHESTRATOR_KEY_PROD]
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
-    cmd: PECIA_ORCHESTRATOR_KEY="$PECIA_ORCHESTRATOR_KEY_PROD" PECIA_DOMAIN={{.PROD_DOMAIN}} pnpm exec alchemy deploy --stage prod --yes --no-input
+    cmd: PECIA_DOMAIN={{.PROD_DOMAIN}} pnpm exec alchemy deploy --stage prod --yes --no-input
 
-  smoke:
-    desc: Check that a deployed stage (STAGE, staging or prod; or a preview with STAGE=pr-<n> URL=<its Worker URL>) answers with its own orchestrator key
+  # A stage's orchestrator service token, from the Alchemy state (the stack
+  # creates it; docs/operations.md, "Access"). It is written to a file only
+  # this user can read and never printed. Needs Cloudflare credentials that
+  # can read the state, as the deploy tasks do.
+  access:token:
+    desc: Write a stage's (STAGE, default staging) orchestrator Access token to $PECIA_HOME/access-<stage>.env
     vars:
       STAGE: '{{.STAGE | default "staging"}}'
-      KEY_VAR: '{{if eq .STAGE "prod"}}PECIA_ORCHESTRATOR_KEY_PROD{{else}}PECIA_ORCHESTRATOR_KEY_STAGING{{end}}'
+      FILE: "{{.PECIA_HOME}}/access-{{.STAGE}}.env"
+    dir: "{{.STACK_DIR}}"
+    env: *cloudflare-env
+    silent: true
+    cmd: |
+      # Task's shell has no umask: the file is made private before anything is written to it.
+      mkdir -p -m 700 "$(dirname '{{.FILE}}')"
+      rm -f '{{.FILE}}.new' && touch '{{.FILE}}.new' && chmod 600 '{{.FILE}}.new'
+      pnpm exec alchemy state read pecia/{{.STAGE}}/OrchestratorToken --no-input --log-level none |
+        jq -er '"PECIA_ACCESS_CLIENT_ID=\(.attr.clientId)\nPECIA_ACCESS_CLIENT_SECRET=\(.attr.clientSecret.__redacted__)"' >'{{.FILE}}.new'
+      mv '{{.FILE}}.new' '{{.FILE}}'
+      echo "wrote {{.STAGE}}'s orchestrator token to {{.FILE}}"
+
+  smoke:
+    desc: Check that a deployed stage (STAGE, staging or prod; or a preview with STAGE=pr-<n> URL=<its Worker URL>) answers behind Access with its own orchestrator token
+    vars:
+      STAGE: '{{.STAGE | default "staging"}}'
       # The stages' Worker URLs, as in .agents/skills/using-pecia-wiki/scripts/wiki-session.
       # A preview's URL is the `url` output `task deploy:preview` prints.
       URL: '{{if .URL}}{{.URL}}{{else if eq .STAGE "prod"}}https://{{.PROD_DOMAIN}}{{else if eq .STAGE "staging"}}https://{{.STAGING_DOMAIN}}{{end}}'
     preconditions:
       - sh: '[ -n "{{.URL}}" ]'
         msg: "STAGE must be staging or prod, or pass the preview's URL"
-      - sh: '[ -n "${{.KEY_VAR}}" ]'
-        msg: "{{.KEY_VAR}} is not set"
-    # Listing a workspace that is never created must answer 401 without the key
-    # and the Durable Object's typed 404 with it: the Worker is published, has
-    # this stage's key and reaches its Durable Objects. The viewer's page must be
-    # served, which it is only if its assets were uploaded. Retried for a minute,
-    # because a newly published Worker can answer `error code: 1104` for a while.
-    cmd: |
-      url={{.URL}}/workspaces/ci-smoke/sessions
-      for attempt in 1 2 3 4 5 6; do
-        anonymous=$(curl -sS -o /dev/null -w '%{http_code}' "$url" || true)
-        body=$(curl -sS -H "Authorization: Bearer ${{.KEY_VAR}}" "$url" || true)
-        viewer=$(curl -sS "{{.URL}}/" || true)
-        if [ "$anonymous" = 401 ] && jq -e '._tag == "NotFound"' >/dev/null 2>&1 <<<"$body" &&
-          grep -q '<div id="root">' <<<"$viewer"; then
-          echo "{{.STAGE}} answers"
-          exit 0
-        fi
-        echo "attempt $attempt: $anonymous without the key, '$body' with it, viewer page $(grep -c '<div id="root">' <<<"$viewer") root"
-        sleep 10
-      done
-      exit 1
+    # Access must send a caller without a token to the Google sign-in. Listing
+    # a workspace that is never created must answer the Durable Object's typed
+    # 404 with the stage's orchestrator token: the Worker is published,
+    # verifies this stage's Access JWT and reaches its Durable Objects. The
+    # viewer's page must be served, which it is only if its assets were
+    # uploaded. Retried for a minute, because a newly published Worker can
+    # answer `error code: 1104` for a while.
+    cmds:
+      - task: access:token
+        vars: { STAGE: "{{.STAGE}}" }
+      - |
+        set -a; . "{{.PECIA_HOME}}/access-{{.STAGE}}.env"; set +a
+        token=(-H "CF-Access-Client-Id: $PECIA_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $PECIA_ACCESS_CLIENT_SECRET")
+        url={{.URL}}/workspaces/ci-smoke/sessions
+        for attempt in 1 2 3 4 5 6; do
+          anonymous=$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$url" || true)
+          body=$(curl -sS "${token[@]}" "$url" || true)
+          viewer=$(curl -sS "${token[@]}" "{{.URL}}/" || true)
+          if [[ "$anonymous" == "302 https://saiaai.cloudflareaccess.com/"* ]] &&
+            jq -e '._tag == "NotFound"' >/dev/null 2>&1 <<<"$body" && grep -q '<div id="root">' <<<"$viewer"; then
+            echo "{{.STAGE}} answers"
+            exit 0
+          fi
+          echo "attempt $attempt: '${anonymous%% *}' without the token, '$(head -c 200 <<<"$body")' with it, viewer page $(grep -c '<div id="root">' <<<"$viewer") root"
+          sleep 10
+        done
+        exit 1

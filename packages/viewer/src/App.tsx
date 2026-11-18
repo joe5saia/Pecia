@@ -1,24 +1,21 @@
 import { type HistoryResponse, Ref, type TreeResponse, WorkspaceName } from "@pecia/wiki-api";
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   type Failure,
   fileUrl,
   listWorkspaces,
-  login,
-  logout,
   readHistory,
   readText,
   readTree,
   type ReadState,
-  run,
   useRead,
 } from "./api.ts";
 import { Comments } from "./Comments.tsx";
 import { fenced, Markdown, type OutlineEntry, type Page } from "./Markdown.tsx";
 import { buildTree, type Directory, homePage, isImage, isMarkdown, titleOf } from "./paths.ts";
-import { fileHref, navigate, onLinkClick, type Route, useRoute } from "./router.ts";
+import { fileHref, onLinkClick, type Route, useRoute } from "./router.ts";
 import { timeAgo } from "./time.ts";
 
 // The viewer's pages. Every read is of one commit: the tree names it, and the
@@ -33,15 +30,15 @@ const Link = ({ href, className, children }: { href: string; className?: string;
   </a>
 );
 
-const LoggedOut = () => {
-  useEffect(() => {
-    // Several reads can find the cookie gone at once; the first one sends the reader to log in.
-    if (globalThis.location.pathname === "/login") return;
-    const here = `${globalThis.location.pathname}${globalThis.location.search}${globalThis.location.hash}`;
-    navigate(`/login?next=${encodeURIComponent(here)}`, { replace: true });
-  }, []);
-  return null;
-};
+/**
+ * A call the Worker refused: the Access sign-in it came with is no longer
+ * good. Loading the page again goes through Access, which signs the reader in.
+ */
+const LoggedOut = () => (
+  <div className="problem" role="alert">
+    <strong>Your sign-in has expired.</strong> <a href={globalThis.location.href}>Sign in again</a>
+  </div>
+);
 
 const Problem = ({ failure }: { failure: Failure }) =>
   failure._tag === "LoggedOut" ? (
@@ -65,73 +62,12 @@ const Header = ({ children }: { children?: ReactNode }) => (
       pecia
     </Link>
     <div className="crumbs">{children}</div>
-    <button
-      type="button"
-      className="quiet"
-      onClick={() => {
-        void run(logout()).then(() => navigate("/login"));
-      }}
-    >
-      Log out
-    </button>
+    {/* Access's own route: it ends the sign-in to every application of the team. */}
+    <a className="quiet" href="/cdn-cgi/access/logout">
+      Sign out
+    </a>
   </header>
 );
-
-const Login = ({ next }: { next: string }) => {
-  const [key, setKey] = useState("");
-  const [name, setName] = useState("");
-  const [error, setError] = useState<string | undefined>();
-  const [busy, setBusy] = useState(false);
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    setBusy(true);
-    void run(login(key.trim(), name.trim() === "" ? undefined : name.trim())).then((result) => {
-      setBusy(false);
-      if (result.ok) {
-        // Only a path on this site: `next` comes from the URL.
-        navigate(next.startsWith("/") && !next.startsWith("//") ? next : "/");
-        return;
-      }
-      setError(result.failure._tag === "LoggedOut" ? "That key is not this wiki's key." : result.failure.message);
-    });
-  };
-  return (
-    <main className="login">
-      <form onSubmit={submit}>
-        <h1>pecia</h1>
-        <p>Enter the orchestrator key for this stage to read its wikis.</p>
-        <input
-          type="password"
-          autoComplete="current-password"
-          name="key"
-          aria-label="Orchestrator key"
-          placeholder="Orchestrator key"
-          value={key}
-          onChange={(event) => setKey(event.target.value)}
-          autoFocus
-        />
-        <input
-          type="text"
-          autoComplete="name"
-          name="name"
-          aria-label="Your name, shown on your comments"
-          placeholder="Your name, shown on your comments"
-          maxLength={80}
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-        />
-        <button type="submit" disabled={busy || key.trim() === ""}>
-          {busy ? "Checking…" : "Log in"}
-        </button>
-        {error !== undefined && (
-          <p className="problem" role="alert">
-            {error}
-          </p>
-        )}
-      </form>
-    </main>
-  );
-};
 
 const Workspaces = () => {
   const state = useRead("workspaces", () => listWorkspaces());
@@ -425,7 +361,6 @@ const NotAWiki = ({ name }: { name: string }) => (
 
 const view = (route: Route): ReactNode =>
   Match.valueTags(route, {
-    Login: ({ next }) => <Login next={next} />,
     Workspaces: () => (
       <>
         <Title text="Wikis" />

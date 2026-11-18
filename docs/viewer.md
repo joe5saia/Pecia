@@ -12,21 +12,19 @@ A read-only web UI for people to browse a stage's wikis. It is served by the Con
 
 Every page and image is read at one commit: the tree names it, and everything shown with it is read at that hash. A wiki that lands while someone reads it does not mix two versions on one page.
 
-## Logging in
+## Signing in
 
-The reader endpoints take the stage's orchestrator key, the same key as the orchestrator endpoints, so a staging key never reads prod. A script sends it as `Authorization: Bearer <key>`. A browser trades it once at `POST /auth/login` for the cookie `pecia_viewer` and never stores the key:
+Every stage is behind Cloudflare Access ([operations.md](operations.md), "Access"). A browser that opens a stage is sent to sign in with Google before it gets the viewer's page, and only an allowed person gets back. Access then keeps the browser signed in for seven days with its own cookie, `CF_Authorization`, which goes with each of the viewer's calls. The viewer has no login page and the Worker keeps no login state: it checks the Access JWT of each call and takes the reader's email from it, which is the name their comments go under.
 
-- The cookie is `<expires>.<name>.<signature>`: an expiry seven days out and the name the reader gave for their comments, signed with HMAC-SHA-256 under the key (`src/Login.ts`). The Worker keeps no login state.
-- It is `HttpOnly`, `Secure` and `SameSite=Strict`, so page scripts cannot read it and other sites cannot send it.
-- Changing the key ends every login. A stolen cookie stops working when it expires; logging out (`POST /auth/logout`) only clears this browser's copy.
+"Sign out" opens Access's `/cdn-cgi/access/logout`, which ends the sign-in to every application of the team. When a sign-in expires while a page is open, its next call fails and the page offers to sign in again, which reloads it through Access.
 
-This is the per-stage key decided for the MVP. Logging in people by identity (Cloudflare Access, or Sign in with an identity provider) would replace `ReaderAuth` and the login endpoint and leave the rest as it is.
+A script reads with the stage's orchestrator token, as `CF-Access-Client-Id` and `CF-Access-Client-Secret`, and comments as `orchestrator`.
 
-### Logging in during development
+### During development
 
-The dev server of `task dev:viewer` has one more route, `GET /__dev/log-me-in?returnTo=<path>` (`vite.config.ts`). It trades `PECIA_ORCHESTRATOR_KEY_STAGING`, from the dev server's own environment, for the cookie at the Worker it proxies to, gives the browser that cookie and redirects to `returnTo`, which must be a path on the same origin. An agent or a reviewer of an Amp portal is then logged in without typing the key, and the key never reaches the browser. The portal link in `.amp/services.yaml` opens this route.
+`task dev:viewer` serves the viewer and passes its API calls to a deployed Worker, by default staging. Its proxy adds staging's orchestrator token to each call, from the file `task access:token` writes (`vite.config.ts`), so the browser never signs in and never sees the token. Pages show "Could not load this" until that file exists; run `task access:token`, then restart the server. Comments written through it go under `orchestrator`.
 
-The route exists only in `vite dev`: `vite build` leaves it out, so no deployed stage has it. It only ever uses staging's key, so it fails against prod. Whoever can open the dev server can read staging's wikis through it; an Amp portal is limited to the people who can view its thread unless someone makes it public.
+Whoever can open the dev server can read staging's wikis through it; an Amp portal is limited to the people who can view its thread unless someone makes it public.
 
 ## API
 
@@ -36,8 +34,6 @@ The route exists only in `vite dev`: `vite build` leaves it out, so no deployed 
 | `GET /workspaces/:ws/tree?ref=` | `{ "workspace", "commit", "files": [{ "path", "sha" }], "truncated" }` |
 | `GET /workspaces/:ws/file?ref=&path=` | The file's bytes, with a content type from its name |
 | `GET /workspaces/:ws/history?limit=` | Main's commits, newest first, along first parents |
-| `POST /auth/login` | `{ "expiresAt" }` and the cookie, for `{ "key", "name"? }`; the name signs the reader's comments |
-| `POST /auth/logout` | 204, and the cookie cleared |
 
 `ref` is `main` (the default) or a full commit hash. A read of a hash is cached by the browser for good; a read of `main` is checked again each time. A file is served with `Content-Security-Policy: sandbox`, so an SVG or HTML file an agent wrote cannot run script when opened on its own.
 

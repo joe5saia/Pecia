@@ -12,10 +12,10 @@ The read-only web UI, served by the Control Worker as static assets. Its design 
 - Comments (`Comments.tsx`) find passages through the `data-src-start` and `data-src-end` attributes that `sourceRanges` in `Markdown.tsx` puts on every element. A component override that drops the props it is given drops them too; `heading` passes them on.
 - Pages are written by agents. In `Markdown.tsx` the sanitizer runs before every other rehype plugin; a plugin moved in front of it sees unsanitized HTML. Ids from a page's own HTML come out prefixed `user-content-`, which `scrollToAnchor` allows for.
 - A new API path prefix has to be added in two places or the viewer's `index.html` is served instead: `runWorkerFirst` in `packages/control-worker/src/worker.ts` and the proxy list in `vite.config.ts`. A new viewer route must not start with one of those prefixes.
-- The development server shows staging's real wikis, not fixtures. `/__dev/log-me-in` exists only in `vite dev` and uses staging's key from the server's environment.
+- The development server shows staging's real wikis, not fixtures. Its proxy sends staging's orchestrator Access token from the file `task access:token` writes, read once when the server starts: restart it after writing the file.
 
 ## Debugging live
 
 - **In an orb.** `amp orb services ensure` prints the portal URL; `amp orb service logs viewer` has Vite's output, including proxy errors when staging does not answer.
-- **In the browser.** The network panel shows each read. A 401 sends the page to `/login`: the cookie `pecia_viewer` has expired or the stage's key changed. The cookie is `HttpOnly`, so it is visible in the browser's storage panel and not to scripts.
+- **In the browser.** The network panel shows each read. A 401, or a redirect to `saiaai.cloudflareaccess.com`, means the Access sign-in has expired: the page offers to sign in again, which reloads it. Access's cookie is `CF_Authorization`.
 - **On a deployed stage.** The assets are what `task build:viewer` wrote to `dist` at deploy time. `task smoke` checks that `/` serves the page. A page that loads but shows "Could not load this" is an API failure: look at the Worker's logs (`packages/control-worker/AGENTS.md`).
