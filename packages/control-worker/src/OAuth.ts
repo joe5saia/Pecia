@@ -61,6 +61,8 @@ export class OAuth extends Context.Service<
     /** The provider's own endpoints: its metadata, and the token endpoint with revocation. */
     readonly serve: (request: Request) => Promise<Response>;
     readonly verify: (token: string) => Promise<ValidatedAccessToken<GrantProps> | null>;
+    /** Whether the grant exists: one KV read of the library's record of it. */
+    readonly grantExists: (principal: PrincipalId, grantId: GrantId) => Promise<boolean>;
     /** The library's error classes, to tell its refusals from a bug. */
     readonly errors: Pick<typeof Provider, "AuthorizationError" | "CimdFetchError">;
   }
@@ -91,6 +93,9 @@ export const make = Effect.fn("OAuth.make")(function* (options: {
     helpers: server.getOAuthApi(env),
     serve: (request) => server.fetch(request, env, options.ctx),
     verify: (token) => server.validateToken<GrantProps>(resource, token, env),
+    // The library keeps a grant at `grant:<userId>:<grantId>` and has no call that reads one. A
+    // change of that key refuses git, never allows it, and the revocation scenario fails.
+    grantExists: async (principal, grantId) => (await options.kv.get(`grant:${principal}:${grantId}`)) !== null,
     errors: { AuthorizationError: provider.AuthorizationError, CimdFetchError: provider.CimdFetchError },
   };
 });
@@ -110,12 +115,11 @@ export const grantOf = (token: Redacted.Redacted): GrantId => GrantId.make(Redac
 
 /** Whether the principal still holds the grant: a revoked grant stops within KV's consistency window. */
 export const holdsGrant = Effect.fn("OAuth.holdsGrant")(function* (principal: PrincipalId, grantId: GrantId) {
-  const { helpers } = yield* OAuth;
-  const grants = yield* Effect.tryPromise({
-    try: () => helpers.listUserGrants(principal),
-    catch: () => new Unreachable({ message: "the grants could not be read" }),
+  const { grantExists } = yield* OAuth;
+  return yield* Effect.tryPromise({
+    try: () => grantExists(principal, grantId),
+    catch: () => new Unreachable({ message: "the grant could not be read" }),
   });
-  return grants.items.some((grant) => grant.id === grantId);
 });
 
 /** The request with the stage's origin as its URL, as the provider checks paths against its issuer. */

@@ -8,7 +8,7 @@ Each stage serves an MCP server at `<stage URL>/mcp`. Agents use its tools to ma
 - Tool input and output schemas come from `McpTools` in `packages/wiki-api/src/Mcp.ts`, the same Effect Schema contract as the HTTP API. Every tool has a title, annotations (`openWorldHint: false`), a strict input schema, and an output schema.
 - The server's instructions and the skill it serves (`skill://pecia-wiki/SKILL.md`) are in `packages/control-worker/src/mcp/Instructions.ts`. A scenario checks that every tool they name is in `tools/list`.
 - A failed call is an `isError` result: `{ code, message, retryable, recovery: { action, instructions }, reference }`, where `reference` is `null` or the ID that the call's `mcp.tool` log entry also has, from `toolFailureOf` in `Mcp.ts`. `Unavailable` (Artifacts or the workspace's Durable Object) is retryable for a read. For a write it means the outcome is unknown, with `read_again`.
-- Lists are paged with an opaque `cursor` and a `next`. A page stops adding items once they pass 64 KB of UTF-8 JSON, but always holds at least one item, so one very large thread can make a page larger.
+- Lists are paged with an opaque `cursor` and a `next`. A cursor names where the last page ended, by sort key, not by position, so an item added, resolved or removed before it moves nothing: the next page starts right after the last item seen. A page stops adding items once they pass 64 KB of UTF-8 JSON, but always holds at least one item, so one very large thread can make a page larger.
 
 ## Tools
 

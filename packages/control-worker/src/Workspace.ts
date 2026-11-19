@@ -667,10 +667,12 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
       yield* sql.exec("DELETE FROM session_tokens WHERE session_id = ?", session.session_id);
       // A wiki:git token stops at once; the main read tokens handed out for git are revoked by ID.
       yield* sql.exec("DELETE FROM git_tokens WHERE session_id = ?", session.session_id);
+      // One that expired a minute ago or more needs no call: Artifacts no longer accepts it.
       const mainTokens = yield* select(
         TokenIdRow,
-        "SELECT token_id FROM main_read_tokens WHERE session_id = ?",
+        "SELECT token_id FROM main_read_tokens WHERE session_id = ? AND expires_at > ?",
         session.session_id,
+        (yield* Clock.currentTimeMillis) - 60_000,
       );
       yield* Effect.forEach(mainTokens, (row) => repos.revokeToken(base.name, row.token_id), { discard: true });
       yield* sql.exec("DELETE FROM main_read_tokens WHERE session_id = ?", session.session_id);

@@ -73,7 +73,7 @@ const specs: Record<
   },
   list_workspaces: {
     title: "List workspaces",
-    description: "Workspaces, newest update first, 50 a page.",
+    description: "Workspaces by name, 50 a page.",
     write: false,
     destructive: false,
     idempotent: true,
@@ -228,13 +228,42 @@ class InvalidCursor extends Data.TaggedError("InvalidCursor")<{}> {
   }
 }
 
-/** Every page stops at its item limit or at 64 KB of JSON, and holds at least one item, so a cursor always advances (BO-1, BO-2). */
+/** Every page stops at its item limit or at 64 KB of UTF-8 JSON, and holds at least one item, so a cursor always advances (BO-1, BO-2). */
 const utf8 = new TextEncoder();
 
-const paged = <A>(items: ReadonlyArray<A>, cursor: string | undefined, limit: number) => {
-  const start = cursor === undefined ? 0 : Number(cursor);
-  if (!Number.isSafeInteger(start) || start < 0 || (start > 0 && start >= items.length))
-    return Effect.fail(new InvalidCursor());
+type SortKey = ReadonlyArray<string>;
+
+/** Orders two sort keys part by part, by code unit, as every list is sorted for paging. */
+const compareKeys = (a: SortKey, b: SortKey): number => {
+  for (const [index, part] of a.entries()) {
+    const other = b[index] ?? "";
+    if (part !== other) return part < other ? -1 : 1;
+  }
+  return a.length - b.length;
+};
+
+const decodeKey = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(Schema.String)));
+
+/** A cursor names the sort key of the last item a page held, so a page starts after it whatever changed before it. */
+const cursorOf = (key: SortKey): string =>
+  utf8.encode(JSON.stringify(key)).toBase64({ alphabet: "base64url", omitPadding: true });
+
+const keyOfCursor = (cursor: string): SortKey | undefined => {
+  try {
+    const decoded = decodeKey(new TextDecoder().decode(Uint8Array.fromBase64(cursor, { alphabet: "base64url" })));
+    return decoded._tag === "Some" ? decoded.value : undefined;
+  } catch {
+    // Not base64url: a cursor no page answered.
+    return undefined;
+  }
+};
+
+const paged = <A>(all: ReadonlyArray<A>, cursor: string | undefined, limit: number, keyOf: (item: A) => SortKey) => {
+  const items = all.toSorted((a, b) => compareKeys(keyOf(a), keyOf(b)));
+  const after = cursor === undefined ? undefined : keyOfCursor(cursor);
+  if (cursor !== undefined && after === undefined) return Effect.fail(new InvalidCursor());
+  const found = after === undefined ? 0 : items.findIndex((item) => compareKeys(keyOf(item), after) > 0);
+  const start = found === -1 ? items.length : found;
   const page: A[] = [];
   let bytes = 0;
   for (const item of items.slice(start, start + limit)) {
@@ -244,7 +273,12 @@ const paged = <A>(items: ReadonlyArray<A>, cursor: string | undefined, limit: nu
     page.push(item);
   }
   const end = start + page.length;
-  return Effect.succeed({ items: page, remaining: items.length - end, next: end < items.length ? String(end) : null });
+  const last = page.at(-1);
+  return Effect.succeed({
+    items: page,
+    remaining: items.length - end,
+    next: end < items.length && last !== undefined ? cursorOf(keyOf(last)) : null,
+  });
 };
 
 /** The first `length` code points of `text`, and whether that cut anything. */
@@ -374,11 +408,13 @@ const HandlersLive = Tools.toLayer(
       list_workspaces: handler("list_workspaces", ({ cursor }) =>
         Effect.flatMap(
           Effect.flatMap(Readers, (reader) => reader.listWorkspaces()),
-          (all) => paged(all, cursor, 50),
+          (all) => paged(all, cursor, 50, (workspace) => [workspace.name]),
         ),
       ),
       list_sessions: handler("list_sessions", ({ workspace, cursor }) =>
-        Effect.flatMap(workspaces.get(workspace).listSessions(workspace), (all) => paged(all, cursor, 50)),
+        Effect.flatMap(workspaces.get(workspace).listSessions(workspace), (all) =>
+          paged(all, cursor, 50, (session) => [session.createdAt, session.sessionId]),
+        ),
       ),
       get_session: handler("get_session", ({ sessionId }) =>
         Effect.gen(function* () {
@@ -396,6 +432,7 @@ const HandlersLive = Tools.toLayer(
             threads.map((thread) => summaryOf(thread)),
             cursor,
             25,
+            (thread) => [thread.path, thread.id],
           );
         }),
       ),
@@ -404,7 +441,7 @@ const HandlersLive = Tools.toLayer(
           const threads = yield* workspaces.get(workspace).listThreads(workspace, { state: "all" });
           const thread = threads.find((candidate) => candidate.id === threadId);
           if (thread === undefined) return yield* Effect.fail(notFoundThread(threadId));
-          const comments = yield* paged(thread.comments, cursor, 20);
+          const comments = yield* paged(thread.comments, cursor, 20, (comment) => [comment.createdAt, comment.id]);
           return { ...thread, comments: comments.items, remaining: comments.remaining, next: comments.next };
         }),
       ),

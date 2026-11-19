@@ -33,7 +33,7 @@ export const PrincipalId = Schema.String.pipe(Schema.brand("PrincipalId"));
 export type PrincipalId = typeof PrincipalId.Type;
 
 /** An opaque cursor a list tool answered as `next`. */
-export const Cursor = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(200));
+export const Cursor = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(4096));
 
 /** The executor that may run a session's git: an issuer of the trust table and the subject it names, such as an Amp thread ID. */
 export const WorkloadBinding = Schema.Struct({

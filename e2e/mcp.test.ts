@@ -411,6 +411,34 @@ layer(ServerLive("mcp"), { excludeTestServices: true })("mcp", (it) => {
       }),
   );
 
+  it.effect("revoking a sign-in stops its sessions' git at once, while the session itself stays", () =>
+    Effect.gen(function* () {
+      const server = yield* Server;
+      const { client, memory } = yield* signIn({ write: true });
+      yield* call(client, "create_workspace", { name: "mcp-revoke" });
+      const thread = "T-e2e-revoke";
+      const session = yield* startBound(client, "mcp-revoke", thread, "revoke-1");
+      const sandbox = yield* openMcpSandbox(
+        session.setup,
+        yield* server.amp.idToken({ threadId: thread, audience: server.url }),
+      );
+      expect((yield* sandbox.git("fetch", "upstream")).exitCode).toBe(0);
+
+      // The client signs out the RFC 7009 way: revoking its refresh token revokes the grant.
+      const revoked = yield* tokenRequest({
+        token: memory.tokens()?.refresh_token ?? "",
+        token_type_hint: "refresh_token",
+        client_id: "https://client.pecia-e2e.dev/client.json",
+      });
+      expect(revoked.status).toBe(200);
+
+      const after = yield* sandbox.git("fetch", "upstream");
+      expect(after.exitCode).not.toBe(0);
+      expect(after.stderr).toContain("the session's grant has been revoked");
+      expect(yield* server.artifacts.exists(`mcp-revoke--${session.sessionId}`)).toBe(true);
+    }),
+  );
+
   it.effect("the token exchange refuses every identity token but the bound thread's, of this stage, from Amp", () =>
     Effect.gen(function* () {
       const server = yield* Server;
@@ -666,6 +694,57 @@ layer(ServerLive("mcp"), { excludeTestServices: true })("mcp", (it) => {
       expect(yield* Fiber.join(replying)).toMatchObject({ isError: true, body: { code: "Conflict" } });
       const thread = yield* call(client, "get_thread", { workspace: "mcp-race", threadId });
       expect(thread.structured).toMatchObject({ revision: 1, state: "resolved" });
+    }),
+  );
+
+  it.effect("a page starts after the last item seen, even when an item before it left the list", () =>
+    Effect.gen(function* () {
+      const { client } = yield* signIn({ write: true });
+      yield* call(client, "create_workspace", { name: "mcp-pages" });
+      const session = yield* startBound(client, "mcp-pages", "T-e2e-pages", "pages");
+      const created = yield* Effect.forEach(
+        Array.from({ length: 26 }, (_, index) => index),
+        (index) =>
+          call(client, "create_thread", {
+            sessionId: session.sessionId,
+            path: "README.md",
+            body: `Thread ${index}`,
+            idempotencyKey: `pages-${index}`,
+          }),
+      );
+      const ids = created.map(
+        (thread) => Schema.decodeUnknownSync(Schema.Struct({ id: Schema.String }))(thread.structured).id,
+      );
+      const Listed = Schema.Struct({
+        items: Schema.Array(Schema.Struct({ id: Schema.String, revision: Schema.Number })),
+        remaining: Schema.Number,
+        next: Schema.NullOr(Schema.String),
+      });
+      const first = Schema.decodeUnknownSync(Listed)(
+        (yield* call(client, "list_threads", { workspace: "mcp-pages" })).structured,
+      );
+      expect([first.items.length, first.remaining]).toEqual([25, 1]);
+
+      // One thread of the first page is resolved, so it leaves the open list: an offset would skip the 26th.
+      const gone = first.items.slice(0, 1);
+      yield* Effect.forEach(gone, (thread) =>
+        call(client, "set_thread_state", {
+          sessionId: session.sessionId,
+          threadId: thread.id,
+          expectedRevision: thread.revision,
+          state: "resolved",
+        }),
+      );
+      const second = Schema.decodeUnknownSync(Listed)(
+        (yield* call(client, "list_threads", { workspace: "mcp-pages", cursor: first.next ?? "" })).structured,
+      );
+      const seen = [...first.items, ...second.items].map((thread) => thread.id);
+      expect(seen.toSorted()).toEqual(ids.toSorted());
+      expect(second.next).toBeNull();
+      expect(yield* call(client, "list_threads", { workspace: "mcp-pages", cursor: "not-a-cursor" })).toMatchObject({
+        isError: true,
+        body: { code: "InvalidCursor" },
+      });
     }),
   );
 
