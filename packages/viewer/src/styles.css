@@ -208,14 +208,16 @@ code {
   background: color-mix(in srgb, var(--danger) 8%, transparent);
 }
 
-/* The wiki: pages | page | outline */
+/* The wiki: pages | page | outline, whose width the reader drags (Resizer in App.tsx) */
 
 .wiki {
   display: grid;
-  grid-template-columns: 270px minmax(0, 1fr) 320px;
+  grid-template-columns: 270px minmax(0, 1fr) auto;
   align-items: start;
 }
 .sidebar {
+  grid-column: 1;
+  grid-row: 1;
   position: sticky;
   top: 52px;
   height: calc(100vh - 52px);
@@ -290,16 +292,48 @@ code {
   font-size: 12.5px;
 }
 .page {
+  grid-column: 2;
+  grid-row: 1;
   min-width: 0;
   padding: 32px 48px 96px;
 }
+/* The width is set on the element; the limits match App.tsx's, the page keeping 270px + 480px. */
 .outline {
+  grid-column: 3;
+  grid-row: 1;
+  min-width: 260px;
+  max-width: max(260px, calc(100vw - 750px));
   position: sticky;
   top: 52px;
   max-height: calc(100vh - 52px);
   overflow: auto;
-  padding: 32px 16px 32px 0;
+  padding: 32px 16px 32px 16px;
   font-size: 13px;
+}
+.resizer {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: start;
+  z-index: 1;
+  position: sticky;
+  top: 52px;
+  width: 9px;
+  height: calc(100vh - 52px);
+  margin-left: -4px;
+  cursor: col-resize;
+  touch-action: none;
+  background: linear-gradient(var(--border), var(--border)) center / 1px 100% no-repeat;
+}
+.resizer:hover,
+.resizer.dragging,
+.resizer:focus-visible {
+  outline: none;
+  background-image: linear-gradient(var(--accent), var(--accent));
+  background-size: 3px 100%;
+}
+.wiki:has(.resizer.dragging) {
+  cursor: col-resize;
+  user-select: none;
 }
 .outline h2 {
   margin: 0 0 8px;
@@ -345,6 +379,7 @@ code {
 }
 .comments-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -358,6 +393,7 @@ code {
   gap: 2px;
 }
 .comments-panel .tabs button {
+  white-space: nowrap;
   padding: 2px 8px;
   font-size: 12px;
   background: none;
@@ -409,6 +445,11 @@ code {
   font-size: 12px;
   font-style: italic;
 }
+/* What people and agents write may hold long URLs and unbroken tokens: they break anywhere rather than widen the column. */
+.draft,
+.threads {
+  overflow-wrap: anywhere;
+}
 .draft {
   margin-bottom: 12px;
   padding: 10px;
@@ -420,6 +461,8 @@ code {
   gap: 6px;
 }
 .composer textarea {
+  width: 100%;
+  min-width: 0;
   font: inherit;
   font-size: 13px;
   resize: vertical;
@@ -482,6 +525,7 @@ code {
 }
 .thread .who {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 6px;
   font-size: 12px;
@@ -538,9 +582,17 @@ code {
   }
   .outline {
     grid-column: 2;
+    grid-row: 2;
+    /* Under the page the column takes the page's width, whatever width the reader dragged it to. */
+    width: auto !important;
+    min-width: 0;
+    max-width: none;
     position: static;
     max-height: none;
     padding: 0 48px 48px;
+  }
+  .resizer {
+    display: none;
   }
   .outline > h2,
   .outline > ul {

@@ -133,4 +133,86 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
       expect(page.url()).toBe(`${server.url}/w/noreadme?at=${first}`);
     }),
   );
+
+  it.effect("a person reads long comments wrapped inside the comments column and drags it wider, and it stays so", () =>
+    Effect.gen(function* () {
+      const server = yield* Server;
+      yield* createWorkspace("wrapping");
+      const agent = yield* openSandbox("wrapping");
+      const token = "pecia-git-credential-".repeat(8);
+      yield* agent.commit("long.md", `# Long\n\nThe helper is \`${token}\`, and nothing else.\n`);
+      expect((yield* agent.land).exitCode).toBe(0);
+      const as = yield* server.access.person("joe5saia@gmail.com");
+      const url = `https://support.example.com/en/articles/${"1117516".repeat(12)}`;
+      yield* Effect.forEach(
+        [
+          { body: `Sources: ${url} and ${"x".repeat(120)}`, anchor: { _tag: "Quote", quote: token } },
+          { body: `- a list item ${"y".repeat(90)}\n- \`McpServer.layerHttpRequestScoped\`` },
+        ],
+        (thread) => api("POST", "/workspaces/wrapping/threads", { as, body: { path: "long.md", ...thread } }),
+        { discard: true },
+      );
+
+      const page = yield* signedIn("joe5saia@gmail.com");
+      yield* step(() => page.setViewportSize({ width: 1440, height: 900 }));
+      yield* step(() => page.goto(`${server.url}/w/wrapping/long.md`));
+      const threads = page.locator(".thread");
+      yield* step(() => threads.nth(1).waitFor());
+      // Open the first thread, so its reply box shows too.
+      yield* step(() => threads.first().click());
+      yield* step(() => page.getByRole("textbox", { name: "Reply…" }).waitFor());
+
+      const column = page.getByRole("complementary", { name: "On this page and comments" });
+      const widthOf = (locator: typeof column) => step(async () => (await locator.boundingBox())?.width);
+      const width = () => widthOf(column);
+      // Every part of every comment ends inside the column, and the column does not scroll sideways.
+      // (The scenarios are type-checked without the DOM's types, so the check runs as page source.)
+      const overflowing = () =>
+        step(() =>
+          page.evaluate(`(() => {
+            const column = document.querySelector("aside.outline");
+            const right = column.getBoundingClientRect().right;
+            const sticking = [...column.querySelectorAll(".comments-panel *")].filter(
+              (child) => child.getBoundingClientRect().right > right + 0.5,
+            );
+            return { sideways: column.scrollWidth > column.clientWidth, sticking: sticking.length };
+          })()`),
+        );
+      expect(yield* overflowing()).toEqual({ sideways: false, sticking: 0 });
+      expect(yield* width()).toBe(320);
+
+      const handle = page.getByRole("separator", { name: "Resize comments" });
+      const drag = (by: number) =>
+        step(async () => {
+          const box = await handle.boundingBox();
+          if (box === null) throw new Error("the resize handle is not shown");
+          const x = box.x + box.width / 2;
+          const y = box.y + 200;
+          await page.mouse.move(x, y);
+          await page.mouse.down();
+          await page.mouse.move(x + by, y, { steps: 5 });
+          await page.mouse.up();
+        });
+      yield* drag(-200);
+      expect(yield* width()).toBe(520);
+      expect(yield* overflowing()).toEqual({ sideways: false, sticking: 0 });
+      // It stops at its narrowest, and at the room the page leaves (1440 - 270 - 480).
+      yield* drag(500);
+      expect(yield* width()).toBe(260);
+      expect(yield* overflowing()).toEqual({ sideways: false, sticking: 0 });
+      yield* drag(-600);
+      expect(yield* width()).toBe(690);
+
+      // The browser remembers the width.
+      yield* step(() => page.reload());
+      yield* step(() => threads.nth(1).waitFor());
+      expect(yield* width()).toBe(690);
+
+      // In a narrow window the comments sit under the page at its width, with no handle.
+      yield* step(() => page.setViewportSize({ width: 1000, height: 900 }));
+      expect(yield* step(() => handle.isVisible())).toBe(false);
+      expect(yield* overflowing()).toEqual({ sideways: false, sticking: 0 });
+      expect(yield* width()).toBe(yield* widthOf(page.locator("main")));
+    }),
+  );
 });

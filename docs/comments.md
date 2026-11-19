@@ -76,6 +76,6 @@ After `landed <sha>`, `wiki-land` says on stderr how many threads are open. Its 
 
 ## Viewer
 
-The right column holds the comments of the page under its outline; below 1180px it moves under the page. Selecting text shows "Comment on selection"; "Comment on page" comments on the whole page. Passages of open threads are highlighted with the CSS Custom Highlight API, and clicking one opens its thread. Threads are read again when the tab regains focus.
+The right column holds the comments of the page under its outline; below 1180px it moves under the page. Its left edge drags to resize it (260px up to 760px, leaving the page at least 480px; arrow keys on the focused edge too, a double click resets it to 320px), and the browser remembers the width in `localStorage`. Comments, quotes and URLs wrap inside it, breaking long tokens anywhere. Selecting text shows "Comment on selection"; "Comment on page" comments on the whole page. Passages of open threads are highlighted with the CSS Custom Highlight API, and clicking one opens its thread. Threads are read again when the tab regains focus.
 
 `Markdown.tsx` marks every rendered element with the source range it came from (`data-src-start`, `data-src-end`). A selection maps to the source by finding the selected text, allowing for markdown's inline marks, in the source of the element that holds it; if it is not there exactly once, the comment is on that whole element.

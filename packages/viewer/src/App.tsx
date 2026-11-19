@@ -226,6 +226,91 @@ const Title = ({ text }: { text: string }) => {
   return null;
 };
 
+// The right column's width, which the reader sets by dragging its left edge
+// and the browser remembers. The page column keeps at least `pageRoom`; the
+// stylesheet applies the same limits when the window narrows later.
+const widthKey = "pecia.commentsWidth";
+const defaultWidth = 320;
+const minWidth = 260;
+const maxWidth = 760;
+const pageRoom = 270 + 480;
+
+/** The handle is the column's left edge: moving it left widens the column. */
+const arrowSteps: Partial<Record<string, number>> = { ArrowLeft: 24, ArrowRight: -24 };
+
+const clampWidth = (width: number): number =>
+  Math.round(Math.max(minWidth, Math.min(width, maxWidth, globalThis.innerWidth - pageRoom)));
+
+const storedWidth = (): number => {
+  try {
+    const stored = Number(globalThis.localStorage.getItem(widthKey));
+    return stored > 0 ? stored : defaultWidth;
+  } catch {
+    // Storage can be blocked (a browser's privacy settings); the column then starts at its default.
+    return defaultWidth;
+  }
+};
+
+const storeWidth = (width: number) => {
+  try {
+    globalThis.localStorage.setItem(widthKey, String(width));
+  } catch {
+    // As above: without storage the width lasts until the page reloads.
+  }
+};
+
+/** The handle on the right column's left edge: drag it, or focus it and use the arrow keys; a double click resets it. */
+const Resizer = ({
+  column,
+  width,
+  onWidth,
+}: {
+  column: RefObject<HTMLElement | null>;
+  width: number;
+  onWidth: (width: number) => void;
+}) => {
+  const [dragging, setDragging] = useState(false);
+  const widthAt = (clientX: number) => clampWidth((column.current?.getBoundingClientRect().right ?? 0) - clientX);
+  return (
+    <div
+      className={`resizer ${dragging ? "dragging" : ""}`}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize comments"
+      aria-valuenow={width}
+      aria-valuemin={minWidth}
+      aria-valuemax={maxWidth}
+      tabIndex={0}
+      title="Drag to resize; double-click to reset"
+      onPointerDown={(event) => {
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        setDragging(true);
+      }}
+      onPointerMove={(event) => {
+        if (dragging) onWidth(widthAt(event.clientX));
+      }}
+      onPointerUp={(event) => {
+        if (!dragging) return;
+        setDragging(false);
+        storeWidth(widthAt(event.clientX));
+      }}
+      onDoubleClick={() => {
+        onWidth(defaultWidth);
+        storeWidth(defaultWidth);
+      }}
+      onKeyDown={(event) => {
+        const step = arrowSteps[event.key];
+        if (step === undefined) return;
+        event.preventDefault();
+        const next = clampWidth(width + step);
+        onWidth(next);
+        storeWidth(next);
+      }}
+    />
+  );
+};
+
 const Wiki = ({ ws, path, at }: { ws: WorkspaceName; path: string; at: string | undefined }) => {
   const ref = at !== undefined && isRef(at) ? at : "main";
   const state = useRead(`tree:${ws}:${ref}`, () => readTree(ws, ref));
@@ -235,6 +320,8 @@ const Wiki = ({ ws, path, at }: { ws: WorkspaceName; path: string; at: string | 
   const [source, setSource] = useState<string | undefined>();
   const onSource = useCallback((text: string | undefined) => setSource(text), []);
   const article = useRef<HTMLElement>(null);
+  const column = useRef<HTMLElement>(null);
+  const [width, setWidth] = useState(storedWidth);
   useEffect(() => setMenuOpen(false), [path]);
 
   return (
@@ -286,7 +373,8 @@ const Wiki = ({ ws, path, at }: { ws: WorkspaceName; path: string; at: string | 
                     <DirectoryView tree={tree} page={page} />
                   ))}
               </main>
-              <aside className="outline" aria-label="On this page and comments">
+              <Resizer column={column} width={width} onWidth={setWidth} />
+              <aside ref={column} className="outline" style={{ width }} aria-label="On this page and comments">
                 {outline.length > 1 && isMarkdown(current) && paths.includes(current) && (
                   <>
                     <h2>On this page</h2>
