@@ -31,7 +31,7 @@ import type { GrantId } from "../Repos.ts";
 import { Principals } from "../Principals.ts";
 import { randomHex, sha256Hex } from "../Secrets.ts";
 import { gitCredentialScript } from "./GitCredential.ts";
-import { instructions, skill } from "./Instructions.ts";
+import { instructions, setupSkill, wikiSkill } from "./Instructions.ts";
 
 // The MCP endpoint at /mcp (docs/mcp.md): protocol 2026-07-28 only, no
 // sessions, one JSON body per answer. The HTTP checks run before effect/ai
@@ -632,8 +632,9 @@ export const admit = Effect.fn("Mcp.admit")(function* (
 });
 
 const ToolsLive = McpServer.toolkit(Tools).pipe(Layer.provide(Visibility.layer), Layer.provide(HandlersLive));
-const SkillLive = McpServer.skill({ uri: "skill://pecia-wiki/SKILL.md", files: { "SKILL.md": skill } });
-const Registrations = Layer.mergeAll(ToolsLive, SkillLive);
+const WikiSkillLive = McpServer.skill({ uri: "skill://pecia-wiki/SKILL.md", files: { "SKILL.md": wikiSkill } });
+const SetupSkillLive = McpServer.skill({ uri: "skill://pecia-setup/SKILL.md", files: { "SKILL.md": setupSkill } });
+const Registrations = Layer.mergeAll(ToolsLive, WikiSkillLive, SetupSkillLive);
 
 /** The MCP endpoint as a router layer. */
 export const McpLive = McpServer.layerHttpRequestScoped({

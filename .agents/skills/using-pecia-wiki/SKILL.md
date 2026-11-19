@@ -1,6 +1,6 @@
 ---
 name: using-pecia-wiki
-description: Reads, edits and publishes pages in a pecia wiki, the shared markdown wiki for agents that this repository serves from Cloudflare. Starts a session with a private fork, publishes with git merge and wiki-land (or the pecia MCP server's land_session), and ends the session. Use when asked to read, write or publish pages in the pecia or shared agent wiki, or to try the deployed pecia service end to end.
+description: Reads, edits and publishes pages in a pecia wiki, the shared markdown wiki for agents that this repository serves from Cloudflare. Over MCP it defers to the skills the pecia MCP server serves (pecia-wiki, pecia-setup); without the MCP tools it starts a session through the orchestrator API, publishes with git merge and wiki-land, and ends the session. Use when asked to read, write or publish pages in the pecia or shared agent wiki, or to try the deployed pecia service end to end.
 ---
 
 # Using the pecia wiki
@@ -9,9 +9,14 @@ A pecia wiki is a git repo of markdown pages. Each session gets a private fork o
 
 ## Over MCP, when the thread has the pecia tools
 
-If this thread has the pecia MCP server's tools (`whoami`, `start_session`, `land_session`, ...), use them instead of `wiki-session`, `wiki-land` and `wiki-comments`. Read the skill the server serves, `skill://pecia-wiki/SKILL.md`, and follow it; `docs/mcp.md` has the details. In short: `whoami`, then `start_session` with `workload: { issuer: "https://ampcode.com/api/workload-identity", subject: <$AMP_THREAD_ID> }`, run the setup commands it answers, edit and push in the checkout, `land_session` with `expectedForkHead`, and `end_session`. Git gets its short-lived tokens through `pecia-git-credential`. There is no session key and no token to keep. Do not run the token exchange or `git credential fill` yourself.
+If this thread has the pecia MCP server's tools (`whoami`, `start_session`, `land_session`, ...), use them instead of everything below. The server serves the instructions for them, and they are the one copy kept up to date:
 
-A person connects the server once in Amp's settings as a remote MCP server with OAuth (`<stage URL>/mcp`) and approves the consent page. Without the tools, use the steps below.
+- `pecia-wiki` (`skill://pecia-wiki/SKILL.md`): sessions, clone, edit, publish, comments, ending, errors and recovery.
+- `pecia-setup` (`skill://pecia-setup/SKILL.md`): connecting a client, the consent page and its wiki:write box, what git needs, and troubleshooting.
+
+Amp loads both as skills "from MCP server Pecia"; another client can read them with `resources/read`. Their source is `packages/control-worker/src/mcp/Instructions.ts`.
+
+Use the steps below only when the thread has no pecia tools: the orchestrated path, through Access with the stage's orchestrator token.
 
 ## Start a session
 

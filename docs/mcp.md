@@ -6,7 +6,7 @@ Each stage serves an MCP server at `<stage URL>/mcp`. Agents use its tools to ma
 
 - Protocol revision `2026-07-28` only, over Streamable HTTP, with no server-side MCP session. A client that asks for an older revision is refused. A default Codex sends `2025-06-18`, so Codex needs `mcp_2026_07_28 = true` under `[features]` in `config.toml`.
 - Tool input and output schemas come from `McpTools` in `packages/wiki-api/src/Mcp.ts`, the same Effect Schema contract as the HTTP API. Every tool has a title, annotations (`openWorldHint: false`), a strict input schema, and an output schema.
-- The server's instructions and the skill it serves (`skill://pecia-wiki/SKILL.md`) are in `packages/control-worker/src/mcp/Instructions.ts`. A scenario checks that every tool they name is in `tools/list`.
+- The server's instructions and the two skills it serves are in `packages/control-worker/src/mcp/Instructions.ts`: `skill://pecia-wiki/SKILL.md` for working in a wiki (sessions, git, landing, comments, errors and recovery) and `skill://pecia-setup/SKILL.md` for setup (connecting a client, consent and wiki:write, the helper, the Codex flag, troubleshooting). They are what agents read, so a change to the tools or the setup goes there first; `.agents/skills/using-pecia-wiki` points to them. A scenario checks that every tool they name is in `tools/list`.
 - A failed call is an `isError` result: `{ code, message, retryable, recovery: { action, instructions }, reference }`, where `reference` is `null` or the ID that the call's `mcp.tool` log entry also has, from `toolFailureOf` in `Mcp.ts`. `Unavailable` (Artifacts or the workspace's Durable Object) is retryable for a read. For a write it means the outcome is unknown, with `read_again`.
 - Lists are paged with an opaque `cursor` and a `next`. A cursor names where the last page ended, by sort key, not by position, so an item added, resolved or removed before it moves nothing: the next page starts right after the last item seen. A page stops adding items once they pass 64 KB of UTF-8 JSON, but always holds at least one item, so one very large thread can make a page larger.
 
@@ -48,6 +48,8 @@ No tool result ever carries a token. A session started over MCP has no session k
 The paths in `bypassedPaths` (`worker.ts`) skip Access through the `McpBypass` Access application, because MCP clients send OAuth tokens, not Access credentials. `/authorize` and the rest of the stage stay behind Access. The Worker checks those requests itself: `/mcp` checks Host and Origin, then the bearer token, the principal, and the scope; `/oauth/token` and `/git/*` check their own tokens. Every MCP and OAuth path, `/authorize` included, is rate limited to 120 requests a minute per IP (`OAuthRateLimit`).
 
 ## Setting up a client
+
+In Amp, add the URL in settings as a remote MCP server with OAuth. The served `pecia-setup` skill has the full steps for every client, and what to do when sign-in or git fails.
 
 ```sh
 # Claude Code

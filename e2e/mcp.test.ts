@@ -748,19 +748,35 @@ layer(ServerLive("mcp"), { excludeTestServices: true })("mcp", (it) => {
     }),
   );
 
-  it.effect("every tool the instructions and the served skill name is in tools/list", () =>
+  it.effect("the server serves a usage skill and a setup skill, and every tool they name is in tools/list", () =>
     Effect.gen(function* () {
       const { client } = yield* signIn({ write: true });
       const names = new Set((yield* Effect.promise(() => client.listTools())).tools.map((tool) => tool.name));
-      const skill = yield* Effect.promise(() => client.readResource({ uri: "skill://pecia-wiki/SKILL.md" }));
-      const text = [
-        client.getInstructions() ?? "",
-        ...skill.contents.map((part) => ("text" in part ? part.text : "")),
-      ].join("\n");
-      expect(text).toContain("start_session");
-      // A snake_case word is a tool's name, except the land outcome that has the same form.
+      const read = (uri: string) =>
+        Effect.map(
+          Effect.promise(() => client.readResource({ uri })),
+          (skill) => skill.contents.map((part) => ("text" in part ? part.text : "")).join(""),
+        );
+      const wiki = yield* read("skill://pecia-wiki/SKILL.md");
+      const setup = yield* read("skill://pecia-setup/SKILL.md");
+      expect(wiki).toContain("name: pecia-wiki");
+      expect(setup).toContain("name: pecia-setup");
+      // The usage skill covers the whole flow; the setup skill covers what comes before it.
+      for (const tool of ["start_session", "land_session", "end_session", "reply_thread", "move_threads"])
+        expect(wiki).toContain(tool);
+      for (const step of ["wiki:write", "mcp_2026_07_28", "SHA-256", "amp orb id-token"]) expect(setup).toContain(step);
+      const text = [client.getInstructions() ?? "", wiki, setup].join("\n");
+      // A snake_case word is a tool's name, except outcomes, recovery actions and an OAuth error of the same form.
       const named = new Set(text.match(/\b[a-z]+(?:_[a-z]+)+\b/g) ?? []);
-      named.delete("nothing_to_land");
+      for (const word of [
+        "nothing_to_land",
+        "fix_input",
+        "read_again",
+        "start_new_session",
+        "insufficient_scope",
+        "mcp_servers",
+      ])
+        named.delete(word);
       expect([...named].filter((name) => !names.has(name))).toEqual([]);
     }),
   );
