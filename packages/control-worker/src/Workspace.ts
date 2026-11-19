@@ -19,6 +19,7 @@ import {
   type ReplyRequest,
   type SetThreadStateRequest,
   type Thread,
+  Thread as ThreadSchema,
   type ThreadFilter,
   ThreadId,
   type ThreadList,
@@ -36,9 +37,22 @@ import {
   SessionNotActive,
   SessionState,
   timestampOf,
+  type Timestamp,
   type TokenResponse,
   Unauthorized,
   WorkspaceName,
+  Conflict,
+  NotYourSession,
+  IdempotencyKeyReuse,
+  SessionStarted as SessionStartedSchema,
+  tokenSecret,
+  type SessionStarted,
+  type SessionDetail,
+  type WorkloadBinding,
+  type GitRemote,
+  workspaceOfSession,
+  type IdempotencyKey,
+  PrincipalId,
 } from "@pecia/wiki-api";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -50,7 +64,17 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Git from "./Git.ts";
-import { ForkName, forkOf, type RepoName, Repos, type RepoToken, type TokenScope } from "./Repos.ts";
+import {
+  ForkName,
+  forkOf,
+  GrantId,
+  type RepoName,
+  Repos,
+  type RepoToken,
+  TokenId,
+  type TokenHash,
+  type TokenScope,
+} from "./Repos.ts";
 import { randomHex, sameText, sha256Hex } from "./Secrets.ts";
 import { schema, Sql, type SqlValue } from "./Sql.ts";
 
@@ -67,7 +91,36 @@ export const WorkspaceErrors = [
   AnchorMismatch,
   NotYourComment,
   ArtifactsUnavailable,
+  Conflict,
+  NotYourSession,
+  IdempotencyKeyReuse,
 ] as const;
+
+/**
+ * A non-idempotent MCP write's key (docs/mcp.md, "Writes"): the same key with
+ * the same input answers the kept result, with other input `IdempotencyKeyReuse`.
+ */
+export interface Once {
+  readonly principal: PrincipalId;
+  readonly tool: string;
+  readonly key: IdempotencyKey;
+  readonly inputHash: string;
+}
+
+/** Who starts a session over MCP, and which executor may run its git. */
+export interface StartBinding {
+  readonly principal: PrincipalId;
+  readonly grantId: GrantId;
+  readonly workload: WorkloadBinding | null;
+}
+
+/** An Artifacts token for one remote of a session, handed to git by `pecia-git-credential`. */
+export interface GitCredential {
+  readonly password: string;
+  readonly expiresAt: Timestamp;
+  readonly principal: PrincipalId;
+  readonly grantId: GrantId;
+}
 
 export interface Workspace {
   /** Create the main repo and its first commit. Safe to repeat. */
@@ -84,6 +137,38 @@ export interface Workspace {
   readonly endSession: (
     sessionId: SessionId,
   ) => Effect.Effect<EndSessionResponse, NotFound | SessionNotActive | ArtifactsUnavailable>;
+  /** End a session over MCP, as the principal that started it. A repeat answers the state it ended in. */
+  readonly endSessionAs: (
+    sessionId: SessionId,
+    principal: PrincipalId,
+  ) => Effect.Effect<EndSessionResponse, NotFound | NotYourSession | ArtifactsUnavailable>;
+  /** A session started over MCP for `binding`'s principal, once per idempotency key. */
+  readonly startSession: (
+    name: WorkspaceName,
+    request: CreateSessionRequest,
+    binding: StartBinding,
+    once: Once,
+  ) => Effect.Effect<SessionStarted, NotFound | IdempotencyKeyReuse | ArtifactsUnavailable>;
+  readonly getSession: (sessionId: SessionId) => Effect.Effect<SessionDetail, NotFound | ArtifactsUnavailable>;
+  /**
+   * Keep the hash of a wiki:git token the token exchange issues for an active
+   * session bound to this workload (docs/mcp.md, "The token exchange").
+   * Answers the grant the session was started with, for the Worker to check.
+   */
+  readonly issueGitToken: (
+    sessionId: SessionId,
+    workload: WorkloadBinding & { readonly principal: PrincipalId },
+    tokenHash: TokenHash,
+    expiresAtMs: number,
+  ) => Effect.Effect<{ readonly grantId: GrantId }, NotFound | SessionNotActive | NotYourSession>;
+  /** An Artifacts token for one remote of the session, for a wiki:git token. Counts as activity. */
+  readonly gitCredential: (
+    sessionId: SessionId,
+    tokenHash: TokenHash,
+    remote: GitRemote,
+  ) => Effect.Effect<GitCredential, Unauthorized | NotFound | SessionNotActive | ArtifactsUnavailable>;
+  /** The principal and grant a session started over MCP is bound to, or `undefined` for one an orchestrator started. */
+  readonly bindingOf: (sessionId: SessionId) => Effect.Effect<StartBinding | undefined, NotFound>;
   /**
    * The session's tokens: the ones handed out before until shortly before they
    * expire, then new ones. A sandbox asks on every git operation.
@@ -96,6 +181,15 @@ export interface Workspace {
     sessionId: SessionId,
     sessionKey: string,
   ) => Effect.Effect<LandResponse, Unauthorized | NotFound | SessionNotActive | ForkTooLarge | ArtifactsUnavailable>;
+  /** Land over MCP, as the principal that started the session, only if the fork's head is `expectedForkHead`. */
+  readonly landAs: (
+    sessionId: SessionId,
+    principal: PrincipalId,
+    expectedForkHead: CommitSha,
+  ) => Effect.Effect<
+    LandResponse,
+    NotFound | SessionNotActive | NotYourSession | ForkTooLarge | Conflict | ArtifactsUnavailable
+  >;
   /**
    * End every session idle longer than the timeout, and delete or park every
    * closed fork whose settle period is over. The Durable Object's alarm calls it.
@@ -110,24 +204,34 @@ export interface Workspace {
     sessionId: SessionId,
     sessionKey: string,
   ) => Effect.Effect<Author, Unauthorized | NotFound | SessionNotActive>;
+  /** The agent of an active session started over MCP, for the principal that started it. Counts as activity. */
+  readonly sessionAuthorAs: (
+    sessionId: SessionId,
+    principal: PrincipalId,
+  ) => Effect.Effect<Author, NotFound | SessionNotActive | NotYourSession>;
   readonly listThreads: (name: WorkspaceName, filter: ThreadFilter) => Effect.Effect<ThreadList, NotFound>;
   readonly createThread: (
     name: WorkspaceName,
     author: Author,
     request: CreateThreadRequest,
-  ) => Effect.Effect<Thread, NotFound | AnchorMismatch | ArtifactsUnavailable>;
+    once?: Once,
+  ) => Effect.Effect<Thread, NotFound | AnchorMismatch | IdempotencyKeyReuse | ArtifactsUnavailable>;
+  /** Over MCP, only if the thread is at `expectedRevision`. */
   readonly reply: (
     name: WorkspaceName,
     author: Author,
     threadId: ThreadId,
     request: ReplyRequest,
-  ) => Effect.Effect<Thread, NotFound | AnchorMismatch | ArtifactsUnavailable>;
+    expectedRevision?: number,
+    once?: Once,
+  ) => Effect.Effect<Thread, NotFound | AnchorMismatch | Conflict | IdempotencyKeyReuse | ArtifactsUnavailable>;
   readonly setThreadState: (
     name: WorkspaceName,
     author: Author,
     threadId: ThreadId,
     request: SetThreadStateRequest,
-  ) => Effect.Effect<Thread, NotFound>;
+    expectedRevision?: number,
+  ) => Effect.Effect<Thread, NotFound | Conflict>;
   /** Change a comment's text. Only the person who wrote it may; an agent never edits. */
   readonly editComment: (
     name: WorkspaceName,
@@ -140,12 +244,17 @@ export interface Workspace {
     name: WorkspaceName,
     author: Author,
     commentId: CommentId,
-  ) => Effect.Effect<Thread, NotFound | NotYourComment>;
-  /** Point every thread on the page `from` at the page `to`, after a page was renamed. */
+    expectedRevision?: number,
+  ) => Effect.Effect<Thread, NotFound | NotYourComment | Conflict>;
+  /**
+   * Point every thread on the page `from` at the page `to`, after a page was
+   * renamed. Over MCP, only if the page's threads are exactly `expectedThreads`.
+   */
   readonly moveThreads: (
     name: WorkspaceName,
     request: MoveThreadsRequest,
-  ) => Effect.Effect<MoveThreadsResponse, NotFound>;
+    expectedThreads?: ReadonlyArray<{ readonly id: ThreadId; readonly revision: number }>,
+  ) => Effect.Effect<MoveThreadsResponse & { readonly threadIds: ReadonlyArray<ThreadId> }, NotFound | Conflict>;
 }
 
 export class WorkspaceConfig extends Context.Service<
@@ -171,6 +280,8 @@ export class WorkspaceConfig extends Context.Service<
      * hour), so none expires mid-push.
      */
     readonly sandboxTokenTtlSeconds: number;
+    /** Artifacts tokens handed to `pecia-git-credential` live this long (`PECIA_GIT_TOKEN_TTL`). */
+    readonly gitTokenTtlSeconds: number;
     /** Ask for `sweep` to run at this time, replacing any earlier request; `undefined` cancels it. */
     readonly wakeAt: (timeMs: number | undefined) => Effect.Effect<void>;
   }
@@ -211,11 +322,35 @@ type TokensRow = typeof TokensRow.Type;
 
 const NextRow = Schema.Struct({ next: Schema.NullOr(Schema.Number) });
 
+const BindingRow = Schema.Struct({
+  session_id: SessionId,
+  principal: PrincipalId,
+  grant_id: GrantId,
+  issuer: Schema.NullOr(Schema.String),
+  subject: Schema.NullOr(Schema.String),
+});
+type BindingRow = typeof BindingRow.Type;
+
+const GitTokenRow = Schema.Struct({ session_id: SessionId, expires_at: Schema.Number });
+const TokenIdRow = Schema.Struct({ token_id: TokenId });
+const OnceRow = Schema.Struct({ input_hash: Schema.String, result: Schema.String });
+const RevisionRow = Schema.Struct({ thread_id: ThreadId, path: FilePath, revision: Schema.Number });
+
+/** How long an idempotency key keeps its answer. */
+const onceTtlMs = 24 * 60 * 60 * 1000;
+
+const bindingOf = (row: BindingRow): StartBinding => ({
+  principal: row.principal,
+  grantId: row.grant_id,
+  workload: row.issuer === null || row.subject === null ? null : { issuer: row.issuer, subject: row.subject },
+});
+
 const ThreadRow = Schema.Struct({
   thread_id: ThreadId,
   path: FilePath,
   anchor: Schema.NullOr(Schema.fromJsonString(AnchorSchema)),
   state: ThreadState,
+  revision: Schema.Number,
   created_at: Schema.Number,
   resolved_at: Schema.NullOr(Schema.Number),
   resolved_by: Schema.NullOr(Schema.fromJsonString(Author)),
@@ -240,6 +375,7 @@ const threadOf = (row: ThreadRow, comments: ReadonlyArray<CommentRow>): Thread =
   path: row.path,
   anchor: row.anchor,
   state: row.state,
+  revision: row.revision,
   createdAt: timeOf(row.created_at),
   resolvedAt: row.resolved_at === null ? null : timeOf(row.resolved_at),
   resolvedBy: row.resolved_by,
@@ -278,6 +414,26 @@ const requireActive = (session: SessionRow): Effect.Effect<void, SessionNotActiv
   session.state === "active"
     ? Effect.void
     : Effect.fail(new SessionNotActive({ sessionId: session.session_id, state: session.state }));
+
+/** A write over MCP names the revision it read; another one fails with `Conflict`. */
+const requireRevision = (thread: Thread, expected: number | undefined): Effect.Effect<void, Conflict> =>
+  expected === undefined || thread.revision === expected
+    ? Effect.void
+    : Effect.fail(
+        new Conflict({
+          resource: "thread",
+          id: thread.id,
+          expected: String(expected),
+          actual: String(thread.revision),
+        }),
+      );
+
+/** Threads and their revisions as one comparable string. */
+const describeRevisions = (threads: ReadonlyArray<{ readonly id: string; readonly revision: number }>) =>
+  threads
+    .map((thread) => `${thread.id}@${thread.revision}`)
+    .toSorted()
+    .join(",");
 
 export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig> = Effect.gen(function* () {
   const sql = yield* Sql;
@@ -343,6 +499,73 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     return found;
   });
 
+  /** The binding of a session started over MCP, if it has one. */
+  const bindingRow = Effect.fnUntraced(function* (sessionId: SessionId) {
+    const [row] = yield* select(BindingRow, "SELECT * FROM session_bindings WHERE session_id = ?", sessionId);
+    return row;
+  });
+
+  /** The session and its workspace, for the principal that started it over MCP. */
+  const authorizeAs = Effect.fnUntraced(function* (
+    sessionId: SessionId,
+    principal: PrincipalId,
+  ): Effect.fn.Return<Found & { readonly binding: BindingRow }, NotFound | NotYourSession> {
+    const found = yield* findSession(sessionId);
+    const binding = yield* bindingRow(sessionId);
+    // A session an orchestrator started has no binding: MCP reads it but does not change it.
+    if (binding === undefined || binding.principal !== principal) return yield* new NotYourSession({ sessionId });
+    return { ...found, binding };
+  });
+
+  // Two calls with one idempotency key run one at a time, so the second finds the first's answer.
+  const onceLock = yield* Semaphore.make(1);
+
+  /**
+   * Run `write` once per idempotency key (docs/mcp.md, "Writes"). The answer is
+   * kept as JSON of `result` for a day; it is an MCP projection, so it holds no secret.
+   */
+  const withOnce = <S extends Schema.Codec<unknown, unknown>, E>(
+    once: Once | undefined,
+    result: S,
+    write: Effect.Effect<S["Type"], E>,
+  ): Effect.Effect<S["Type"], E | IdempotencyKeyReuse> => (once === undefined ? write : writeOnce(once, result, write));
+
+  /** `write` the first time `once`'s key is used; its kept answer after that, for the same input. */
+  const writeOnce = Effect.fnUntraced(
+    function* <S extends Schema.Codec<unknown, unknown>, E>(
+      once: Once,
+      result: S,
+      write: Effect.Effect<S["Type"], E>,
+    ): Effect.fn.Return<S["Type"], E | IdempotencyKeyReuse> {
+      const codec = Schema.fromJsonString(result);
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql.exec("DELETE FROM idempotency_keys WHERE created_at <= ?", now - onceTtlMs);
+      const [kept] = yield* select(
+        OnceRow,
+        "SELECT input_hash, result FROM idempotency_keys WHERE principal = ? AND tool = ? AND key = ?",
+        once.principal,
+        once.tool,
+        once.key,
+      );
+      if (kept !== undefined) {
+        if (kept.input_hash !== once.inputHash) return yield* new IdempotencyKeyReuse({ key: once.key });
+        return yield* Effect.orDie(Schema.decodeUnknownEffect(codec)(kept.result));
+      }
+      const answer = yield* write;
+      yield* sql.exec(
+        "INSERT INTO idempotency_keys (principal, tool, key, input_hash, result, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        once.principal,
+        once.tool,
+        once.key,
+        once.inputHash,
+        yield* Effect.orDie(Schema.encodeUnknownEffect(codec)(answer)),
+        now,
+      );
+      return answer;
+    },
+    (effect) => onceLock.withPermit(effect),
+  );
+
   const touch = (sessionId: SessionId): Effect.Effect<void> =>
     Effect.flatMap(Clock.currentTimeMillis, (now) =>
       sql.exec("UPDATE sessions SET last_active_at = ? WHERE session_id = ?", now, sessionId),
@@ -398,6 +621,7 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
       session: SessionRow,
       base: WorkspaceRow,
       mainHead: CommitSha,
+      expectedForkHead: CommitSha | undefined,
     ): Effect.fn.Return<Git.LandOutcome, ForkTooLarge | Git.GitError | ArtifactsUnavailable, Scope.Scope> {
       const forkToken = yield* scopedToken(session.fork_name, "read");
       const mainToken = yield* scopedToken(base.name, "write");
@@ -405,6 +629,7 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
         fork: { url: session.fork_remote, token: forkToken.token },
         main: { url: base.main_remote, token: mainToken.token },
         mainHead,
+        expectedForkHead,
         note: landNote(session),
         limits: Git.landLimits,
       });
@@ -440,6 +665,15 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     ): Effect.fn.Return<EndSessionResponse, ArtifactsUnavailable> {
       yield* repos.revokeAllTokens(session.fork_name);
       yield* sql.exec("DELETE FROM session_tokens WHERE session_id = ?", session.session_id);
+      // A wiki:git token stops at once; the main read tokens handed out for git are revoked by ID.
+      yield* sql.exec("DELETE FROM git_tokens WHERE session_id = ?", session.session_id);
+      const mainTokens = yield* select(
+        TokenIdRow,
+        "SELECT token_id FROM main_read_tokens WHERE session_id = ?",
+        session.session_id,
+      );
+      yield* Effect.forEach(mainTokens, (row) => repos.revokeToken(base.name, row.token_id), { discard: true });
+      yield* sql.exec("DELETE FROM main_read_tokens WHERE session_id = ?", session.session_id);
       const forkHead = yield* repos.head(session.fork_name);
       const state = (yield* isLanded(forkHead, base)) ? "closed" : "parked";
       yield* sql.exec(
@@ -629,49 +863,72 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     (effect) => access.withPermit(effect),
   );
 
+  /** Land an active session's fork, only if its head is `expectedForkHead` when that is given. Runs under `lock`. */
+  const landFound = Effect.fnUntraced(function* (
+    { session, base }: Found,
+    expectedForkHead: CommitSha | undefined,
+  ): Effect.fn.Return<LandResponse, SessionNotActive | ForkTooLarge | Conflict | ArtifactsUnavailable> {
+    const sessionId = session.session_id;
+    yield* requireActive(session);
+    yield* touch(sessionId);
+    const [mainHead, forkHead] = yield* Effect.all([repos.head(base.name), repos.head(session.fork_name)], {
+      concurrency: 2,
+    });
+    if (mainHead === undefined) {
+      return yield* new ArtifactsUnavailable({ message: `main repo '${base.name}' has no commits` });
+    }
+    const moved = (actual: CommitSha | undefined) =>
+      new Conflict({ resource: "fork", id: sessionId, expected: expectedForkHead ?? "", actual: actual ?? "none" });
+    if (expectedForkHead !== undefined && forkHead !== expectedForkHead) return yield* moved(forkHead);
+    const who = { workspace: base.name, sessionId, agent: session.agent, model: session.model };
+    const outcome: Git.LandOutcome =
+      forkHead === undefined || forkHead === mainHead
+        ? { _tag: "NothingToLand" }
+        : yield* Effect.tapErrorTag(publish(session, base, mainHead, expectedForkHead), "ForkTooLarge", (error) =>
+            // Worth an event of its own: it says a wiki is reaching what a Worker can land.
+            record("land.refused", { ...who, limit: error.limit, max: error.max, mainSha: mainHead, forkHead }),
+          );
+    // The agent pushed again between the head read above and the land's own read.
+    if (outcome._tag === "ForkMoved") return yield* moved(outcome.head);
+
+    if (outcome._tag === "Landed") {
+      yield* sql.exec(
+        "INSERT INTO lands (session_id, from_sha, to_sha, landed_at) VALUES (?, ?, ?, ?)",
+        sessionId,
+        mainHead,
+        outcome.sha,
+        yield* Clock.currentTimeMillis,
+      );
+    }
+    const response = Match.valueTags(outcome, {
+      Landed: ({ sha }): LandResponse => ({ status: "landed", sha }),
+      Behind: (): LandResponse => ({ status: "behind", mainSha: mainHead }),
+      NothingToLand: (): LandResponse => ({ status: "nothing_to_land" }),
+    });
+    yield* record("land", {
+      ...who,
+      status: response.status,
+      // Where main was before the call, and what the session asked to land.
+      mainSha: mainHead,
+      forkHead,
+      // How much the land fetched and held in memory, to compare with `Git.landLimits`.
+      ...("fetched" in outcome ? outcome.fetched : {}),
+    });
+    return response;
+  });
+
   const land: Workspace["land"] = Effect.fn("Workspace.land")(
     function* (sessionId: SessionId, sessionKey: string) {
-      const { session, base } = yield* authorize(sessionId, sessionKey);
-      yield* touch(sessionId);
-      const [mainHead, forkHead] = yield* Effect.all([repos.head(base.name), repos.head(session.fork_name)], {
-        concurrency: 2,
-      });
-      if (mainHead === undefined) {
-        return yield* new ArtifactsUnavailable({ message: `main repo '${base.name}' has no commits` });
-      }
-      const who = { workspace: base.name, sessionId, agent: session.agent, model: session.model };
-      const outcome: Git.LandOutcome =
-        forkHead === undefined || forkHead === mainHead
-          ? { _tag: "NothingToLand" }
-          : yield* Effect.tapErrorTag(publish(session, base, mainHead), "ForkTooLarge", (error) =>
-              // Worth an event of its own: it says a wiki is reaching what a Worker can land.
-              record("land.refused", { ...who, limit: error.limit, max: error.max, mainSha: mainHead, forkHead }),
-            );
+      const found = yield* authorize(sessionId, sessionKey);
+      // A sandbox names no head; `Conflict` comes only from a head it named.
+      return yield* Effect.catchTag(landFound(found, undefined), "Conflict", (error) => Effect.die(error));
+    },
+    (effect) => lock.withPermit(effect),
+  );
 
-      if (outcome._tag === "Landed") {
-        yield* sql.exec(
-          "INSERT INTO lands (session_id, from_sha, to_sha, landed_at) VALUES (?, ?, ?, ?)",
-          sessionId,
-          mainHead,
-          outcome.sha,
-          yield* Clock.currentTimeMillis,
-        );
-      }
-      const response = Match.valueTags(outcome, {
-        Landed: ({ sha }): LandResponse => ({ status: "landed", sha }),
-        Behind: (): LandResponse => ({ status: "behind", mainSha: mainHead }),
-        NothingToLand: (): LandResponse => ({ status: "nothing_to_land" }),
-      });
-      yield* record("land", {
-        ...who,
-        status: response.status,
-        // Where main was before the call, and what the session asked to land.
-        mainSha: mainHead,
-        forkHead,
-        // How much the land fetched and held in memory, to compare with `Git.landLimits`.
-        ...("fetched" in outcome ? outcome.fetched : {}),
-      });
-      return response;
+  const landAs: Workspace["landAs"] = Effect.fn("Workspace.landAs")(
+    function* (sessionId: SessionId, principal: PrincipalId, expectedForkHead: CommitSha) {
+      return yield* landFound(yield* authorizeAs(sessionId, principal), expectedForkHead);
     },
     (effect) => lock.withPermit(effect),
   );
@@ -713,6 +970,155 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     (effect) => lock.withPermit(effect),
   );
 
+  const endSessionAs: Workspace["endSessionAs"] = Effect.fn("Workspace.endSessionAs")(
+    function* (sessionId: SessionId, principal: PrincipalId) {
+      const { session, base } = yield* authorizeAs(sessionId, principal);
+      // A repeat answers the state the session ended in; a deleted fork was closed with nothing unlanded.
+      if (session.state !== "active") return { state: session.state === "parked" ? "parked" : "closed" } as const;
+      const result = yield* end(session, base, "closed");
+      yield* scheduleSweep();
+      return result;
+    },
+    (effect) => lock.withPermit(effect),
+  );
+
+  const startSession: Workspace["startSession"] = Effect.fn("Workspace.startSession")(function* (
+    name: WorkspaceName,
+    request: CreateSessionRequest,
+    binding: StartBinding,
+    once: Once,
+  ) {
+    return yield* withOnce(
+      once,
+      SessionStartedSchema,
+      Effect.gen(function* () {
+        // An MCP session has no session key: the one made here is dropped, so its hash matches nothing.
+        const created = yield* createSession(name, request);
+        yield* sql.exec(
+          "INSERT INTO session_bindings (session_id, principal, grant_id, issuer, subject) VALUES (?, ?, ?, ?, ?)",
+          created.sessionId,
+          binding.principal,
+          binding.grantId,
+          binding.workload?.issuer ?? null,
+          binding.workload?.subject ?? null,
+        );
+        return { sessionId: created.sessionId, forkRemote: created.forkRemote, mainRemote: created.mainRemote };
+      }),
+    );
+  });
+
+  const getSession: Workspace["getSession"] = Effect.fn("Workspace.getSession")(function* (sessionId: SessionId) {
+    const { session, base } = yield* findSession(sessionId);
+    const forkHead = session.state === "deleted" ? undefined : yield* repos.head(session.fork_name);
+    const binding = yield* bindingRow(sessionId);
+    return {
+      sessionId,
+      agent: session.agent,
+      model: session.model,
+      state: session.state,
+      createdAt: timeOf(session.created_at),
+      lastActiveAt: timeOf(session.last_active_at),
+      forkRemote: session.fork_remote,
+      mainRemote: base.main_remote,
+      forkHead: forkHead ?? null,
+      unlanded: !(yield* isLanded(forkHead, base)),
+      binding: binding === undefined ? null : { principal: binding.principal, workload: bindingOf(binding).workload },
+    };
+  });
+
+  const bindingOfSession: Workspace["bindingOf"] = Effect.fn("Workspace.bindingOf")(function* (sessionId: SessionId) {
+    yield* findSession(sessionId);
+    const row = yield* bindingRow(sessionId);
+    return row === undefined ? undefined : bindingOf(row);
+  });
+
+  const issueGitToken: Workspace["issueGitToken"] = Effect.fn("Workspace.issueGitToken")(
+    function* (
+      sessionId: SessionId,
+      workload: WorkloadBinding & { readonly principal: PrincipalId },
+      tokenHash: TokenHash,
+      expiresAtMs: number,
+    ) {
+      const { session } = yield* findSession(sessionId);
+      const binding = yield* bindingRow(sessionId);
+      if (
+        binding === undefined ||
+        binding.principal !== workload.principal ||
+        binding.issuer !== workload.issuer ||
+        binding.subject !== workload.subject
+      )
+        return yield* new NotYourSession({ sessionId });
+      yield* requireActive(session);
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql.exec("DELETE FROM git_tokens WHERE expires_at <= ?", now);
+      yield* sql.exec(
+        "INSERT INTO git_tokens (token_hash, session_id, expires_at) VALUES (?, ?, ?)",
+        tokenHash,
+        sessionId,
+        expiresAtMs,
+      );
+      yield* record("git.token_issued", {
+        workspace: workspaceOfSession(sessionId),
+        sessionId,
+        issuer: workload.issuer,
+      });
+      return { grantId: binding.grant_id };
+    },
+    // Under the same lock as `end`, so no token is issued to a session that is ending.
+    (effect) => access.withPermit(effect),
+  );
+
+  const gitCredential: Workspace["gitCredential"] = Effect.fn("Workspace.gitCredential")(
+    function* (sessionId: SessionId, tokenHash: TokenHash, remote: GitRemote) {
+      const { session, base } = yield* findSession(sessionId);
+      const now = yield* Clock.currentTimeMillis;
+      const [token] = yield* select(
+        GitTokenRow,
+        "SELECT session_id, expires_at FROM git_tokens WHERE token_hash = ?",
+        tokenHash,
+      );
+      // The token is checked first: only its holder learns that the session has ended.
+      if (token === undefined || token.session_id !== sessionId || token.expires_at <= now)
+        return yield* new Unauthorized();
+      yield* requireActive(session);
+      const binding = yield* bindingRow(sessionId);
+      if (binding === undefined)
+        return yield* Effect.die(new Error(`session '${sessionId}' has a git token and no binding`));
+      yield* touch(sessionId);
+      const minted =
+        remote === "fork"
+          ? yield* repos.mintToken(session.fork_name, "write", config.gitTokenTtlSeconds)
+          : yield* repos.mintToken(base.name, "read", config.gitTokenTtlSeconds);
+      // A main read token is not revoked with the fork's, so it is kept to be revoked when the session ends.
+      if (remote === "main")
+        yield* sql.exec(
+          "INSERT INTO main_read_tokens (token_id, session_id, expires_at) VALUES (?, ?, ?)",
+          minted.id,
+          sessionId,
+          now + config.gitTokenTtlSeconds * 1000,
+        );
+      yield* record("tokens.minted", { workspace: base.name, sessionId, remote });
+      return {
+        // In the clear from here on: git sends it to Artifacts as the Basic password.
+        password: tokenSecret(Redacted.value(minted.token)),
+        expiresAt: timestampOf(DateTime.makeUnsafe(now + config.gitTokenTtlSeconds * 1000)),
+        principal: binding.principal,
+        grantId: binding.grant_id,
+      };
+    },
+    (effect) => access.withPermit(effect),
+  );
+
+  const sessionAuthorAs: Workspace["sessionAuthorAs"] = Effect.fn("Workspace.sessionAuthorAs")(function* (
+    sessionId: SessionId,
+    principal: PrincipalId,
+  ) {
+    const { session } = yield* authorizeAs(sessionId, principal);
+    yield* requireActive(session);
+    yield* touch(sessionId);
+    return { _tag: "Agent", sessionId, agent: session.agent, model: session.model } as const;
+  });
+
   const sessionAuthor: Workspace["sessionAuthor"] = Effect.fn("Workspace.sessionAuthor")(function* (
     sessionId: SessionId,
     sessionKey: string,
@@ -726,7 +1132,10 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
   const threadsWhere = Effect.fnUntraced(function* (condition: string, ...bindings: ReadonlyArray<SqlValue>) {
     const threads = yield* select(
       ThreadRow,
-      `SELECT * FROM threads WHERE ${condition} ORDER BY path, created_at, thread_id`,
+      // A thread with no row in thread_revisions is at revision 0.
+      `SELECT threads.*, COALESCE(thread_revisions.revision, 0) AS revision
+        FROM threads LEFT JOIN thread_revisions USING (thread_id)
+        WHERE ${condition} ORDER BY path, created_at, thread_id`,
       ...bindings,
     );
     const comments = yield* select(
@@ -771,6 +1180,19 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     return anchor;
   });
 
+  /** One more revision of each of the threads, for a change a reader of them should see (docs/mcp.md, "Writes"). */
+  const bumpRevisions = (threadIds: ReadonlyArray<ThreadId>): Effect.Effect<void> =>
+    Effect.forEach(
+      threadIds,
+      (threadId) =>
+        sql.exec(
+          `INSERT INTO thread_revisions (thread_id, revision) VALUES (?, 1)
+            ON CONFLICT (thread_id) DO UPDATE SET revision = revision + 1`,
+          threadId,
+        ),
+      { discard: true },
+    );
+
   const insertComment = Effect.fnUntraced(function* (threadId: ThreadId, author: Author, body: string, now: number) {
     yield* sql.exec(
       "INSERT INTO comments (comment_id, thread_id, author, body, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -802,7 +1224,16 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     name: WorkspaceName,
     author: Author,
     request: CreateThreadRequest,
+    once?: Once,
   ) {
+    return yield* withOnce(once, ThreadSchema, createThreadNow(name, author, request));
+  });
+
+  const createThreadNow = Effect.fnUntraced(function* (
+    name: WorkspaceName,
+    author: Author,
+    request: CreateThreadRequest,
+  ): Effect.fn.Return<Thread, NotFound | AnchorMismatch | ArtifactsUnavailable> {
     const base = yield* requireWorkspace(name);
     const anchor = request.anchor === undefined ? null : yield* resolveAnchor(base, request.path, request.anchor);
     const threadId = ThreadId.make(yield* randomHex(6));
@@ -830,15 +1261,31 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     author: Author,
     threadId: ThreadId,
     request: ReplyRequest,
+    expectedRevision?: number,
+    once?: Once,
   ) {
+    return yield* withOnce(once, ThreadSchema, replyNow(name, author, threadId, request, expectedRevision));
+  });
+
+  const replyNow = Effect.fnUntraced(function* (
+    name: WorkspaceName,
+    author: Author,
+    threadId: ThreadId,
+    request: ReplyRequest,
+    expectedRevision: number | undefined,
+  ): Effect.fn.Return<Thread, NotFound | AnchorMismatch | Conflict | ArtifactsUnavailable> {
     const base = yield* requireWorkspace(name);
     const thread = yield* requireThread(threadId);
+    yield* requireRevision(thread, expectedRevision);
     // A reply can say where the thread's passage is now, so the anchor follows the page (re-pinning).
     if (request.anchor !== undefined) {
       const anchor = yield* resolveAnchor(base, thread.path, request.anchor);
+      // The object served other calls while Artifacts answered: check again, with no I/O before the writes.
+      yield* requireRevision(yield* requireThread(threadId), expectedRevision);
       yield* sql.exec("UPDATE threads SET anchor = ? WHERE thread_id = ?", JSON.stringify(anchor), threadId);
     }
     yield* insertComment(threadId, author, request.body, yield* Clock.currentTimeMillis);
+    yield* bumpRevisions([threadId]);
     yield* record("thread.replied", {
       workspace: base.name,
       threadId,
@@ -853,11 +1300,16 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     author: Author,
     threadId: ThreadId,
     request: SetThreadStateRequest,
+    expectedRevision?: number,
   ) {
     const base = yield* requireWorkspace(name);
     const thread = yield* requireThread(threadId);
+    // A thread already in the state, with nothing to add, is answered as it is: repeating the call changes nothing.
+    if (request.body === undefined && thread.state === request.state) return thread;
+    yield* requireRevision(thread, expectedRevision);
     const now = yield* Clock.currentTimeMillis;
     if (request.body !== undefined) yield* insertComment(threadId, author, request.body, now);
+    if (request.body !== undefined || thread.state !== request.state) yield* bumpRevisions([threadId]);
     if (thread.state !== request.state) {
       yield* request.state === "resolved"
         ? sql.exec(
@@ -882,15 +1334,38 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
   const moveThreads: Workspace["moveThreads"] = Effect.fn("Workspace.moveThreads")(function* (
     name: WorkspaceName,
     request: MoveThreadsRequest,
+    expectedThreads?: ReadonlyArray<{ readonly id: ThreadId; readonly revision: number }>,
   ) {
     const base = yield* requireWorkspace(name);
+    if (expectedThreads !== undefined) {
+      const revisions = (path: FilePath) =>
+        select(
+          RevisionRow,
+          `SELECT thread_id, path, COALESCE(thread_revisions.revision, 0) AS revision
+            FROM threads LEFT JOIN thread_revisions USING (thread_id) WHERE path = ?`,
+          path,
+        );
+      const expected = describeRevisions(expectedThreads);
+      const actual = describeRevisions(
+        (yield* revisions(request.from)).map((row) => ({ id: row.thread_id, revision: row.revision })),
+      );
+      if (actual !== expected) {
+        // A repeat of a move that went through: every thread is at the new path, one revision on.
+        const atTarget = new Map((yield* revisions(request.to)).map((row) => [row.thread_id, row.revision]));
+        if (actual === "" && expectedThreads.every((thread) => atTarget.get(thread.id) === thread.revision + 1))
+          return { moved: 0, threadIds: expectedThreads.map((thread) => thread.id).slice(0, 25) };
+        return yield* new Conflict({ resource: "threads", id: request.from, expected, actual: actual || "none" });
+      }
+    }
     const moved = yield* sql.exec(
       "UPDATE threads SET path = ? WHERE path = ? RETURNING thread_id",
       request.to,
       request.from,
     );
+    const threadIds = moved.map((row) => ThreadId.make(String(row["thread_id"])));
+    yield* bumpRevisions(threadIds);
     yield* record("threads.moved", { workspace: base.name, from: request.from, to: request.to, moved: moved.length });
-    return { moved: moved.length };
+    return { moved: moved.length, threadIds: threadIds.slice(0, 25) };
   });
 
   /** A comment that is not deleted, if `author` may do `action` to it. */
@@ -926,6 +1401,7 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
       yield* Clock.currentTimeMillis,
       commentId,
     );
+    yield* bumpRevisions([comment.thread_id]);
     yield* record("comment.edited", {
       workspace: base.name,
       threadId: comment.thread_id,
@@ -939,14 +1415,27 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     name: WorkspaceName,
     author: Author,
     commentId: CommentId,
+    expectedRevision?: number,
   ) {
     const base = yield* requireWorkspace(name);
+    if (expectedRevision !== undefined) {
+      // Over MCP a repeat of a delete that went through answers the thread, as the first call did.
+      const [done] = yield* select(
+        CommentRow,
+        "SELECT comment_id, thread_id, author, body, created_at, edited_at, deleted_at FROM comments WHERE comment_id = ?",
+        commentId,
+      );
+      if (done !== undefined && done.deleted_at !== null && sameAuthor(author, done.author))
+        return yield* requireThread(done.thread_id);
+    }
     const comment = yield* ownComment(author, commentId, "delete");
+    yield* requireRevision(yield* requireThread(comment.thread_id), expectedRevision);
     yield* sql.exec(
       "UPDATE comments SET body = '', deleted_at = ? WHERE comment_id = ?",
       yield* Clock.currentTimeMillis,
       commentId,
     );
+    yield* bumpRevisions([comment.thread_id]);
     yield* record("comment.deleted", {
       workspace: base.name,
       threadId: comment.thread_id,
@@ -963,6 +1452,14 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     createSession,
     listSessions,
     endSession,
+    endSessionAs,
+    startSession,
+    getSession,
+    bindingOf: bindingOfSession,
+    issueGitToken,
+    gitCredential,
+    sessionAuthorAs,
+    landAs,
     mintTokens,
     land,
     sweep,

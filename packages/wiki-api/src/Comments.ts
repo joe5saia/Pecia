@@ -79,6 +79,12 @@ export const Thread = Schema.Struct({
   /** `null` for a comment on the whole page. */
   anchor: Schema.NullOr(Anchor),
   state: ThreadState,
+  /**
+   * 0 when the thread is created, and one more with every reply, state change,
+   * re-pin, deleted comment and move. A write over MCP names the revision it
+   * read (docs/mcp.md, "Writes"). Tools built before it ignore it.
+   */
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   createdAt: Timestamp,
   resolvedAt: Schema.NullOr(Timestamp),
   resolvedBy: Schema.NullOr(Author),

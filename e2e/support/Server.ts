@@ -5,7 +5,13 @@ import workerd from "workerd";
 import { spawn } from "node:child_process";
 import { appendFileSync, createReadStream, existsSync, mkdirSync, rmSync } from "node:fs";
 import { copyFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
+import {
+  createServer,
+  request as httpRequest,
+  type IncomingMessage,
+  type Server as HttpServer,
+  type ServerResponse,
+} from "node:http";
 import { stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
@@ -13,6 +19,7 @@ import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { type Access, accessTeam, makeAccess } from "./Access.ts";
+import { type Amp, makeAmp } from "./Amp.ts";
 import { type Artifacts, startArtifacts } from "./Artifacts.ts";
 
 // The product as it runs in production, on loopback: the Control Worker as
@@ -34,6 +41,7 @@ export interface Settings {
   readonly forkSettle: string;
   readonly sweepRetry: string;
   readonly sandboxTokenTtl: string;
+  readonly gitTokenTtl: string;
 }
 
 /** What a deploy uses, unless a scenario file needs seconds. */
@@ -42,6 +50,7 @@ const deployed: Settings = {
   forkSettle: "10 minutes",
   sweepRetry: "5 minutes",
   sandboxTokenTtl: "1 hour",
+  gitTokenTtl: "15 minutes",
 };
 
 /** One log entry of the Worker or its Durable Object: its message, level and annotations. */
@@ -77,6 +86,7 @@ export class Server extends Context.Service<
     /** The stage's URL, in front of Access. */
     readonly url: string;
     readonly access: Access;
+    readonly amp: Amp;
     readonly artifacts: Artifacts;
     /** Every log entry so far, in the order the Worker logged them. */
     readonly logs: Effect.Effect<ReadonlyArray<LogEntry>>;
@@ -96,7 +106,13 @@ const workerFirst = (path: string) =>
   path === "/workspaces" ||
   path.startsWith("/workspaces/") ||
   path.startsWith("/sessions/") ||
-  path.startsWith("/auth/");
+  path.startsWith("/auth/") ||
+  path === "/mcp" ||
+  path.startsWith("/.well-known/") ||
+  path.startsWith("/oauth/") ||
+  path === "/authorize" ||
+  path.startsWith("/git/") ||
+  path.startsWith("/tools/");
 
 const contentTypes: Readonly<Record<string, string>> = {
   ".html": "text/html; charset=utf-8",
@@ -197,7 +213,10 @@ const config = (options: {
   readonly artifacts: string;
   readonly collector: string;
   readonly access: Access;
+  readonly amp: Amp;
   readonly settings: Settings;
+  /** The stage's URL, as Alchemy binds it in `WORKER_URL`: the edge in front of the Worker. */
+  readonly url: string;
 }) => {
   const { manifest, settings, access } = options;
   const date = capnp(manifest.compatibility.date);
@@ -213,7 +232,11 @@ const config :Workerd.Config = (
     (name = "storage", disk = (path = ${capnp(options.storage)}, writable = true)),
   ],
   sockets = [(name = "http", address = "127.0.0.1:0", http = (), service = "pecia")],
-  extensions = [(modules = [(name = "pecia-e2e:artifacts", esModule = embed "artifacts-binding.js", internal = true)])],
+  extensions = [(modules = [
+    (name = "pecia-e2e:artifacts", esModule = embed "artifacts-binding.js", internal = true),
+    (name = "pecia-e2e:kv", esModule = embed "kv-binding.js", internal = true),
+    (name = "pecia-e2e:ratelimit", esModule = embed "ratelimit-binding.js", internal = true),
+  ])],
 );
 
 const pecia :Workerd.Worker = (
@@ -228,6 +251,9 @@ const pecia :Workerd.Worker = (
   bindings = [
     (name = "Wikis", wrapped = (moduleName = "pecia-e2e:artifacts", innerBindings = [${text("control", options.artifacts)}])),
     (name = "WorkspaceObject", durableObjectNamespace = (className = "WorkspaceObject")),
+    (name = "OAuthKV", wrapped = (moduleName = "pecia-e2e:kv")),
+    (name = "OAuthRateLimit", wrapped = (moduleName = "pecia-e2e:ratelimit")),
+    ${text("WORKER_URL", options.url)},
     ${text("Access_aud", access.audience)},
     ${text("OrchestratorToken_clientId", access.orchestratorToken.clientId)},
     ${text("SandboxToken_clientId", access.sandboxToken.clientId)},
@@ -241,6 +267,7 @@ const pecia :Workerd.Worker = (
     ${text("PECIA_FORK_SETTLE", settings.forkSettle)},
     ${text("PECIA_SWEEP_RETRY", settings.sweepRetry)},
     ${text("PECIA_SANDBOX_TOKEN_TTL", settings.sandboxTokenTtl)},
+    ${text("PECIA_GIT_TOKEN_TTL", settings.gitTokenTtl)},
   ],
 );
 
@@ -250,6 +277,7 @@ const outbound :Workerd.Worker = (
   bindings = [
     ${text("ACCESS_HOST", new URL(accessTeam).hostname)},
     ${text("JWKS", access.jwks)},
+    ${text("AMP_JWKS", options.amp.jwks)},
     (name = "NETWORK", service = "network"),
   ],
 );
@@ -318,7 +346,8 @@ const startWorkerd = (configPath: string, cwd: string, log: (line: string) => vo
  */
 const serveEdge = (options: {
   readonly access: Access;
-  readonly worker: string;
+  /** The Worker's origin in workerd, known once workerd listens; the edge listens before that. */
+  readonly worker: () => string;
   readonly log: (line: string) => void;
   readonly requests: Array<{ method: string; path: string; status: number | undefined }>;
 }) =>
@@ -351,19 +380,39 @@ const serveEdge = (options: {
           return;
         }
       }
-      for (const name of ["host", "connection", "keep-alive", "transfer-encoding", "content-length"])
-        headers.delete(name);
+      for (const name of ["connection", "keep-alive", "transfer-encoding", "content-length"]) headers.delete(name);
       const body = request.method === "GET" || request.method === "HEAD" ? undefined : await readBody(request);
-      const answered = await fetch(`${options.worker}${url.pathname}${url.search}`, {
-        method: request.method ?? "GET",
-        headers,
-        redirect: "manual",
-        ...(body === undefined ? {} : { body }),
-      });
-      const bytes = Buffer.from(await answered.arrayBuffer());
-      const out = Object.fromEntries(answered.headers);
+      // Through node:http, not fetch, so the Worker sees the Host the client sent, as Cloudflare passes it on.
+      const answered = await new Promise<{ status: number; headers: IncomingMessage["headers"]; bytes: Buffer }>(
+        (resolve, reject) => {
+          const out = httpRequest(
+            `${options.worker()}${url.pathname}${url.search}`,
+            {
+              method: request.method ?? "GET",
+              headers: {
+                ...Object.fromEntries(headers),
+                ...(body === undefined ? {} : { "content-length": String(body.byteLength) }),
+              },
+            },
+            (reply) => {
+              const chunks: Buffer[] = [];
+              reply.on("data", (chunk: Buffer) => chunks.push(chunk));
+              reply.on("end", () =>
+                resolve({ status: reply.statusCode ?? 502, headers: reply.headers, bytes: Buffer.concat(chunks) }),
+              );
+              reply.on("error", reject);
+            },
+          );
+          out.on("error", reject);
+          out.end(body);
+        },
+      );
+      const { bytes } = answered;
+      const out = { ...answered.headers };
       delete out["content-encoding"];
       delete out["content-length"];
+      delete out["transfer-encoding"];
+      delete out["connection"];
       received.status = answered.status;
       response.writeHead(answered.status, out).end(bytes);
       // A success can carry tokens or keys, so only a failure's body is kept.
@@ -392,6 +441,16 @@ export const ServerLive = (name: string, settings: Partial<Settings> = {}) =>
       const log = (file: string) => (line: string) => appendFileSync(join(evidence, file), `${line}\n`);
 
       const access = yield* makeAccess;
+      const amp = yield* makeAmp;
+      // The edge listens first: its URL is the stage's origin, which the Worker is bound with.
+      const requests: Array<{ method: string; path: string; status: number | undefined }> = [];
+      let workerOrigin = "";
+      const edge = serveEdge({ access, worker: () => workerOrigin, log: log("requests.log"), requests });
+      const edgePort = yield* Effect.acquireRelease(
+        Effect.promise(() => listen(edge)),
+        () => Effect.promise(() => close(edge)),
+      );
+      const url = `http://127.0.0.1:${edgePort}`;
       const artifacts = yield* startArtifacts(log("artifacts.log"));
       const dir = yield* Effect.acquireRelease(
         Effect.promise(() => mkdtemp(join(tmpdir(), "pecia-e2e-workerd-"))),
@@ -425,7 +484,11 @@ export const ServerLive = (name: string, settings: Partial<Settings> = {}) =>
       if (!isManifest(manifest)) return yield* Effect.die(new Error("dist/manifest.json is not a build manifest"));
       yield* Effect.promise(async () => {
         await Promise.all(manifest.modules.map((module) => copyFile(join(workerDist, module), join(dir, module))));
-        await Promise.all(["artifacts-binding", "outbound", "tail"].map((module) => workerdModule(module, dir)));
+        await Promise.all(
+          ["artifacts-binding", "kv-binding", "ratelimit-binding", "outbound", "tail"].map((module) =>
+            workerdModule(module, dir),
+          ),
+        );
         await writeFile(
           join(dir, "config.capnp"),
           config({
@@ -434,21 +497,19 @@ export const ServerLive = (name: string, settings: Partial<Settings> = {}) =>
             artifacts: artifacts.url,
             collector: `http://127.0.0.1:${collectorPort}/`,
             access,
+            amp,
+            url,
             settings: { ...deployed, ...settings },
           }),
         );
       });
       const { port } = yield* startWorkerd(join(dir, "config.capnp"), dir, log("workerd.log"));
+      workerOrigin = `http://127.0.0.1:${port}`;
 
-      const requests: Array<{ method: string; path: string; status: number | undefined }> = [];
-      const edge = serveEdge({ access, worker: `http://127.0.0.1:${port}`, log: log("requests.log"), requests });
-      const edgePort = yield* Effect.acquireRelease(
-        Effect.promise(() => listen(edge)),
-        () => Effect.promise(() => close(edge)),
-      );
       return {
-        url: `http://127.0.0.1:${edgePort}`,
+        url,
         access,
+        amp,
         artifacts,
         // The tail delivers each run's logs when the run ends, so runs that overlap arrive out of order.
         logs: Effect.sync(() =>

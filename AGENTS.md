@@ -1,11 +1,11 @@
 # Pecia
 
-Agent wiki on Cloudflare Artifacts. The design is in `docs/mvp.md`; comments on pages are in `docs/comments.md`.
+Agent wiki on Cloudflare Artifacts. The design is in `docs/mvp.md`; comments on pages are in `docs/comments.md`; the MCP server, its OAuth sign-in and `pecia-git-credential` are in `docs/mcp.md`.
 
 ## Layout
 
 - `packages/wiki-api`: the shared Effect Schema contract for the Control Worker API.
-- `packages/control-worker`: the Control Worker, the workspace Durable Object and its Alchemy stack (`alchemy.run.ts`). `src/Workspace.ts` holds the session and landing logic. `build.ts` bundles the Worker as a deploy does, for the scenarios.
+- `packages/control-worker`: the Control Worker, the workspace Durable Object and its Alchemy stack (`alchemy.run.ts`). `src/Workspace.ts` holds the session and landing logic; `src/mcp/` and `src/OAuth.ts` hold the MCP server and its OAuth endpoints. `build.ts` bundles the Worker as a deploy does, for the scenarios.
 - `packages/viewer`: the read-only web UI (React and Vite), served as the Control Worker's static assets. Its design, sign-in and the way to add editing are in `docs/viewer.md`. `src/App.tsx` has every page as a component (`Workspaces` is the list of wikis, `Wiki` a wiki, `History` its commits), `src/styles.css` every style, with the fonts and colors as variables at its top. It is type-checked as its own project (`packages/viewer/tsconfig.json`), with the DOM's types; `task typecheck` covers it, and there is no viewer-only check.
 - `packages/sandbox-tools`: what runs in a sandbox: `wiki-credential`, `wiki-land`, `wiki-comments`, `setup.sh` and `agent-instructions.md`.
 - `.agents/skills/using-pecia-wiki`: the project skill that lets an Amp thread read and publish to a deployed wiki.
@@ -100,7 +100,7 @@ Fix what a rule reports instead of disabling it. A rule that reports good code h
 
 ## Environment and tests
 
-The Alchemy tasks (`dev`, `plan`, `deploy:*`) need only Cloudflare credentials; each stage's Access application and service tokens are resources of the stack (`docs/operations.md`, "Access"). `PECIA_IDLE_TIMEOUT` (default `2 hours`), `PECIA_FORK_SETTLE` (`10 minutes`), `PECIA_SWEEP_RETRY` (`5 minutes`) and `PECIA_SANDBOX_TOKEN_TTL` (`1 hour`) are optional; deploys use the defaults.
+The Alchemy tasks (`dev`, `plan`, `deploy:*`) need only Cloudflare credentials; each stage's Access application and service tokens are resources of the stack (`docs/operations.md`, "Access"). `PECIA_IDLE_TIMEOUT` (default `2 hours`), `PECIA_FORK_SETTLE` (`10 minutes`), `PECIA_SWEEP_RETRY` (`5 minutes`), `PECIA_SANDBOX_TOKEN_TTL` (`1 hour`) and `PECIA_GIT_TOKEN_TTL` (`15 minutes`, an Artifacts token for an MCP session's git) are optional; deploys use the defaults.
 
 ### Tests
 

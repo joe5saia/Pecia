@@ -1,5 +1,7 @@
 import {
   type Author,
+  Conflict,
+  IdempotencyKeyReuse,
   OrchestratorAuth,
   ReaderAuth,
   ReaderName,
@@ -55,6 +57,18 @@ export class Workspaces extends Context.Service<
   Workspaces,
   { readonly get: (name: WorkspaceName) => RemoteWorkspace }
 >()("pecia/Workspaces") {}
+
+/**
+ * An HTTP call names no thread revision and no idempotency key, so neither
+ * MCP check can refuse it: if one does, that is a bug.
+ */
+const overHttp = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.catchIf(
+    effect,
+    (error): error is Extract<E, Conflict | IdempotencyKeyReuse> =>
+      error instanceof Conflict || error instanceof IdempotencyKeyReuse,
+    (error) => Effect.die(error),
+  );
 
 /** The caller Access let through, if it may call the orchestrator endpoints. */
 const OrchestratorAuthLive = Layer.effect(
@@ -147,19 +161,25 @@ const SandboxLive = HttpApiBuilder.group(WikiApi, "sandbox", (handlers) =>
         asAgent(params.id, (workspace, _author, name) => workspace.listThreads(name, query)),
       )
       .handle("createSessionThread", ({ params, payload }) =>
-        asAgent(params.id, (workspace, author, name) => workspace.createThread(name, author, payload)),
+        asAgent(params.id, (workspace, author, name) => overHttp(workspace.createThread(name, author, payload))),
       )
       .handle("replyInSession", ({ params, payload }) =>
-        asAgent(params.id, (workspace, author, name) => workspace.reply(name, author, params.thread, payload)),
+        asAgent(params.id, (workspace, author, name) =>
+          overHttp(workspace.reply(name, author, params.thread, payload)),
+        ),
       )
       .handle("setThreadStateInSession", ({ params, payload }) =>
-        asAgent(params.id, (workspace, author, name) => workspace.setThreadState(name, author, params.thread, payload)),
+        asAgent(params.id, (workspace, author, name) =>
+          overHttp(workspace.setThreadState(name, author, params.thread, payload)),
+        ),
       )
       .handle("deleteCommentInSession", ({ params }) =>
-        asAgent(params.id, (workspace, author, name) => workspace.deleteComment(name, author, params.comment)),
+        asAgent(params.id, (workspace, author, name) =>
+          overHttp(workspace.deleteComment(name, author, params.comment)),
+        ),
       )
       .handle("moveThreads", ({ params, payload }) =>
-        asAgent(params.id, (workspace, _author, name) => workspace.moveThreads(name, payload)),
+        asAgent(params.id, (workspace, _author, name) => overHttp(workspace.moveThreads(name, payload))),
       );
   }),
 );
@@ -172,14 +192,18 @@ const CommentsLive = HttpApiBuilder.group(WikiApi, "comments", (handlers) =>
     return handlers
       .handle("listThreads", ({ params, query }) => workspaces.get(params.ws).listThreads(params.ws, query))
       .handle("createThread", ({ params, payload }) =>
-        Effect.flatMap(person, (author) => workspaces.get(params.ws).createThread(params.ws, author, payload)),
+        Effect.flatMap(person, (author) =>
+          overHttp(workspaces.get(params.ws).createThread(params.ws, author, payload)),
+        ),
       )
       .handle("reply", ({ params, payload }) =>
-        Effect.flatMap(person, (author) => workspaces.get(params.ws).reply(params.ws, author, params.thread, payload)),
+        Effect.flatMap(person, (author) =>
+          overHttp(workspaces.get(params.ws).reply(params.ws, author, params.thread, payload)),
+        ),
       )
       .handle("setThreadState", ({ params, payload }) =>
         Effect.flatMap(person, (author) =>
-          workspaces.get(params.ws).setThreadState(params.ws, author, params.thread, payload),
+          overHttp(workspaces.get(params.ws).setThreadState(params.ws, author, params.thread, payload)),
         ),
       )
       .handle("editComment", ({ params, payload }) =>
@@ -188,7 +212,9 @@ const CommentsLive = HttpApiBuilder.group(WikiApi, "comments", (handlers) =>
         ),
       )
       .handle("deleteComment", ({ params }) =>
-        Effect.flatMap(person, (author) => workspaces.get(params.ws).deleteComment(params.ws, author, params.comment)),
+        Effect.flatMap(person, (author) =>
+          overHttp(workspaces.get(params.ws).deleteComment(params.ws, author, params.comment)),
+        ),
       )
       .handle("currentReader", () => Effect.map(ReaderName, (name) => ({ name })));
   }),

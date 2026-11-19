@@ -255,8 +255,11 @@ tasks:
     # 404 with the stage's orchestrator token: the Worker is published,
     # verifies this stage's Access JWT and reaches its Durable Objects. The
     # viewer's page must be served, which it is only if its assets were
-    # uploaded. Retried for a minute, because a newly published Worker can
-    # answer `error code: 1104` for a while.
+    # uploaded. The MCP server (docs/mcp.md) must answer past Access: its
+    # metadata names this stage's /mcp, /mcp without a token is a 401 that
+    # points to it, and the token endpoint answers an OAuth error, while
+    # /authorize stays behind the sign-in. Retried for a minute, because a
+    # newly published Worker can answer `error code: 1104` for a while.
     cmds:
       - task: access:token
         vars: { STAGE: "{{.STAGE}}" }
@@ -268,12 +271,21 @@ tasks:
           anonymous=$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$url" || true)
           body=$(curl -sS "${token[@]}" "$url" || true)
           viewer=$(curl -sS "${token[@]}" "{{.URL}}/" || true)
+          metadata=$(curl -sS "{{.URL}}/.well-known/oauth-protected-resource/mcp" || true)
+          challenge=$(curl -sS -o /dev/null -X POST -H 'content-type: application/json' --data '{}' -w '%{http_code} %header{www-authenticate}' "{{.URL}}/mcp" || true)
+          oauth=$(curl -sS -X POST -H 'content-type: application/x-www-form-urlencoded' --data '' "{{.URL}}/oauth/token" || true)
+          consent=$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "{{.URL}}/authorize" || true)
           if [[ "$anonymous" == "302 https://saiaai.cloudflareaccess.com/"* ]] &&
-            jq -e '._tag == "NotFound"' >/dev/null 2>&1 <<<"$body" && grep -q '<div id="root">' <<<"$viewer"; then
+            jq -e '._tag == "NotFound"' >/dev/null 2>&1 <<<"$body" && grep -q '<div id="root">' <<<"$viewer" &&
+            jq -e --arg resource "{{.URL}}/mcp" '.resource == $resource' >/dev/null 2>&1 <<<"$metadata" &&
+            [[ "$challenge" == "401 Bearer resource_metadata=\"{{.URL}}/.well-known/oauth-protected-resource/mcp\""* ]] &&
+            jq -e '.error | type == "string"' >/dev/null 2>&1 <<<"$oauth" &&
+            [[ "$consent" == "302 https://saiaai.cloudflareaccess.com/"* ]]; then
             echo "{{.STAGE}} answers"
             exit 0
           fi
           echo "attempt $attempt: '${anonymous%% *}' without the token, '$(head -c 200 <<<"$body")' with it, viewer page $(grep -c '<div id="root">' <<<"$viewer") root"
+          echo "  mcp: metadata '$(head -c 200 <<<"$metadata")', /mcp '${challenge}', /oauth/token '$(head -c 200 <<<"$oauth")', /authorize '${consent%% *}'"
           sleep 10
         done
         exit 1

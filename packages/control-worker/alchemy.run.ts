@@ -1,7 +1,7 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Alchemy from "alchemy";
 import * as Effect from "effect/Effect";
-import ControlWorker from "./src/worker.ts";
+import ControlWorker, { McpBypass } from "./src/worker.ts";
 
 export default Alchemy.Stack(
   "pecia",
@@ -13,6 +13,8 @@ export default Alchemy.Stack(
   },
   Effect.gen(function* () {
     const worker = yield* ControlWorker;
+    // The MCP and OAuth paths of every hostname of the Worker, open past Access (docs/mcp.md).
+    yield* McpBypass(worker.urls);
     return { url: worker.url };
   }),
 );

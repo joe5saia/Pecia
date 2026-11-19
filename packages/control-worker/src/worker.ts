@@ -1,15 +1,23 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
+import * as Output from "alchemy/Output";
 import { Stage } from "alchemy/Stage";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { createRemoteJWKSet } from "jose";
+import { PrincipalId } from "@pecia/wiki-api";
 import * as Access from "./Access.ts";
 import * as ArtifactsRepos from "./ArtifactsRepos.ts";
 import { ApiLive, Workspaces } from "./Handlers.ts";
 import * as Logs from "./Logs.ts";
+import { McpGrant, McpLive, StageName, admit } from "./mcp/Server.ts";
+import { isOAuthPath, route } from "./mcp/Routes.ts";
+import * as OAuth from "./OAuth.ts";
+import * as Principals from "./Principals.ts";
 import * as Reader from "./Reader.ts";
 import { Repos } from "./Repos.ts";
 import * as RemoteWorkspace from "./RemoteWorkspace.ts";
@@ -25,8 +33,63 @@ import { runtime } from "./Runtime.ts";
 /** The saiaai account's Access team, which issues and signs every stage's assertions. */
 const accessTeam = "https://saiaai.cloudflareaccess.com";
 
-/** The only person who may sign in, for now. */
-const allowedEmails = ["joe5saia@gmail.com"];
+/**
+ * The people pecia knows (docs/mcp.md, "Principals"). Access's "People"
+ * policy, the consent page, the MCP endpoint and the token exchange all read
+ * this one list, so removing a principal shuts every path at once.
+ */
+const principals: ReadonlyArray<Principals.Principal> = [
+  {
+    id: PrincipalId.make("joe"), // stable; never reused
+    email: "joe5saia@gmail.com",
+    workloads: [{ issuer: "https://ampcode.com/api/workload-identity", user: "user_01JT10C8QGGPETCT6FTHWJ524K" }],
+  },
+];
+
+/** The identity token issuers the token exchange trusts (docs/mcp.md, "Trust table"). */
+const workloadIssuers: ReadonlyArray<Principals.WorkloadIssuer> = [
+  {
+    issuer: "https://ampcode.com/api/workload-identity",
+    jwksUri: "https://ampcode.com/api/workload-identity/jwks.json",
+    algorithms: ["RS256"],
+    // Amp also signs `token_use: "mcp"` tokens with these keys; only an exchanged one opens git.
+    requiredClaims: { token_use: "exchanged" },
+    userClaim: "user_id",
+    subjectClaim: "thread_id",
+    maxAgeSeconds: 600,
+  },
+];
+
+/** The paths that bypass Access: the MCP endpoint and what a client or the helper reaches without a browser. */
+export const bypassedPaths = [
+  "/mcp",
+  "/.well-known/oauth-protected-resource/mcp",
+  "/.well-known/oauth-authorization-server",
+  "/oauth/token",
+  "/git/*",
+  "/tools/pecia-git-credential",
+] as const;
+
+/**
+ * An Access application per stage that lets the bypassed paths of every
+ * hostname of `worker` through without a sign-in. A hostname and path
+ * application takes precedence over the Worker-level one; the Worker checks
+ * its own tokens on these paths.
+ */
+export const McpBypass = (urls: Output.Output<ReadonlyArray<string>>) =>
+  Effect.flatMap(Stage, (stage) =>
+    Cloudflare.Access.Application("McpBypass", {
+      type: "self_hosted",
+      name: `pecia-${stage} mcp`,
+      destinations: Output.map(urls, (all) =>
+        all
+          .map((url) => new URL(url).host)
+          .flatMap((host) => bypassedPaths.map((path) => ({ type: "public" as const, uri: `${host}${path}` }))),
+      ),
+      appLauncherVisible: false,
+      policies: [{ name: "MCP and OAuth", decision: "bypass", include: [{ everyone: {} }] }],
+    }),
+  );
 
 // The account's Google login, which the Hearth stack owns with its Google
 // OAuth client. Pecia only refers to it, so a Pecia deploy needs no Google
@@ -42,6 +105,9 @@ const OrchestratorToken = Effect.flatMap(Stage, (stage) =>
 const SandboxToken = Effect.flatMap(Stage, (stage) =>
   Cloudflare.Access.ServiceToken("SandboxToken", { name: `pecia-${stage} sandbox`, duration: "8760h" }),
 );
+
+/** The OAuth provider's grants, tokens and client cache (docs/mcp.md, "Infrastructure changes"). */
+const OAuthKV = Effect.flatMap(Stage, (stage) => Cloudflare.KV.Namespace("OAuthKV", { title: `pecia-${stage}-oauth` }));
 
 /** The stage's Access application (docs/operations.md, "Access"): people sign in with Google, agents send a token. */
 const StageAccess = Effect.gen(function* () {
@@ -64,7 +130,7 @@ const StageAccess = Effect.gen(function* () {
       {
         name: "People",
         decision: "allow",
-        include: allowedEmails.map((email) => ({ email })),
+        include: principals.map((principal) => ({ email: principal.email })),
         require: [{ loginMethod: google.identityProviderId }],
       },
     ],
@@ -86,11 +152,32 @@ export default Cloudflare.Worker(
       directory: new URL("../../viewer/dist", import.meta.url).pathname,
       // A browser navigating to a page of the viewer gets its index.html; the API's paths never do.
       notFoundHandling: "single-page-application" as const,
-      runWorkerFirst: ["/workspaces", "/workspaces/*", "/sessions/*", "/auth/*"],
+      runWorkerFirst: [
+        "/workspaces",
+        "/workspaces/*",
+        "/sessions/*",
+        "/auth/*",
+        "/mcp",
+        "/.well-known/*",
+        "/oauth/*",
+        "/authorize",
+        "/git/*",
+        "/tools/*",
+      ],
     },
   })),
   Effect.gen(function* () {
     const workspaces = yield* WorkspaceObject;
+    const stage = yield* Stage;
+    const oauthKv = yield* Cloudflare.KV.ReadWriteNamespace(yield* OAuthKV);
+    // The stage's own URL, its custom domain when it has one: the issuer and the MCP resource.
+    const selfUrl = yield* Cloudflare.URL;
+    // The bypassed paths have no Access in front of them, and each exchange costs a signature check.
+    const throttle = yield* Cloudflare.RateLimit("OAuthRateLimit", {
+      namespaceId: 7311,
+      simple: { limit: 120, period: 60 },
+    });
+    const knownPrincipals = yield* Principals.make(principals, workloadIssuers);
     const artifacts = yield* Cloudflare.Artifacts.ReadWriteNamespace(Wikis);
     // Each is bound to the Worker at deploy and read while a request is served.
     const audience = yield* (yield* StageAccess).aud;
@@ -111,6 +198,16 @@ export default Cloudflare.Worker(
       };
     });
 
+    const accessLayer = Layer.succeed(
+      Access.Access,
+      Access.make(settings, createRemoteJWKSet(new URL(`${accessTeam}/cdn-cgi/access/certs`))),
+    );
+    const workspacesLayer = Layer.succeed(Workspaces, {
+      get: (name) => RemoteWorkspace.overRpc(workspaces.getByName(name)),
+    });
+    // A skill or tool that breaks the MCP rules is a bug in this code.
+    const mcp = yield* Effect.orDie(HttpRouter.toHttpEffect(Layer.provide(McpLive, workspacesLayer)));
+
     const api = yield* HttpRouter.toHttpEffect(
       ApiLive.pipe(
         // The team's signing keys are fetched on first use and kept between requests.
@@ -127,14 +224,50 @@ export default Cloudflare.Worker(
       ),
     );
 
+    /** The MCP and OAuth endpoints, with the services they need for this request. */
+    const mcpAndOAuth = Effect.fnUntraced(function* (path: string, reader: Reader.Reader) {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const limited = yield* Effect.catchTag(
+        throttle.limit({ key: `${stage}:${request.headers["cf-connecting-ip"] ?? "unknown"}` }),
+        "RateLimitError",
+        // A limiter that cannot answer lets the request through: the endpoints check their own credentials.
+        (error) => Effect.as(Effect.logWarning("rate limit not checked", { error: error.message }), { success: true }),
+      );
+      if (!limited.success)
+        return HttpServerResponse.text("too many requests", { status: 429, headers: { "retry-after": "60" } });
+      const oauth = yield* OAuth.make({
+        origin: new URL(yield* selfUrl).origin,
+        kv: yield* oauthKv.raw,
+        ctx: (yield* Cloudflare.WorkerExecutionContext).raw,
+      });
+      const services = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.provideService(OAuth.OAuth, oauth),
+          Effect.provideService(Principals.Principals, knownPrincipals),
+          Effect.provideService(Reader.Readers, reader),
+          Effect.provideService(StageName, stage),
+        );
+      if (path !== "/mcp") return yield* services(Effect.provide(route(request), [accessLayer, workspacesLayer]));
+      const admission = yield* services(admit(request));
+      if (admission._tag === "Refused") return admission.response;
+      return yield* services(Effect.provideService(mcp, McpGrant, admission.grant));
+    });
+
     return {
       fetch: Logs.structured(
         Effect.gen(function* () {
           // The binding's calls need the request they serve, so the reader is made for each one.
           const reader = yield* Effect.provideService(Reader.make, Repos, yield* ArtifactsRepos.make(artifacts));
+          const path = new URL((yield* HttpServerRequest.HttpServerRequest).url, "http://pecia").pathname;
+          if (path === "/mcp" || isOAuthPath(path)) return yield* mcpAndOAuth(path, reader);
           return yield* Effect.provideService(api, Reader.Readers, reader);
         }),
       ),
     };
-  }).pipe(Effect.provide(WorkspaceObjectLive), Effect.provide(Cloudflare.Artifacts.ReadWriteNamespaceBinding)),
+  }).pipe(
+    Effect.provide(WorkspaceObjectLive),
+    Effect.provide(Cloudflare.Artifacts.ReadWriteNamespaceBinding),
+    Effect.provide(Cloudflare.KV.ReadWriteNamespaceBinding),
+    Effect.provide(Cloudflare.RateLimitBinding),
+  ),
 );

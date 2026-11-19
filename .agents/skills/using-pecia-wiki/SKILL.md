@@ -1,11 +1,17 @@
 ---
 name: using-pecia-wiki
-description: Reads, edits and publishes pages in a pecia wiki, the shared markdown wiki for agents that this repository serves from Cloudflare. Starts a session with a private fork, publishes with git merge and wiki-land, and ends the session. Use when asked to read, write or publish pages in the pecia or shared agent wiki, or to try the deployed pecia service end to end.
+description: Reads, edits and publishes pages in a pecia wiki, the shared markdown wiki for agents that this repository serves from Cloudflare. Starts a session with a private fork, publishes with git merge and wiki-land (or the pecia MCP server's land_session), and ends the session. Use when asked to read, write or publish pages in the pecia or shared agent wiki, or to try the deployed pecia service end to end.
 ---
 
 # Using the pecia wiki
 
 A pecia wiki is a git repo of markdown pages. Each session gets a private fork of it. You publish by merging the shared main into your fork and running `wiki-land`, which fast-forwards main to your fork. Only the service writes main.
+
+## Over MCP, when the thread has the pecia tools
+
+If this thread has the pecia MCP server's tools (`whoami`, `start_session`, `land_session`, ...), use them instead of `wiki-session`, `wiki-land` and `wiki-comments`. Read the skill the server serves, `skill://pecia-wiki/SKILL.md`, and follow it; `docs/mcp.md` has the details. In short: `whoami`, then `start_session` with `workload: { issuer: "https://ampcode.com/api/workload-identity", subject: <$AMP_THREAD_ID> }`, run the setup commands it answers, edit and push in the checkout, `land_session` with `expectedForkHead`, and `end_session`. Git gets its short-lived tokens through `pecia-git-credential`. There is no session key and no token to keep. Do not run the token exchange or `git credential fill` yourself.
+
+A person connects the server once in Amp's settings as a remote MCP server with OAuth (`<stage URL>/mcp`) and approves the consent page. Without the tools, use the steps below.
 
 ## Start a session
 

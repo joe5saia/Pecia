@@ -39,6 +39,14 @@ export type TokenScope = "read" | "write";
 export const TokenId = Schema.String.pipe(Schema.brand("TokenId"));
 export type TokenId = typeof TokenId.Type;
 
+/** An OAuth grant of the provider: the middle part of its tokens. */
+export const GrantId = Schema.String.pipe(Schema.brand("GrantId"));
+export type GrantId = typeof GrantId.Type;
+
+/** The SHA-256 of a wiki:git token, as hex: what is kept of it. Never the token. */
+export const TokenHash = Schema.String.pipe(Schema.brand("TokenHash"));
+export type TokenHash = typeof TokenHash.Type;
+
 export interface RepoToken {
   readonly id: TokenId;
   /** `art_v1_<secret>?expires=<unix_seconds>`. Redacted, so a token that is logged or printed by mistake shows nothing. */

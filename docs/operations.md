@@ -26,7 +26,7 @@ A deploy needs only Cloudflare credentials. Each stage also declares its own Acc
 
 Each deploy builds the viewer first (`task build:viewer`) and uploads it with the Worker.
 
-`task smoke STAGE=staging` (or `prod`) checks that a deployed stage answers: Access's redirect to the sign-in without a token, the Durable Object's 404 for a workspace that does not exist with the stage's orchestrator token, and the viewer's page. It gets the token with `task access:token` first.
+`task smoke STAGE=staging` (or `prod`) checks that a deployed stage answers: Access's redirect to the sign-in without a token, the Durable Object's 404 for a workspace that does not exist with the stage's orchestrator token, the viewer's page, and the MCP server past Access: its metadata naming the stage's `/mcp`, a 401 challenge from `/mcp` without a token, an OAuth error from `/oauth/token`, and `/authorize` still behind the sign-in. It gets the token with `task access:token` first.
 
 ## Access
 
@@ -37,6 +37,7 @@ Cloudflare Access, in the saiaai account's Zero Trust team (`saiaai.cloudflareac
 | `Access` | The application `pecia-<stage>`, with the Worker enrolled in it. Policy "People" allows `joe5saia@gmail.com` signed in with Google, for seven days. Policy "Agents" (Service Auth) admits the stage's two service tokens. |
 | `OrchestratorToken` | `pecia-<stage> orchestrator`: for orchestrators, scripts, the smoke check and the viewer's dev server. It opens the orchestrator and reader endpoints. |
 | `SandboxToken` | `pecia-<stage> sandbox`: the service hands it to each sandbox in the session-create response. It opens the sandbox endpoints, and only with a session key. |
+| `McpBypass` | The application `pecia-<stage> mcp`, for the MCP server and its OAuth and git paths only (`bypassedPaths` in `src/worker.ts`), with one Bypass policy. MCP clients send OAuth tokens, not Access credentials, so the Worker checks those requests itself ([mcp.md](mcp.md), "Credentials"). `/authorize` is not bypassed: the consent page stays behind the Google login. |
 
 The Google login is the identity provider "Hearth Google", which the Hearth stack (github.com/joe5saia/Hearth, `alchemy.run.ts`) owns with its Google OAuth client. Pecia only looks it up, so a pecia deploy needs no Google credentials and never changes it. The OAuth client's callback is the team's, `https://saiaai.cloudflareaccess.com/cdn-cgi/access/callback`, which every application of the team shares. To let someone else in, add their email to `allowedEmails` in `src/worker.ts` and deploy.
 
@@ -154,7 +155,7 @@ There are three records of what happened, from the most to the least detailed.
 | --- | --- | --- |
 | `workspace.created` | A workspace is first created | `workspace`, `baseSha` |
 | `session.created` | A session and its fork are created | `workspace`, `sessionId`, `agent`, `model` |
-| `tokens.minted` | The service mints new tokens for a sandbox, at most about once every 55 minutes of git use | `workspace`, `sessionId` |
+| `tokens.minted` | The service mints new tokens for a sandbox, at most about once every 55 minutes of git use; or one Artifacts token for one remote of a session started over MCP | `workspace`, `sessionId`; `remote` (`fork`, `main`) for an MCP session |
 | `land` | Every `wiki-land` call that gets an answer | `workspace`, `sessionId`, `agent`, `model`, `status` (`landed`, `behind`, `nothing_to_land`), `mainSha`, `forkHead`; for `landed`, and for `behind` when the fork has main's head, also `packBytes`, `objects` and `inflatedBytes`: the size of the commits it fetched, which are those main lacked |
 | `land.refused` | A land is refused because the fork's new commits are over a landing limit | `workspace`, `sessionId`, `agent`, `model`, `limit`, `max`, `mainSha`, `forkHead` |
 | `session.ended` | A session is closed or times out | `workspace`, `sessionId`, `agent`, `model`, `state` (`closed`, `parked`), `reason` (`closed`, `idle`), `forkHead` |
@@ -164,6 +165,10 @@ There are three records of what happened, from the most to the least detailed.
 | `comment.edited`, `comment.deleted` | A comment is edited or deleted | `workspace`, `threadId`, `commentId`, `author`, `sessionId` for an agent |
 | `threads.moved` | `wiki-comments move` | `workspace`, `from`, `to`, `moved` |
 | `session.settled` | A closed fork's ten minutes are over | `workspace`, `sessionId`, `agent`, `model`, `state` (`deleted`, `parked`), `forkHead` |
+| `mcp.tool` | Every MCP tool call ([mcp.md](mcp.md)) | `tool`, `result` (`success`, `failure`, `outcome_unknown`), `durationMs`, `reference` (also in the failure the client got), `code` for a failure |
+| `oauth.consent` | A person approves an app on `/authorize` | `principal`, `clientId`, `scope` |
+| `oauth.workload_exchange` | Every token exchange of a workload identity for a `wiki:git` token | `result` (`issued`, `refused`, `unavailable`); `issuer` and `sessionId` when issued, `reason` when refused |
+| `git.token_issued` | A `wiki:git` token is issued for a session | `workspace`, `sessionId`, `issuer` |
 
 An entry can take up to ten minutes to show up in Workers Logs after the call that wrote it.
 

@@ -45,6 +45,8 @@ export const WorkspaceObjectLive = WorkspaceObject.make(
     const forkSettle = yield* duration("PECIA_FORK_SETTLE", Duration.minutes(10));
     const sweepRetry = yield* duration("PECIA_SWEEP_RETRY", Duration.minutes(5));
     const sandboxTokenTtl = yield* duration("PECIA_SANDBOX_TOKEN_TTL", Duration.hours(1));
+    // The Artifacts tokens `pecia-git-credential` hands to git (docs/mcp.md, "The git endpoint").
+    const gitTokenTtl = yield* duration("PECIA_GIT_TOKEN_TTL", Duration.minutes(15));
 
     return Effect.gen(function* () {
       const context = yield* Effect.context<RuntimeContext>();
@@ -65,6 +67,7 @@ export const WorkspaceObjectLive = WorkspaceObject.make(
           sweepRetryMs: Duration.toMillis(sweepRetry),
           // Artifacts takes a token's lifetime in whole seconds.
           sandboxTokenTtlSeconds: Math.ceil(Duration.toSeconds(sandboxTokenTtl)),
+          gitTokenTtlSeconds: Math.ceil(Duration.toSeconds(gitTokenTtl)),
           wakeAt: (timeMs) =>
             Effect.provide(timeMs === undefined ? storage.deleteAlarm() : storage.setAlarm(timeMs), context),
         }),
@@ -75,19 +78,35 @@ export const WorkspaceObjectLive = WorkspaceObject.make(
         createSession: (name, request) => Logs.structured(workspace.createSession(name, request)),
         listSessions: (name) => Logs.structured(workspace.listSessions(name)),
         endSession: (sessionId) => Logs.structured(workspace.endSession(sessionId)),
+        endSessionAs: (sessionId, principal) => Logs.structured(workspace.endSessionAs(sessionId, principal)),
+        startSession: (name, request, binding, once) =>
+          Logs.structured(workspace.startSession(name, request, binding, once)),
+        getSession: (sessionId) => Logs.structured(workspace.getSession(sessionId)),
+        bindingOf: (sessionId) => Logs.structured(workspace.bindingOf(sessionId)),
+        issueGitToken: (sessionId, workload, tokenHash, expiresAtMs) =>
+          Logs.structured(workspace.issueGitToken(sessionId, workload, tokenHash, expiresAtMs)),
+        gitCredential: (sessionId, tokenHash, remote) =>
+          Logs.structured(workspace.gitCredential(sessionId, tokenHash, remote)),
+        sessionAuthorAs: (sessionId, principal) => Logs.structured(workspace.sessionAuthorAs(sessionId, principal)),
+        landAs: (sessionId, principal, expectedForkHead) =>
+          Logs.structured(workspace.landAs(sessionId, principal, expectedForkHead)),
         mintTokens: (sessionId, sessionKey) => Logs.structured(workspace.mintTokens(sessionId, sessionKey)),
         land: (sessionId, sessionKey) => Logs.structured(workspace.land(sessionId, sessionKey)),
         sweep: () => Logs.structured(workspace.sweep()),
         sessionAuthor: (sessionId, sessionKey) => Logs.structured(workspace.sessionAuthor(sessionId, sessionKey)),
         listThreads: (name, filter) => Logs.structured(workspace.listThreads(name, filter)),
-        createThread: (name, author, request) => Logs.structured(workspace.createThread(name, author, request)),
-        reply: (name, author, threadId, request) => Logs.structured(workspace.reply(name, author, threadId, request)),
-        setThreadState: (name, author, threadId, request) =>
-          Logs.structured(workspace.setThreadState(name, author, threadId, request)),
+        createThread: (name, author, request, once) =>
+          Logs.structured(workspace.createThread(name, author, request, once)),
+        reply: (name, author, threadId, request, expectedRevision, once) =>
+          Logs.structured(workspace.reply(name, author, threadId, request, expectedRevision, once)),
+        setThreadState: (name, author, threadId, request, expectedRevision) =>
+          Logs.structured(workspace.setThreadState(name, author, threadId, request, expectedRevision)),
         editComment: (name, author, commentId, request) =>
           Logs.structured(workspace.editComment(name, author, commentId, request)),
-        deleteComment: (name, author, commentId) => Logs.structured(workspace.deleteComment(name, author, commentId)),
-        moveThreads: (name, request) => Logs.structured(workspace.moveThreads(name, request)),
+        deleteComment: (name, author, commentId, expectedRevision) =>
+          Logs.structured(workspace.deleteComment(name, author, commentId, expectedRevision)),
+        moveThreads: (name, request, expectedThreads) =>
+          Logs.structured(workspace.moveThreads(name, request, expectedThreads)),
         alarm: () => Logs.structured(workspace.sweep()),
       } satisfies WorkspaceShape;
     });

@@ -4,6 +4,8 @@
   "type": "module",
   "dependencies": {
     "@effect/vitest": "4.1.4",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/core": "2.4.0",
     "@pecia/wiki-api": "workspace:*",
     "effect": "4.1.4",
     "jose": "6.2.17",

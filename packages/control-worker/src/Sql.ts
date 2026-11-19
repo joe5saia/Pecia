@@ -80,4 +80,43 @@ export const schema: ReadonlyArray<string> = [
     deleted_at INTEGER
   )`,
   `CREATE INDEX IF NOT EXISTS comments_thread ON comments (thread_id, seq)`,
+  // Each thread's revision (docs/mcp.md, "Writes"): a table of its own because
+  // nothing migrates `threads`. A thread with no row is at revision 0.
+  `CREATE TABLE IF NOT EXISTS thread_revisions (
+    thread_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL
+  )`,
+  // Who started a session over MCP, and which executor may run its git
+  // (docs/mcp.md, "Binding a session"). A session started over the HTTP API has no row.
+  `CREATE TABLE IF NOT EXISTS session_bindings (
+    session_id TEXT PRIMARY KEY,
+    principal TEXT NOT NULL,
+    grant_id TEXT NOT NULL,
+    issuer TEXT,
+    subject TEXT
+  )`,
+  // The hashes of the wiki:git tokens the token exchange issued. Ending the session deletes them.
+  `CREATE TABLE IF NOT EXISTS git_tokens (
+    token_hash TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS git_tokens_session ON git_tokens (session_id)`,
+  // The Artifacts token IDs of the main read tokens handed out for git, revoked when the session ends.
+  `CREATE TABLE IF NOT EXISTS main_read_tokens (
+    token_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS main_read_tokens_session ON main_read_tokens (session_id)`,
+  // The answers of non-idempotent MCP writes, by principal, tool and key, kept for a day.
+  `CREATE TABLE IF NOT EXISTS idempotency_keys (
+    principal TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    key TEXT NOT NULL,
+    input_hash TEXT NOT NULL,
+    result TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (principal, tool, key)
+  )`,
 ];

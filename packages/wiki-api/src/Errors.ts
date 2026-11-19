@@ -103,6 +103,54 @@ export class NotYourComment extends Schema.TaggedError<NotYourComment>()(
   }
 }
 
+/**
+ * 409: what the caller read has changed since: a thread's revision, a page's
+ * set of threads or a fork's head. Read it again and decide whether the change
+ * still applies (docs/mcp.md, "Writes").
+ */
+export class Conflict extends Schema.TaggedError<Conflict>()(
+  "Conflict",
+  {
+    resource: Schema.Literals(["thread", "threads", "fork"]),
+    id: Schema.String,
+    /** What the caller said it read, and what is there now. */
+    expected: Schema.String,
+    actual: Schema.String,
+  },
+  { httpApiStatus: 409 },
+) {
+  override get message(): string {
+    const what = { thread: "thread", threads: "the threads of", fork: "the fork of session" } as const;
+    return `${what[this.resource]} '${this.id}' is at ${this.actual}, not ${this.expected}`;
+  }
+}
+
+/**
+ * 403: the session was started by another principal, or by an orchestrator
+ * over the HTTP API. Only the principal that started a session over MCP may
+ * land, end or comment through it.
+ */
+export class NotYourSession extends Schema.TaggedError<NotYourSession>()(
+  "NotYourSession",
+  { sessionId: SessionId },
+  { httpApiStatus: 403 },
+) {
+  override get message(): string {
+    return `session '${this.sessionId}' was not started by you over MCP`;
+  }
+}
+
+/** 422: an idempotency key already names a request with other input. */
+export class IdempotencyKeyReuse extends Schema.TaggedError<IdempotencyKeyReuse>()(
+  "IdempotencyKeyReuse",
+  { key: Schema.String },
+  { httpApiStatus: 422 },
+) {
+  override get message(): string {
+    return `idempotency key '${this.key}' was used for another request`;
+  }
+}
+
 /** 502: an Artifacts call failed. Safe to retry. */
 export class ArtifactsUnavailable extends Schema.TaggedError<ArtifactsUnavailable>()(
   "ArtifactsUnavailable",

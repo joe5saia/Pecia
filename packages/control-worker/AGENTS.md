@@ -1,6 +1,6 @@
 # Control Worker
 
-The Worker, the workspace Durable Object and their Alchemy stack. Repo-wide rules are in the root `AGENTS.md`; the design is in `docs/mvp.md` and `docs/viewer.md`.
+The Worker, the workspace Durable Object and their Alchemy stack. Repo-wide rules are in the root `AGENTS.md`; the design is in `docs/mvp.md`, `docs/viewer.md` and `docs/mcp.md`.
 
 ## Gotchas
 
@@ -19,6 +19,15 @@ The Worker, the workspace Durable Object and their Alchemy stack. Repo-wide rule
 - Every statement in `Sql.ts`'s `schema` runs again each time a created object starts, so each must be idempotent. A new table is one more `CREATE TABLE IF NOT EXISTS`. A new column on an existing table needs a migration, which nothing here does yet.
 - `sessions.fork_remote` is `''` from the insert of the row until the fork exists. The row goes in first so a fork is never without a session.
 - Token expiry is decided by the service's clock, not by Artifacts'. The service renews a token a twelfth of `sandboxTokenTtl` before it expires, which covers the difference.
+
+### MCP and OAuth (mcp/, OAuth.ts, Principals.ts)
+
+- `@cloudflare/workers-oauth-provider` keeps its grants, tokens and CIMD cache in the `OAuthKV` namespace. Pecia's own MCP state is in each workspace's SQLite: `session_bindings` (a session's principal, grant and workload), `git_tokens` (the hash of each `wiki:git` token), `main_read_tokens` (the IDs of main's read tokens to revoke at end) and `idempotency_keys`.
+- Do not build a `Response` at module load: workerd refuses I/O objects outside a request, and the bundle then fails to start. Build each one inside the handler.
+- A raw `/mcp` call, as from curl, needs `_meta` with `io.modelcontextprotocol/protocolVersion` and `io.modelcontextprotocol/clientCapabilities` in its params, plus the `MCP-Method` and `MCP-Name` headers. The official client sends them.
+- `Conflict`, `NotYourSession` and `IdempotencyKeyReuse` come only from MCP calls. The HTTP API's handlers wrap the shared workspace methods in `overHttp`, which turns them into defects, so they are on no HTTP endpoint.
+- The Host and Origin checks in `admit` compare with the stage's own URL (`Cloudflare.URL` in `worker.ts`): its custom domain when it has one, else workers.dev. A stage with a custom domain does not serve MCP on its workers.dev URL.
+- A principal and a workload issuer are code (`principals`, `workloadIssuers` in `worker.ts`). Two principals with one email or workload is a defect at start.
 
 ### Crossing the Durable Object
 
@@ -55,6 +64,7 @@ The Worker, the workspace Durable Object and their Alchemy stack. Repo-wide rule
 
 - **Access.** A refused assertion is logged as `access assertion refused` with `reason`. The application `pecia-<stage>` and its tokens are in the Zero Trust dashboard under Access.
 - **Logs.** Workers Observability for the stage's Worker. Each usage event is one structured entry; filter on `annotations.event` (`docs/operations.md`, "Monitor usage", has the list). A 500 is logged as `request failed with a defect` with its cause. An entry can take ten minutes to show up. `pnpm exec alchemy logs --stage <stage>`, run here, prints the messages without their fields.
-- **State.** Each workspace's Durable Object has the tables `workspace`, `sessions`, `session_tokens`, `lands`, `threads` and `comments` in its SQLite storage. `GET /workspaces/:ws/sessions` returns the sessions. The repos are in the Artifacts namespace `pecia-<stage>`: a main repo per workspace and a fork `<workspace>--<session-id>` per session. Main's git notes name the session of each landed head.
+- **MCP.** Each tool call is one `mcp.tool` entry with a `reference` that the failed call also gave the client; search on it. The exchange logs `oauth.workload_exchange` with its refusal `reason`.
+- **State.** Each workspace's Durable Object has the tables `workspace`, `sessions`, `session_tokens`, `lands`, `threads`, `comments`, `thread_revisions` and the MCP ones above in its SQLite storage. `GET /workspaces/:ws/sessions` returns the sessions. The repos are in the Artifacts namespace `pecia-<stage>`: a main repo per workspace and a fork `<workspace>--<session-id>` per session. Main's git notes name the session of each landed head.
 - **Trying a change.** `task deploy:preview PULL_REQUEST=<n>`, then `task smoke STAGE=pr-<n> URL=<the url it printed>`, then `task destroy:preview PULL_REQUEST=<n>`. A new Worker can answer `error code: 1104` for some seconds.
 - **Alchemy state** is in the `pecia-state` Worker of the saiaai account, shared by CI and orbs.

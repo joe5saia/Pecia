@@ -54,7 +54,9 @@ export type LandOutcome =
   | { readonly _tag: "Landed"; readonly sha: CommitSha; readonly fetched: Fetched }
   /** `fetched` is `undefined` when the fork does not have main's head: then nothing is fetched to find out. */
   | { readonly _tag: "Behind"; readonly fetched: Fetched | undefined }
-  | { readonly _tag: "NothingToLand" };
+  | { readonly _tag: "NothingToLand" }
+  /** The fork's head is not the one the caller named: it pushed again after it looked. */
+  | { readonly _tag: "ForkMoved"; readonly head: CommitSha };
 
 const dir = "/repo";
 const notesRef = "refs/notes/commits";
@@ -224,6 +226,8 @@ export const land = Effect.fn("Git.land")(function* (options: {
   readonly main: Remote;
   /** The commit `main` points at now. */
   readonly mainHead: CommitSha;
+  /** Land only if the fork's head is this commit (docs/mcp.md, "Writes"); any head when it is left out. */
+  readonly expectedForkHead?: CommitSha | undefined;
   readonly note: string;
   readonly limits: LandLimits;
 }): Effect.fn.Return<LandOutcome, ForkTooLarge | GitError> {
@@ -234,6 +238,7 @@ export const land = Effect.fn("Git.land")(function* (options: {
     return yield* new GitError({ operation: "fetch fork", cause: "the fork has no main branch" });
   }
   const head = CommitSha.make(forkHead);
+  if (options.expectedForkHead !== undefined && head !== options.expectedForkHead) return { _tag: "ForkMoved", head };
   if (head === mainHead) return { _tag: "NothingToLand" };
 
   const fetched = yield* smart(

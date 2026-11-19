@@ -45,14 +45,26 @@ export const overRpc = (stub: Stub): RemoteWorkspace => ({
   createSession: (name, request) => reached(stub.createSession(name, request)),
   listSessions: (name) => reached(stub.listSessions(name)),
   endSession: (sessionId) => reached(stub.endSession(sessionId)),
+  endSessionAs: (sessionId, principal) => reached(stub.endSessionAs(sessionId, principal)),
+  startSession: (name, request, binding, once) => reached(stub.startSession(name, request, binding, once)),
+  getSession: (sessionId) => reached(stub.getSession(sessionId)),
+  bindingOf: (sessionId) => reached(stub.bindingOf(sessionId)),
+  issueGitToken: (sessionId, workload, tokenHash, expiresAtMs) =>
+    reached(stub.issueGitToken(sessionId, workload, tokenHash, expiresAtMs)),
+  gitCredential: (sessionId, tokenHash, remote) => reached(stub.gitCredential(sessionId, tokenHash, remote)),
+  sessionAuthorAs: (sessionId, principal) => reached(stub.sessionAuthorAs(sessionId, principal)),
+  landAs: (sessionId, principal, expectedForkHead) => reached(stub.landAs(sessionId, principal, expectedForkHead)),
   mintTokens: (sessionId, sessionKey) => reached(stub.mintTokens(sessionId, sessionKey)),
   land: (sessionId, sessionKey) => reached(stub.land(sessionId, sessionKey)),
   sessionAuthor: (sessionId, sessionKey) => reached(stub.sessionAuthor(sessionId, sessionKey)),
   listThreads: (name, filter) => reached(stub.listThreads(name, filter)),
-  createThread: (name, author, request) => reached(stub.createThread(name, author, request)),
-  reply: (name, author, threadId, request) => reached(stub.reply(name, author, threadId, request)),
-  setThreadState: (name, author, threadId, request) => reached(stub.setThreadState(name, author, threadId, request)),
+  createThread: (name, author, request, once) => reached(stub.createThread(name, author, request, once)),
+  reply: (name, author, threadId, request, expectedRevision, once) =>
+    reached(stub.reply(name, author, threadId, request, expectedRevision, once)),
+  setThreadState: (name, author, threadId, request, expectedRevision) =>
+    reached(stub.setThreadState(name, author, threadId, request, expectedRevision)),
   editComment: (name, author, commentId, request) => reached(stub.editComment(name, author, commentId, request)),
-  deleteComment: (name, author, commentId) => reached(stub.deleteComment(name, author, commentId)),
-  moveThreads: (name, request) => reached(stub.moveThreads(name, request)),
+  deleteComment: (name, author, commentId, expectedRevision) =>
+    reached(stub.deleteComment(name, author, commentId, expectedRevision)),
+  moveThreads: (name, request, expectedThreads) => reached(stub.moveThreads(name, request, expectedThreads)),
 });
