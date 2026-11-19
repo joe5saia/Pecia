@@ -61,7 +61,7 @@ The deploy jobs read from GitHub:
 | `CLOUDFLARE_ACCOUNT_ID` | Variable | Repository |
 | `CLOUDFLARE_API_TOKEN` | Secret | Repository |
 
-`CLOUDFLARE_API_TOKEN` is the account token "Pecia GitHub Actions deploy", with Workers Scripts Write, Artifacts Write, Secrets Store Write (Alchemy keeps its state store's credentials there), Account Settings Read, Access: Apps and Policies Write, Access: Service Tokens Write and Access: Organizations, Identity Providers, and Groups Read. The smoke check reads the orchestrator token from the state with it, so the workflow needs no pecia secret of its own. `CLOUDFLARE_ACCOUNT_ID` is the saiaai account, the one `alchemy.run.ts` pins the state store to. The Alchemy state is in the `pecia-state` Worker, so a deploy from CI and one from an orb see the same state.
+`CLOUDFLARE_API_TOKEN` is the account token "Pecia GitHub Actions deploy", with Workers Scripts Write, Workers KV Storage Write (the OAuth provider's namespace, [mcp.md](mcp.md)), Artifacts Write, Secrets Store Write (Alchemy keeps its state store's credentials there), Account Settings Read, Access: Apps and Policies Write, Access: Service Tokens Write and Access: Organizations, Identity Providers, and Groups Read. The smoke check reads the orchestrator token from the state with it, so the workflow needs no pecia secret of its own. `CLOUDFLARE_ACCOUNT_ID` is the saiaai account, the one `alchemy.run.ts` pins the state store to. The Alchemy state is in the `pecia-state` Worker, so a deploy from CI and one from an orb see the same state.
 
 A stage's first deploy creates its Worker. For some seconds after it, the Worker's URL can answer `error code: 1104` with status 500: Cloudflare has not finished publishing the script.
 
