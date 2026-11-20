@@ -6,7 +6,7 @@
 // This file runs in workerd, not in Node (see artifacts-binding.ts).
 
 interface Env {
-  /** The host of the Access team the Worker trusts, such as `saiaai.cloudflareaccess.com`. */
+  /** The host of the Access team the Worker trusts, such as `pecia-e2e.cloudflareaccess.com`. */
   readonly ACCESS_HOST: string;
   /** The team's JWKS, as `/cdn-cgi/access/certs` serves it. */
   readonly JWKS: string;

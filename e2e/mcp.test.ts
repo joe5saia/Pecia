@@ -165,7 +165,7 @@ layer(ServerLive("mcp"), { excludeTestServices: true })("mcp", (it) => {
         "move_threads",
       ]);
       const me = yield* call(client, "whoami");
-      expect(me).toMatchObject({ isError: false, structured: { principal: "joe", stage: "e2e" } });
+      expect(me).toMatchObject({ isError: false, structured: { principal: "ada", stage: "e2e" } });
     }),
   );
 
@@ -296,7 +296,7 @@ layer(ServerLive("mcp"), { excludeTestServices: true })("mcp", (it) => {
       const wrongOrigin = yield* rpc(token, "tools/list", {}, { origin: "https://evil.example" });
       expect(wrongOrigin.status).toBe(403);
       expect(JSON.stringify(wrongOrigin.body)).toContain("Origin");
-      const unknown = yield* rpc("joe:nope:nope", "tools/list", {});
+      const unknown = yield* rpc("ada:nope:nope", "tools/list", {});
       expect(unknown.status).toBe(401);
       expect(unknown.headers.get("www-authenticate")).toContain('error="invalid_token"');
       const old = yield* rpc(
@@ -347,7 +347,7 @@ layer(ServerLive("mcp"), { excludeTestServices: true })("mcp", (it) => {
   it.effect("consent is refused to a service token, cannot be replayed, and a denial goes back to the client", () =>
     Effect.gen(function* () {
       const server = yield* Server;
-      const person = yield* server.access.person("joe5saia@gmail.com");
+      const person = yield* server.access.person("ada@example.com");
       const authorizationUrl = Effect.gen(function* () {
         const memory = memoryProvider("wiki:read wiki:write");
         // The first connection meets the 401 and sends the person to sign in.
@@ -473,7 +473,7 @@ layer(ServerLive("mcp"), { excludeTestServices: true })("mcp", (it) => {
       const tokens = {
         otherThread: yield* server.amp.idToken({ threadId: "T-someone-else", audience: server.url }),
         otherUser: yield* server.amp.idToken({ threadId: thread, audience: server.url, userId: "user_other" }),
-        otherStage: yield* server.amp.idToken({ threadId: thread, audience: "https://pecia.joesaia.trade" }),
+        otherStage: yield* server.amp.idToken({ threadId: thread, audience: "https://wiki.example.com" }),
         mcp: yield* server.amp.idToken({ threadId: thread, audience: server.url, claims: { token_use: "mcp" } }),
         forged: yield* server.amp.idToken({ threadId: thread, audience: server.url, forged: true }),
         expired: yield* server.amp.idToken({

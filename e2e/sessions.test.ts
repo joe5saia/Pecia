@@ -171,7 +171,7 @@ layer(ServerLive("api"), { excludeTestServices: true })("the API", (it) => {
       });
       expect((yield* api("GET", "/workspaces/auth/sessions", { as: otherApplication })).status).toBe(401);
       // A person reads and comments, but runs no sessions.
-      const person = yield* access.person("joe5saia@gmail.com");
+      const person = yield* access.person("ada@example.com");
       expect((yield* api("GET", "/workspaces/auth/sessions", { as: person })).status).toBe(401);
 
       const session = decodeSession(

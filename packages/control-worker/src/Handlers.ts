@@ -64,7 +64,7 @@ export class Workspaces extends Context.Service<
 >()("pecia/Workspaces") {}
 
 /**
- * The stage's own origin, such as `https://pecia.joesaia.trade`: the hostname in the address of an edit's author.
+ * The stage's own origin, such as `https://wiki.example.com`: the hostname in the address of an edit's author.
  * Like the reader, it is given with each request: on Cloudflare it is read from the Worker's bindings.
  */
 export class StageOrigin extends Context.Service<StageOrigin, string>()("pecia/StageOrigin") {}

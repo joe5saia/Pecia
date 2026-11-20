@@ -1,24 +1,34 @@
-import type { PrincipalId } from "@pecia/wiki-api";
+import { PrincipalId } from "@pecia/wiki-api";
+import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 // The people pecia knows, and the workload identity issuers it trusts
-// (docs/mcp.md, "Principals" and "Trust table"). worker.ts declares both
-// lists; Access's "People" policy is built from the same principals.
+// (docs/mcp.md, "Principals" and "Trust table"). The principals are the
+// install's own, from `PECIA_PRINCIPALS`; worker.ts declares the
+// issuers. Access's "People" policy is built from the same principals.
 
 /** A workload identity that acts for a principal: the issuer, and the user it names in `userClaim`. */
-export interface WorkloadIdentity {
-  readonly issuer: string;
-  readonly user: string;
-}
+export const WorkloadIdentity = Schema.Struct({ issuer: Schema.String, user: Schema.String });
+export type WorkloadIdentity = typeof WorkloadIdentity.Type;
 
-export interface Principal {
+export const Principal = Schema.Struct({
   /** Stable and never reused: grants, session bindings and comments keep it. */
-  readonly id: PrincipalId;
+  id: PrincipalId,
   /** The Access login, and for display. An email can be reassigned, so nothing is keyed by it. */
-  readonly email: string;
-  readonly workloads: ReadonlyArray<WorkloadIdentity>;
-}
+  email: Schema.String,
+  workloads: Schema.Array(WorkloadIdentity),
+});
+export type Principal = typeof Principal.Type;
+
+/**
+ * The principals as JSON in `PECIA_PRINCIPALS`, set where the deploy
+ * runs (docs/deploy.md); the scenarios bind their own. Access's "People"
+ * policy, the consent page, the MCP endpoint and the token exchange all read
+ * this one list, so removing a principal shuts every path at once.
+ */
+export const fromEnvironment = Config.schema(Schema.fromJsonString(Schema.Array(Principal)), "PECIA_PRINCIPALS");
 
 /** One issuer of identity tokens that the token exchange accepts. */
 export interface WorkloadIssuer {

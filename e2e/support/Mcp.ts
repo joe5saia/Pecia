@@ -169,7 +169,7 @@ export const signIn = Effect.fnUntraced(function* (options: { readonly write: bo
   if (authorization === undefined) {
     return yield* Effect.die(new Error("the client was not sent to sign in"));
   }
-  const person = yield* server.access.person(options.email ?? "joe5saia@gmail.com");
+  const person = yield* server.access.person(options.email ?? "ada@example.com");
   const consent = yield* openConsent(authorization, person);
   const approved = yield* consent.answer({ approve: true, write: options.write });
   if (approved.location === null) {

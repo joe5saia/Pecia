@@ -42,7 +42,7 @@ No tool result ever carries a token. A session started over MCP has no session k
 ### How each client signs in
 
 - **MCP clients** (Claude Code, Codex, Amp, and claude.ai connectors) use OAuth 2.1 with the provider from `@cloudflare/workers-oauth-provider`. The client finds `/.well-known/oauth-protected-resource/mcp` (RFC 9728) from the `WWW-Authenticate` of a 401, then the authorization server metadata. It registers with a Client ID Metadata Document (CIMD), then sends the person to `/authorize`. The provider does not offer dynamic client registration.
-- **`/authorize`** stays behind Cloudflare Access with the Google login, so the consent page knows the person's email. Only an email in `principals` (`packages/control-worker/src/worker.ts`) can consent, and a service token gets 403. The page shows the client's verified domain, where access is sent, and a warning for a loopback redirect. `wiki:read` is always granted; `wiki:write` only if the person ticks it.
+- **`/authorize`** stays behind Cloudflare Access with the install's login method (`PECIA_IDP_TYPE`), so the consent page knows the person's email. Only an email in `PECIA_PRINCIPALS` can consent, and a service token gets 403. The page shows the client's verified domain, where access is sent, and a warning for a loopback redirect. `wiki:read` is always granted; `wiki:write` only if the person ticks it.
 - **Git** in an Amp orb uses `pecia-git-credential`. Each time git asks it, it gets an identity token from `amp orb id-token --audience <stage URL>` and exchanges it at `/oauth/token` (RFC 8693, `client_id=pecia-git`, `resource=<stage URL>/git/sessions/<id>`) for a `wiki:git` token. It then asks `POST /git/sessions/<id>?remote=fork|main` for an Artifacts token for that one remote. The checkout's `credential.helper` names the helper by its full path, `$HOME/.local/bin/pecia-git-credential`, so git finds it whatever `PATH` is. The exchange checks the token against its issuer's JWKS, the stage URL as the audience, the principal in `workloads`, and the session's binding to that thread. It refuses a token issued to another thread, another user, or another stage, or one that is expired or forged. Other workload issuers are added to `workloadIssuers`.
 
 The paths in `bypassedPaths` (`worker.ts`) skip Access through the `McpBypass` Access application, because MCP clients send OAuth tokens, not Access credentials. `/authorize` and the rest of the stage stay behind Access. The Worker checks those requests itself: `/mcp` checks Host and Origin, then the bearer token, the principal, and the scope; `/oauth/token` and `/git/*` check their own tokens. Every MCP and OAuth path, `/authorize` included, is rate limited to 120 requests a minute per IP (`OAuthRateLimit`).
@@ -53,12 +53,12 @@ In Amp, add the URL in settings as a remote MCP server with OAuth. The served `p
 
 ```sh
 # Claude Code
-claude mcp add --transport http pecia https://pecia.joesaia.trade/mcp
+claude mcp add --transport http pecia https://<stage hostname>/mcp
 # Codex: config.toml
 [features]
 mcp_2026_07_28 = true
 [mcp_servers.pecia]
-url = "https://pecia.joesaia.trade/mcp"
+url = "https://<stage hostname>/mcp"
 ```
 
 Then run `/mcp` (Claude Code) or `codex mcp login pecia` and approve the consent page. Git through `pecia-git-credential` works only in an Amp orb, where `amp orb id-token` exists. On your own machine, use the management tools; for git, use the HTTP API's orchestrated path (`using-pecia-wiki`).

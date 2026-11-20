@@ -7,9 +7,10 @@ export default Alchemy.Stack(
   "pecia",
   {
     providers: Cloudflare.providers(),
-    // Pecia's own state store, pinned to the saiaai account, so it doesn't share
-    // the account's default store with other Alchemy projects.
-    state: Cloudflare.state({ workerName: "pecia-state", accountId: "9a0a3a6cd60ff88c05b497a3c9809757" }),
+    // Pecia's own state store, so it doesn't share the account's default store
+    // with other Alchemy projects. It is in the account of CLOUDFLARE_ACCOUNT_ID,
+    // which every Alchemy task requires.
+    state: Cloudflare.state({ workerName: "pecia-state" }),
   },
   Effect.gen(function* () {
     const worker = yield* ControlWorker;

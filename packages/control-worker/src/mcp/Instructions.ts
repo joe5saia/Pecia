@@ -127,12 +127,7 @@ description: "Sets up pecia for an agent: connects an MCP client (Amp, Claude Co
 
 # Setting up pecia
 
-pecia serves an MCP server on each stage:
-
-- prod: https://pecia.joesaia.trade/mcp
-- staging: https://staging.pecia.joesaia.trade/mcp (for testing pecia itself)
-
-Use prod unless the user asks for staging. An agent needs two things: an MCP client signed in with wiki:read and wiki:write, and, to clone and push pages, a shell where pecia-git-credential can get tokens.
+pecia serves an MCP server at /mcp on each stage of an install, such as https://wiki.example.com/mcp. Use the URL of the server that served you this skill, or the one the person gives you. An install usually has a prod and a staging stage; use prod unless the person asks for staging. An agent needs two things: an MCP client signed in with wiki:read and wiki:write, and, to clone and push pages, a shell where pecia-git-credential can get tokens.
 
 ## Connect a client
 
@@ -145,7 +140,7 @@ The client signs in with OAuth. It discovers everything from the URL; no client 
 
 ## Consent
 
-Signing in opens pecia's consent page in the person's browser, behind Cloudflare Access's Google sign-in. Only a person pecia knows can approve; an agent cannot do this step for them.
+Signing in opens pecia's consent page in the person's browser, behind the install's Cloudflare Access sign-in. Only a person pecia knows can approve; an agent cannot do this step for them.
 
 1. The page names the app and where access is sent. A loopback address (127.0.0.1 or localhost) means an app on their computer: approve only if they just started signing in from it.
 2. wiki:read is always granted. Tick wiki:write to let the agent create workspaces, start, land and end sessions, and comment. Many clients ask for wiki:read only, so the box starts unticked.

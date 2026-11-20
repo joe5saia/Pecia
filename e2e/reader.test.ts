@@ -89,11 +89,11 @@ layer(ServerLive("reader"), { excludeTestServices: true })("the reader", (it) =>
       const server = yield* Server;
       const { access } = server;
       expect((yield* api("GET", "/workspaces", { as: {} })).status).toBe(401);
-      const person = yield* access.person("joe5saia@gmail.com");
+      const person = yield* access.person("ada@example.com");
       expect((yield* api("GET", "/workspaces", { as: person })).status).toBe(200);
       // A principal, and a script with the orchestrator token, may also publish edits (docs/editing.md, "Auth").
       expect((yield* api("GET", "/auth/me", { as: person })).body).toEqual({
-        name: "joe5saia@gmail.com",
+        name: "ada@example.com",
         editor: true,
       });
       expect((yield* api("GET", "/auth/me")).body).toEqual({ name: "orchestrator", editor: true });
@@ -102,7 +102,7 @@ layer(ServerLive("reader"), { excludeTestServices: true })("the reader", (it) =>
       expect((yield* api("GET", "/auth/me", { as: guest })).body).toEqual({ name: "guest@example.com", editor: false });
 
       // An assertion signed by another key, or with no email, is no person.
-      const forged = yield* access.assertion({ email: "joe5saia@gmail.com", sub: "x" }, { forged: true });
+      const forged = yield* access.assertion({ email: "ada@example.com", sub: "x" }, { forged: true });
       expect((yield* api("GET", "/workspaces", { as: forged })).status).toBe(401);
       expect((yield* api("GET", "/workspaces", { as: yield* access.assertion({ sub: "x" }) })).status).toBe(401);
       // The old login is gone: its cookie opens nothing and its endpoints do not exist.

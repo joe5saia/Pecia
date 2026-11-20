@@ -16,7 +16,7 @@ import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { accessTeam, makeAccess } from "./Access.ts";
 import type { Access } from "./Access.ts";
-import { makeAmp } from "./Amp.ts";
+import { ampIssuer, adaAmpUser, makeAmp } from "./Amp.ts";
 import type { Amp } from "./Amp.ts";
 import { startArtifacts } from "./Artifacts.ts";
 import type { Artifacts } from "./Artifacts.ts";
@@ -42,6 +42,9 @@ export interface Settings {
   readonly sandboxTokenTtl: string;
   readonly gitTokenTtl: string;
 }
+
+/** The people the stage knows, as `PECIA_PRINCIPALS` gives them to a deploy. */
+const principals = [{ id: "ada", email: "ada@example.com", workloads: [{ issuer: ampIssuer, user: adaAmpUser }] }];
 
 /** What a deploy uses, unless a scenario file needs seconds. */
 const deployed: Settings = {
@@ -277,6 +280,9 @@ const pecia :Workerd.Worker = (
     ${text("PECIA_SWEEP_RETRY", settings.sweepRetry)},
     ${text("PECIA_SANDBOX_TOKEN_TTL", settings.sandboxTokenTtl)},
     ${text("PECIA_GIT_TOKEN_TTL", settings.gitTokenTtl)},
+    ${text("PECIA_ACCESS_TEAM", new URL(accessTeam).hostname)},
+    ${text("PECIA_IDP_TYPE", "google")},
+    ${text("PECIA_PRINCIPALS", JSON.stringify(principals))},
   ],
 );
 

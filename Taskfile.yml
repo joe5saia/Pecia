@@ -4,25 +4,39 @@ version: "3"
 
 set: [errexit, pipefail]
 
+# What is specific to an install (docs/deploy.md, "Configure your install")
+# comes from the environment, never from a file in the repository: GitHub
+# Actions variables in CI, the Amp project's environment variables in orbs,
+# and a gitignored .env (copied from .env.example) on a laptop. Variables
+# already set in the environment win over .env.
+dotenv: [.env]
+
 vars:
   STACK_DIR: packages/control-worker
-  # Each long-lived stage's own hostname, in the joesaia.trade zone of the
-  # saiaai account. The deploy task attaches it to the Worker as a custom
-  # domain (PECIA_DOMAIN). Each stage also keeps its workers.dev URL.
-  STAGING_DOMAIN: staging.pecia.joesaia.trade
-  PROD_DOMAIN: pecia.joesaia.trade
+  # Each long-lived stage's own hostname. The deploy task attaches it to the
+  # Worker as a custom domain (PECIA_DOMAIN); each stage also keeps its
+  # workers.dev URL.
+  STAGING_DOMAIN: "{{.PECIA_STAGING_DOMAIN}}"
+  PROD_DOMAIN: "{{.PECIA_PROD_DOMAIN}}"
   STAGING_URL: https://{{.STAGING_DOMAIN}}
   # Where access:token writes a stage's orchestrator token, as setup.sh and
   # wiki-session work out pecia's directory.
   PECIA_HOME:
     sh: echo "${PECIA_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/pecia}"
 
-# Cloudflare credentials for the Alchemy tasks. Alchemy uses them when both are
-# set (CI, orbs) and otherwise falls back to the local `alchemy profile`.
-# CLOUDFLARE_* wins; the SAIAAI_* names select the saiaai account in orbs.
+# What the Alchemy tasks need, beyond the install's settings, which pass
+# through from the environment: CLOUDFLARE_ACCOUNT_ID (every deploy goes to
+# that account, whatever else the token reaches), PECIA_ACCESS_TEAM,
+# PECIA_IDP_TYPE, PECIA_IDP_NAME and PECIA_PRINCIPALS, which src/worker.ts
+# reads at deploy and binds to the Worker. The API token is
+# CLOUDFLARE_API_TOKEN, or PECIA_CLOUDFLARE_API_TOKEN where CLOUDFLARE_API_TOKEN
+# already names another account's token, as in an Amp orb with several.
 x-cloudflare-env: &cloudflare-env
-  CLOUDFLARE_ACCOUNT_ID: "{{.CLOUDFLARE_ACCOUNT_ID | default .SAIAAI_CLOUDFLARE_ACCOUNT_ID}}"
-  CLOUDFLARE_API_TOKEN: "{{.CLOUDFLARE_API_TOKEN | default .SAIAAI_CLOUDFLARE_API_TOKEN}}"
+  CLOUDFLARE_API_TOKEN: "{{.CLOUDFLARE_API_TOKEN | default .PECIA_CLOUDFLARE_API_TOKEN}}"
+
+# The install's settings every Alchemy task needs; a stage's hostname is checked by its own task.
+x-install-settings: &install-settings
+  vars: [CLOUDFLARE_ACCOUNT_ID, PECIA_ACCESS_TEAM, PECIA_IDP_TYPE, PECIA_PRINCIPALS]
 
 # The Control Worker's settings. Cloudflare Access gates each stage; the stack
 # declares its application and service tokens (docs/operations.md, "Access"),
@@ -172,6 +186,7 @@ tasks:
     deps: [build:viewer]
     desc: Run the Control Worker and Durable Objects locally with alchemy dev
     dir: "{{.STACK_DIR}}"
+    requires: *install-settings
     env: *cloudflare-env
     interactive: true
     cmd: pnpm exec alchemy dev
@@ -182,6 +197,7 @@ tasks:
     vars:
       STAGE: '{{.STAGE | default "staging"}}'
     dir: "{{.STACK_DIR}}"
+    requires: *install-settings
     env: *cloudflare-env
     cmd: PECIA_DOMAIN="{{if eq .STAGE "prod"}}{{.PROD_DOMAIN}}{{else if eq .STAGE "staging"}}{{.STAGING_DOMAIN}}{{end}}" pnpm exec alchemy plan --stage {{.STAGE}} --no-input
 
@@ -192,7 +208,7 @@ tasks:
     deps: [build:viewer]
     desc: Deploy the pr-<PULL_REQUEST> preview stage
     requires:
-      vars: [PULL_REQUEST]
+      vars: [PULL_REQUEST, CLOUDFLARE_ACCOUNT_ID, PECIA_ACCESS_TEAM, PECIA_IDP_TYPE, PECIA_PRINCIPALS]
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
     cmd: pnpm exec alchemy deploy --stage pr-{{.PULL_REQUEST}} --yes --no-input
@@ -200,7 +216,7 @@ tasks:
   destroy:preview:
     desc: Destroy the pr-<PULL_REQUEST> preview stage
     requires:
-      vars: [PULL_REQUEST]
+      vars: [PULL_REQUEST, CLOUDFLARE_ACCOUNT_ID, PECIA_ACCESS_TEAM, PECIA_IDP_TYPE, PECIA_PRINCIPALS]
     dir: "{{.STACK_DIR}}"
     env: *cloudflare-env
     cmd: pnpm exec alchemy destroy --stage pr-{{.PULL_REQUEST}} --yes --no-input
@@ -209,6 +225,8 @@ tasks:
     deps: [build:viewer]
     desc: Deploy the staging stage
     dir: "{{.STACK_DIR}}"
+    requires:
+      vars: [CLOUDFLARE_ACCOUNT_ID, PECIA_ACCESS_TEAM, PECIA_IDP_TYPE, PECIA_PRINCIPALS, PECIA_STAGING_DOMAIN]
     env: *cloudflare-env
     cmd: PECIA_DOMAIN={{.STAGING_DOMAIN}} pnpm exec alchemy deploy --stage staging --yes --no-input
 
@@ -216,6 +234,8 @@ tasks:
     deps: [build:viewer]
     desc: Deploy the prod stage
     dir: "{{.STACK_DIR}}"
+    requires:
+      vars: [CLOUDFLARE_ACCOUNT_ID, PECIA_ACCESS_TEAM, PECIA_IDP_TYPE, PECIA_PRINCIPALS, PECIA_PROD_DOMAIN]
     env: *cloudflare-env
     cmd: PECIA_DOMAIN={{.PROD_DOMAIN}} pnpm exec alchemy deploy --stage prod --yes --no-input
 
@@ -229,6 +249,8 @@ tasks:
       STAGE: '{{.STAGE | default "staging"}}'
       FILE: "{{.PECIA_HOME}}/access-{{.STAGE}}.env"
     dir: "{{.STACK_DIR}}"
+    requires:
+      vars: [CLOUDFLARE_ACCOUNT_ID]
     env: *cloudflare-env
     silent: true
     cmd: |
@@ -275,12 +297,12 @@ tasks:
           challenge=$(curl -sS -o /dev/null -X POST -H 'content-type: application/json' --data '{}' -w '%{http_code} %header{www-authenticate}' "{{.URL}}/mcp" || true)
           oauth=$(curl -sS -X POST -H 'content-type: application/x-www-form-urlencoded' --data '' "{{.URL}}/oauth/token" || true)
           consent=$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "{{.URL}}/authorize" || true)
-          if [[ "$anonymous" == "302 https://saiaai.cloudflareaccess.com/"* ]] &&
+          if [[ "$anonymous" == "302 https://{{.PECIA_ACCESS_TEAM}}/"* ]] &&
             jq -e '._tag == "NotFound"' >/dev/null 2>&1 <<<"$body" && grep -q '<div id="root">' <<<"$viewer" &&
             jq -e --arg resource "{{.URL}}/mcp" '.resource == $resource' >/dev/null 2>&1 <<<"$metadata" &&
             [[ "$challenge" == "401 Bearer resource_metadata=\"{{.URL}}/.well-known/oauth-protected-resource/mcp\""* ]] &&
             jq -e '.error | type == "string"' >/dev/null 2>&1 <<<"$oauth" &&
-            [[ "$consent" == "302 https://saiaai.cloudflareaccess.com/"* ]]; then
+            [[ "$consent" == "302 https://{{.PECIA_ACCESS_TEAM}}/"* ]]; then
             echo "{{.STAGE}} answers"
             exit 0
           fi

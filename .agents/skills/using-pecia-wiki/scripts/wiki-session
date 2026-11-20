@@ -17,12 +17,17 @@ tools="$repo_root/packages/sandbox-tools"
 state_dir="${PECIA_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/pecia}"
 session_file="$state_dir/session.env"
 
-# The stages' own hostnames (Taskfile.yml). Sessions set up before them
-# recorded the workers.dev URLs, which still serve the same Workers.
-staging_url=https://staging.pecia.joesaia.trade
-prod_url=https://pecia.joesaia.trade
-staging_workers_dev=https://pecia-controlworker-staging-5psyjyjp2wm6ohvr.joe-9a0.workers.dev
-prod_workers_dev=https://pecia-controlworker-prod-3qj2wdcevov3iq5y.joe-9a0.workers.dev
+# The stages' own hostnames, from the environment or the repository's
+# gitignored .env, as the Taskfile reads them (docs/deploy.md). Sessions set
+# up before them recorded the workers.dev URLs, which still serve the same Workers.
+if [ -f "$repo_root/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$repo_root/.env"
+  set +a
+fi
+staging_url="https://${PECIA_STAGING_DOMAIN:-}"
+prod_url="https://${PECIA_PROD_DOMAIN:-}"
 
 die() {
   echo "wiki-session: $*" >&2
@@ -33,8 +38,8 @@ die() {
 use_stage() {
   stage="$1"
   case "$stage" in
-    staging) url="$staging_url" ;;
-    prod) url="$prod_url" ;;
+    staging) [ -n "${PECIA_STAGING_DOMAIN:-}" ] || die "set PECIA_STAGING_DOMAIN (docs/deploy.md)"; url="$staging_url" ;;
+    prod) [ -n "${PECIA_PROD_DOMAIN:-}" ] || die "set PECIA_PROD_DOMAIN (docs/deploy.md)"; url="$prod_url" ;;
     pr-[0-9]*) url="${PECIA_URL:-}" && [ -n "$url" ] || die "set PECIA_URL to the URL of preview $stage" ;;
     *) die "unknown stage '$stage': use staging, prod or pr-<n>" ;;
   esac
@@ -108,8 +113,8 @@ end() {
   wiki_url="$(sed -n 's/^WIKI_URL=//p' "$session_file")"
   session_id="$(sed -n 's/^SESSION_ID=//p' "$session_file")"
   case "$wiki_url" in
-    "$staging_url" | "$staging_workers_dev") use_stage staging ;;
-    "$prod_url" | "$prod_workers_dev") use_stage prod ;;
+    "$staging_url" | https://pecia-controlworker-staging-*.workers.dev) use_stage staging ;;
+    "$prod_url" | https://pecia-controlworker-prod-*.workers.dev) use_stage prod ;;
     # A preview's own name is in its workers.dev hostname.
     *-controlworker-pr-*) PECIA_URL="$wiki_url" use_stage "$(sed -E 's|.*-controlworker-(pr-[0-9]+)-.*|\1|' <<<"$wiki_url")" ;;
     *) die "$session_file names an unknown Worker: $wiki_url" ;;

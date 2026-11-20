@@ -36,12 +36,12 @@ const asPerson = Effect.fnUntraced(function* (email: string, method: string, pat
   return yield* api(method, path, { as: yield* server.access.person(email), ...(body === undefined ? {} : { body }) });
 });
 
-const joe = "joe5saia@gmail.com";
+const ada = "ada@example.com";
 const ann = "ann@example.com";
 
-/** Start a thread as Joe and answer it decoded. */
+/** Start a thread as Ada and answer it decoded. */
 const startThread = Effect.fnUntraced(function* (workspace: string, request: unknown) {
-  const created = yield* asPerson(joe, "POST", `/workspaces/${workspace}/threads`, request);
+  const created = yield* asPerson(ada, "POST", `/workspaces/${workspace}/threads`, request);
   if (created.status !== 200) {
     return yield* Effect.die(new Error(`creating a thread answered ${created.status}`));
   }
@@ -65,14 +65,14 @@ layer(ServerLive("comments"), { excludeTestServices: true })("comments", (it) =>
           body: "CI deploys prod; reword this.",
           anchor: { _tag: "Quote", quote },
         });
-        expect(thread.comments[0]?.author).toEqual({ _tag: "Person", name: joe });
+        expect(thread.comments[0]?.author).toEqual({ _tag: "Person", name: ada });
 
         // The agent's checkout has moved on: the passage is now on line 5, not 3.
         yield* agent.commit(page, text.replace("\n\n", "\n\nIntro.\n\n"));
         const listed = yield* agent.comments("list");
         expect(listed.exitCode).toBe(0);
         expect(listed.output).toContain(`${thread.id}  open  deploy.md:5 (moved)`);
-        expect(listed.output).toContain(`${joe} (person)`);
+        expect(listed.output).toContain(`${ada} (person)`);
 
         const landed = yield* agent.land;
         expect(landed).toMatchObject({
@@ -97,7 +97,7 @@ layer(ServerLive("comments"), { excludeTestServices: true })("comments", (it) =>
           "resolved by amp test-model (agent)",
         );
 
-        const all = yield* asPerson(joe, "GET", "/workspaces/flow/threads?state=all");
+        const all = yield* asPerson(ada, "GET", "/workspaces/flow/threads?state=all");
         expect(all.body).toMatchObject([
           {
             id: thread.id,
@@ -112,15 +112,15 @@ layer(ServerLive("comments"), { excludeTestServices: true })("comments", (it) =>
           },
         ]);
         // Open threads only, unless asked; filtered by state and page.
-        expect((yield* asPerson(joe, "GET", "/workspaces/flow/threads")).body).toEqual([]);
+        expect((yield* asPerson(ada, "GET", "/workspaces/flow/threads")).body).toEqual([]);
         expect(
-          decodeThreads((yield* asPerson(joe, "GET", `/workspaces/flow/threads?state=resolved&path=${page}`)).body),
+          decodeThreads((yield* asPerson(ada, "GET", `/workspaces/flow/threads?state=resolved&path=${page}`)).body),
         ).toHaveLength(1);
         expect((yield* agent.comments("list")).output).toBe("no threads");
         expect((yield* agent.comments("reply", "nope", "x")).exitCode).toBe(1);
 
         const reopened = decodeThread(
-          (yield* asPerson(joe, "POST", `/workspaces/flow/threads/${thread.id}/state`, { state: "open" })).body,
+          (yield* asPerson(ada, "POST", `/workspaces/flow/threads/${thread.id}/state`, { state: "open" })).body,
         );
         expect(reopened).toMatchObject({ state: "open", resolvedAt: null, resolvedBy: null });
         expect(reopened.comments).toHaveLength(4);
@@ -165,7 +165,7 @@ layer(ServerLive("comments"), { excludeTestServices: true })("comments", (it) =>
     Effect.gen(function* () {
       yield* wikiWithPage("misfit");
       const attempt = (path: string, anchor: unknown) =>
-        asPerson(joe, "POST", "/workspaces/misfit/threads", { path, body: "?", anchor });
+        asPerson(ada, "POST", "/workspaces/misfit/threads", { path, body: "?", anchor });
       expect(yield* attempt(page, { _tag: "Quote", quote: "`" })).toMatchObject({
         status: 422,
         body: { _tag: "AnchorMismatch", path: page, reason: "quote_ambiguous" },
@@ -190,9 +190,9 @@ layer(ServerLive("comments"), { excludeTestServices: true })("comments", (it) =>
         body: { _tag: "NotFound", resource: "file" },
       });
       expect(
-        yield* asPerson(joe, "POST", `/workspaces/misfit/threads/${"0".repeat(12)}/comments`, { body: "hi" }),
+        yield* asPerson(ada, "POST", `/workspaces/misfit/threads/${"0".repeat(12)}/comments`, { body: "hi" }),
       ).toMatchObject({ status: 404, body: { _tag: "NotFound", resource: "thread" } });
-      expect(decodeThreads((yield* asPerson(joe, "GET", "/workspaces/misfit/threads?state=all")).body)).toHaveLength(1);
+      expect(decodeThreads((yield* asPerson(ada, "GET", "/workspaces/misfit/threads?state=all")).body)).toHaveLength(1);
     }),
   );
 
@@ -247,7 +247,7 @@ layer(ServerLive("comments"), { excludeTestServices: true })("comments", (it) =>
         const head = yield* server.artifacts.git("repin", "rev-parse", "main");
 
         const replied = decodeThread(
-          (yield* asPerson(joe, "POST", `/workspaces/repin/threads/${thread.id}/comments`, {
+          (yield* asPerson(ada, "POST", `/workspaces/repin/threads/${thread.id}/comments`, {
             body: "Still here.",
             anchor: { _tag: "Quote", quote },
           })).body,
@@ -267,8 +267,8 @@ layer(ServerLive("comments"), { excludeTestServices: true })("comments", (it) =>
         expect((yield* agent.comments("move", page, "deploying.md")).output).toBe(
           `moved 1 thread from ${page} to deploying.md`,
         );
-        expect((yield* asPerson(joe, "GET", `/workspaces/repin/threads?path=${page}`)).body).toEqual([]);
-        expect((yield* asPerson(joe, "GET", "/workspaces/repin/threads?path=deploying.md")).body).toMatchObject([
+        expect((yield* asPerson(ada, "GET", `/workspaces/repin/threads?path=${page}`)).body).toEqual([]);
+        expect((yield* asPerson(ada, "GET", "/workspaces/repin/threads?path=deploying.md")).body).toMatchObject([
           { id: thread.id, path: "deploying.md" },
         ]);
       }),
@@ -286,7 +286,7 @@ layer(ServerLive("comments"), { excludeTestServices: true })("comments", (it) =>
         const replyId = /\[([0-9a-f]{12})\] amp test-model \(agent\)/.exec(replied.output)?.[1] ?? "";
         const refused = { status: 403, body: { _tag: "NotYourComment" } };
 
-        // Another person may not touch Joe's comment.
+        // Another person may not touch Ada's comment.
         expect(yield* asPerson(ann, "PATCH", `/workspaces/ownership/comments/${rootId}`, { body: "x" })).toMatchObject({
           ...refused,
           body: { ...refused.body, commentId: rootId, action: "edit" },
@@ -294,28 +294,28 @@ layer(ServerLive("comments"), { excludeTestServices: true })("comments", (it) =>
         expect(yield* asPerson(ann, "DELETE", `/workspaces/ownership/comments/${rootId}`)).toMatchObject(refused);
         // Another session may not delete this agent's comment, and a person may not either.
         expect((yield* other.comments("delete", replyId)).exitCode).toBe(1);
-        expect(yield* asPerson(joe, "DELETE", `/workspaces/ownership/comments/${replyId}`)).toMatchObject(refused);
-        expect(yield* asPerson(joe, "PATCH", `/workspaces/ownership/comments/${replyId}`, { body: "x" })).toMatchObject(
+        expect(yield* asPerson(ada, "DELETE", `/workspaces/ownership/comments/${replyId}`)).toMatchObject(refused);
+        expect(yield* asPerson(ada, "PATCH", `/workspaces/ownership/comments/${replyId}`, { body: "x" })).toMatchObject(
           refused,
         );
 
         const edited = decodeThread(
-          (yield* asPerson(joe, "PATCH", `/workspaces/ownership/comments/${rootId}`, { body: "First, reworded." }))
+          (yield* asPerson(ada, "PATCH", `/workspaces/ownership/comments/${rootId}`, { body: "First, reworded." }))
             .body,
         );
         expect(edited.comments[0]).toMatchObject({ body: "First, reworded.", deletedAt: null });
         expect(edited.comments[0]?.editedAt).not.toBeNull();
 
         // Deleting the root keeps the thread and the reply after it.
-        expect((yield* asPerson(joe, "DELETE", `/workspaces/ownership/comments/${rootId}`)).status).toBe(200);
+        expect((yield* asPerson(ada, "DELETE", `/workspaces/ownership/comments/${rootId}`)).status).toBe(200);
         expect((yield* agent.comments("delete", replyId)).exitCode).toBe(0);
-        const [after] = decodeThreads((yield* asPerson(joe, "GET", "/workspaces/ownership/threads")).body);
+        const [after] = decodeThreads((yield* asPerson(ada, "GET", "/workspaces/ownership/threads")).body);
         expect(after?.comments.map((comment) => [comment.body, comment.deletedAt === null])).toEqual([
           ["", false],
           ["", false],
         ]);
         expect(
-          yield* asPerson(joe, "PATCH", `/workspaces/ownership/comments/${rootId}`, { body: "back" }),
+          yield* asPerson(ada, "PATCH", `/workspaces/ownership/comments/${rootId}`, { body: "back" }),
         ).toMatchObject({
           status: 404,
           body: { _tag: "NotFound", resource: "comment" },
@@ -333,11 +333,11 @@ layer(ServerLive("comments"), { excludeTestServices: true })("comments", (it) =>
       expect(reply.exitCode).toBe(1);
       expect(reply.error).toContain(`session '${agent.sessionId}' has ended`);
 
-      expect(yield* asPerson(joe, "GET", "/workspaces/nobody/threads")).toMatchObject({
+      expect(yield* asPerson(ada, "GET", "/workspaces/nobody/threads")).toMatchObject({
         status: 404,
         body: { _tag: "NotFound", resource: "workspace" },
       });
-      expect(yield* asPerson(joe, "POST", "/workspaces/nobody/threads", { path: page, body: "x" })).toMatchObject({
+      expect(yield* asPerson(ada, "POST", "/workspaces/nobody/threads", { path: page, body: "x" })).toMatchObject({
         status: 404,
       });
       // Asking did not create it.

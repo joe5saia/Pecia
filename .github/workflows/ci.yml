@@ -1,8 +1,9 @@
 # Changes are pushed straight to main (AGENTS.md, "Landing changes"). A push to
 # main runs the checks, deploys staging, checks that staging answers, then does
-# the same for prod. The smoke check reads the stage's orchestrator Access
-# token from the Alchemy state with the deploy's Cloudflare token, so the
-# workflow holds no pecia secret of its own. Pull requests, which only Dependabot opens, run the checks.
+# the same for prod. The account, hostnames, Access settings and principals
+# are repository variables, the API token a repository secret (docs/deploy.md). The smoke check reads the stage's
+# orchestrator Access token from the Alchemy state with the deploy's
+# Cloudflare token, so the workflow holds no secret but that token. Pull requests, which only Dependabot opens, run the checks.
 name: CI
 
 on:
@@ -36,10 +37,16 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: staging
-      url: https://staging.pecia.joesaia.trade
-    env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      url: https://${{ vars.PECIA_STAGING_DOMAIN }}
+    env: &install
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      PECIA_ACCESS_TEAM: ${{ vars.PECIA_ACCESS_TEAM }}
+      PECIA_IDP_TYPE: ${{ vars.PECIA_IDP_TYPE }}
+      PECIA_IDP_NAME: ${{ vars.PECIA_IDP_NAME }}
+      PECIA_PRINCIPALS: ${{ vars.PECIA_PRINCIPALS }}
+      PECIA_STAGING_DOMAIN: ${{ vars.PECIA_STAGING_DOMAIN }}
+      PECIA_PROD_DOMAIN: ${{ vars.PECIA_PROD_DOMAIN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -51,10 +58,8 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: production
-      url: https://pecia.joesaia.trade
-    env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      url: https://${{ vars.PECIA_PROD_DOMAIN }}
+    env: *install
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup

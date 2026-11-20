@@ -10,7 +10,7 @@ import { api, createWorkspace, eventsOf, eventually, openSandbox } from "./suppo
 // A person's edit of a page, as the viewer publishes it (docs/editing.md):
 // one call, which the service commits on top of main.
 
-const joe = "joe5saia@gmail.com";
+const ada = "ada@example.com";
 
 const decodeTree = Schema.decodeUnknownSync(TreeResponse);
 const decodeEdit = Schema.decodeUnknownSync(EditResponse);
@@ -29,7 +29,7 @@ const pagesOf = Effect.fnUntraced(function* (workspace: string) {
 });
 
 let keys = 0;
-/** Publish one page as Joe: `expected` is the hash he read, `null` for a new page. */
+/** Publish one page as Ada: `expected` is the hash he read, `null` for a new page. */
 const publish = (
   workspace: string,
   path: string,
@@ -37,7 +37,7 @@ const publish = (
   content: string,
   extra: { readonly message?: string; readonly idempotencyKey?: string; readonly as?: string } = {},
 ) =>
-  asPerson(extra.as ?? joe, "POST", `/workspaces/${workspace}/edits`, {
+  asPerson(extra.as ?? ada, "POST", `/workspaces/${workspace}/edits`, {
     idempotencyKey: extra.idempotencyKey ?? `key-${++keys}`,
     ...(extra.message === undefined ? {} : { message: extra.message }),
     changes: [{ _tag: "Write", path, expected, content }],
@@ -100,14 +100,14 @@ layer(ServerLive("editing"), { excludeTestServices: true })("editing", (it) => {
         expect(yield* wiki.show("guide/deep/page.md")).toBe("# Deep\n\nSecond.");
         // The author is the principal, not the Access email; the committer is the service.
         expect(yield* wiki.git("log", "-1", "--format=%an <%ae>|%cn <%ce>|%s", answer.sha)).toBe(
-          `joe <joe@${new URL(server.url).hostname}>|pecia <pecia@users.noreply.github.com>|Say second`,
+          `ada <ada@${new URL(server.url).hostname}>|pecia <pecia@users.noreply.github.com>|Say second`,
         );
         // Only the page changed, and the repo is whole: every object the commit names is there.
         expect(yield* wiki.git("diff", "--name-only", before, answer.sha)).toBe("guide/deep/page.md");
         yield* wiki.git("fsck", "--strict");
         // The viewer reads the new page at the commit the publish answered.
         const read = yield* asPerson(
-          joe,
+          ada,
           "GET",
           `/workspaces/edit/file?ref=${answer.sha}&path=${encodeURIComponent("guide/deep/page.md")}`,
         );
@@ -117,7 +117,7 @@ layer(ServerLive("editing"), { excludeTestServices: true })("editing", (it) => {
         ).toContainEqual(
           expect.objectContaining({
             event: "page.edit",
-            principal: "joe",
+            principal: "ada",
             status: "published",
             changes: 1,
             mainSha: before,
@@ -279,7 +279,7 @@ layer(ServerLive("editing"), { excludeTestServices: true })("editing", (it) => {
         const b = read.get("b.md") ?? "";
         const both = yield* Effect.all(
           [
-            publish("atonce", "b.md", b, "b, by joe\n"),
+            publish("atonce", "b.md", b, "b, by ada\n"),
             api("POST", "/workspaces/atonce/edits", {
               body: {
                 idempotencyKey: "at-once-script",
@@ -450,7 +450,7 @@ layer(ServerLive("editing"), { excludeTestServices: true })("editing", (it) => {
         // A page under the limit fits in a request whatever its text: a line break is two bytes of JSON.
         expect(yield* publish("limits", "breaks.md", null, "\n".repeat(maxPageBytes))).toMatchObject({ status: 200 });
         // Two changes of one path are not a request.
-        const twice = yield* asPerson(joe, "POST", "/workspaces/limits/edits", {
+        const twice = yield* asPerson(ada, "POST", "/workspaces/limits/edits", {
           idempotencyKey: "twice",
           changes: [
             { _tag: "Write", path: "t.md", expected: null, content: "a\n" },
@@ -565,7 +565,7 @@ layer(ServerLive("editing"), { excludeTestServices: true })("editing", (it) => {
         });
         expect(sandbox.status).toBe(401);
         // A browser names the site whose page sent the call.
-        const person = yield* server.access.person(joe);
+        const person = yield* server.access.person(ada);
         const elsewhere = yield* api("POST", "/workspaces/who/edits", {
           body: edit,
           as: { ...person, origin: "https://evil.example" },
@@ -601,7 +601,7 @@ layer(ServerLive("editing"), { excludeTestServices: true })("editing", (it) => {
           );
         expect(yield* there(new URL(server.url).origin)).toBe(403);
         expect(yield* there(new URL(other).origin)).toBe(200);
-        expect((yield* asPerson(joe, "GET", "/auth/me")).body).toEqual({ name: joe, editor: true });
+        expect((yield* asPerson(ada, "GET", "/auth/me")).body).toEqual({ name: ada, editor: true });
         expect((yield* asPerson("ann@example.com", "GET", "/auth/me")).body).toEqual({
           name: "ann@example.com",
           editor: false,
@@ -618,7 +618,7 @@ layer(ServerLive("editing"), { excludeTestServices: true })("editing", (it) => {
         const text = "# Deploy\n\nRun `task deploy:prod` after the tests pass.\n\nThen watch the logs.\n";
         expect((yield* publish("threads", "deploy.md", null, text)).status).toBe(200);
         const start = (quote: string) =>
-          asPerson(joe, "POST", "/workspaces/threads/threads", {
+          asPerson(ada, "POST", "/workspaces/threads/threads", {
             path: "deploy.md",
             body: "About this.",
             anchor: { _tag: "Quote", quote },
@@ -631,7 +631,7 @@ layer(ServerLive("editing"), { excludeTestServices: true })("editing", (it) => {
         const now = yield* pagesOf("threads");
         expect((yield* publish("threads", "deploy.md", now.get("deploy.md") ?? "", edited)).status).toBe(200);
         // The threads are as they were made; where each is now is for the reader of the new page to find.
-        const threads = decodeThreads((yield* asPerson(joe, "GET", "/workspaces/threads/threads?path=deploy.md")).body);
+        const threads = decodeThreads((yield* asPerson(ada, "GET", "/workspaces/threads/threads?path=deploy.md")).body);
         expect(threads.map((thread) => [thread.anchor?.exact, thread.state])).toEqual([
           ["Run `task deploy:prod`", "open"],
           ["Then watch the logs.", "open"],

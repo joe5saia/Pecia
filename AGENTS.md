@@ -12,7 +12,7 @@ Agent wiki on Cloudflare Artifacts. The design is in `docs/mvp.md`; comments on 
 - `packages/lint-rules`: the oxlint plugin `pecia`, which enforces the Effect style below. `oxlint.config.ts` loads it.
 - `e2e`: the only tests, end-to-end scenarios that run the built Worker in workerd ("Tests" below). `e2e/support` is the harness: the server, a fake Access, a fake Artifacts, sandboxes and a browser.
 
-`docs/operations.md` covers deploying, running a session and monitoring usage.
+`docs/operations.md` covers deploying, running a session and monitoring usage. `docs/deploy.md` is the guide for someone who forks pecia and deploys it to their own account. Nothing in the repository is specific to one install. The account, Access team, login method, hostnames and principals are environment variables (`.env.example` lists them): GitHub Actions variables in CI, the Amp project's environment variables in orbs, and a gitignored `.env` on a laptop. Code and scripts read them from the environment and never hardcode them.
 
 Each package has its own `AGENTS.md` with what is not obvious from its code ("Gotchas") and where its logs and state are ("Debugging live"). This file has the rules that hold everywhere; put a nuance of one package in that package's file.
 
@@ -43,7 +43,7 @@ Staging is behind Cloudflare Access, so the dev server's proxy sends staging's o
 ## In an orb
 
 - `.agents/setup` installs the locked dependencies and puts `task` on `PATH`; `.agents/resume` sets `vm.overcommit_memory=1` (see Commands). Their logs are in `~/.cache/amp/logs/setup.log` and `resume.log`.
-- Secrets come from Amp settings, never from a file in the repository. The `SAIAAI_CLOUDFLARE_*` credentials are Joe's personal secrets: a thread he owns has them, `.agents/setup` and other people's threads do not. They deploy, and `task access:token` reads a stage's Access token from the Alchemy state with them. `task check` needs none of them.
+- Secrets come from Amp settings, never from a file in the repository. The deploy token is a personal secret, `PECIA_CLOUDFLARE_API_TOKEN` (or `CLOUDFLARE_API_TOKEN`): a thread its owner starts has it, `.agents/setup` and other people's threads do not. The Taskfile uses it to deploy and to read a stage's Access token from the Alchemy state with `task access:token`. `task check` needs neither it nor the install's variables.
 - `.pecia/` holds wiki session checkouts (`using-pecia-wiki`) and `.amp/in/` holds scratch files; both are ignored by git.
 
 ## Landing changes

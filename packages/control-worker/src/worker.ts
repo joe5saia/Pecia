@@ -9,7 +9,6 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { createRemoteJWKSet } from "jose";
-import { PrincipalId } from "@pecia/wiki-api";
 import * as Access from "./Access.ts";
 import * as ArtifactsRepos from "./ArtifactsRepos.ts";
 import { ApiLive, StageOrigin, Workspaces } from "./Handlers.ts";
@@ -30,21 +29,13 @@ import { runtime } from "./Runtime.ts";
 // to the workspace's Durable Object; reads go to Artifacts directly. The
 // viewer's pages are static assets, built by `task build:viewer`.
 
-/** The saiaai account's Access team, which issues and signs every stage's assertions. */
-const accessTeam = "https://saiaai.cloudflareaccess.com";
+// What differs between installs comes from environment variables, set where
+// the deploy runs (docs/deploy.md). A Config read in the
+// Worker's Init is bound to the Worker at deploy and read from its env at
+// runtime; the scenarios bind their own values.
 
-/**
- * The people pecia knows (docs/mcp.md, "Principals"). Access's "People"
- * policy, the consent page, the MCP endpoint and the token exchange all read
- * this one list, so removing a principal shuts every path at once.
- */
-const principals: ReadonlyArray<Principals.Principal> = [
-  {
-    id: PrincipalId.make("joe"), // stable; never reused
-    email: "joe5saia@gmail.com",
-    workloads: [{ issuer: "https://ampcode.com/api/workload-identity", user: "user_01JT10C8QGGPETCT6FTHWJ524K" }],
-  },
-];
+/** The account's Access team, which issues and signs every stage's assertions, as `https://<team>.cloudflareaccess.com`. */
+const AccessTeam = Config.map(Config.String("PECIA_ACCESS_TEAM"), (host) => `https://${host}`);
 
 /** The identity token issuers the token exchange trusts (docs/mcp.md, "Trust table"). */
 const workloadIssuers: ReadonlyArray<Principals.WorkloadIssuer> = [
@@ -91,10 +82,19 @@ export const McpBypass = (urls: Output.Output<ReadonlyArray<string>>) =>
     }),
   );
 
-// The account's Google login, which the Hearth stack owns with its Google
-// OAuth client. Pecia only refers to it, so a Pecia deploy needs no Google
-// credentials and never changes it.
-const google = Cloudflare.Access.IdentityProvider.lookup({ name: "Hearth Google", type: "google" });
+/**
+ * The login method people sign in with: an identity provider set up in the
+ * Zero Trust dashboard, found by its type and, when the account has several
+ * of that type, its name. Pecia only refers to it, so a deploy needs no
+ * credentials of the provider and never changes it.
+ */
+const LoginMethod = Effect.map(
+  Config.all({
+    type: Config.String("PECIA_IDP_TYPE"),
+    name: Config.withDefault(Config.String("PECIA_IDP_NAME"), ""),
+  }),
+  ({ type, name }) => Cloudflare.Access.IdentityProvider.lookup(name === "" ? { type } : { type, name }),
+);
 
 // The stage's service tokens: one for orchestrators and scripts, one that the
 // service hands each sandbox. One year is the longest Cloudflare allows;
@@ -109,16 +109,18 @@ const SandboxToken = Effect.flatMap(Stage, (stage) =>
 /** The OAuth provider's grants, tokens and client cache (docs/mcp.md, "Infrastructure changes"). */
 const OAuthKV = Effect.flatMap(Stage, (stage) => Cloudflare.KV.Namespace("OAuthKV", { title: `pecia-${stage}-oauth` }));
 
-/** The stage's Access application (docs/operations.md, "Access"): people sign in with Google, agents send a token. */
+/** The stage's Access application (docs/operations.md, "Access"): people sign in with the login method, agents send a token. */
 const StageAccess = Effect.gen(function* () {
   const stage = yield* Stage;
   const orchestrator = yield* OrchestratorToken;
   const sandbox = yield* SandboxToken;
+  const login = yield* LoginMethod;
+  const principals = yield* Principals.fromEnvironment;
   return yield* Cloudflare.Access.Application("Access", {
     type: "self_hosted",
     name: `pecia-${stage}`,
     sessionDuration: "168h",
-    allowedIdps: [google.identityProviderId],
+    allowedIdps: [login.identityProviderId],
     autoRedirectToIdentity: true,
     appLauncherVisible: false,
     policies: [
@@ -131,7 +133,7 @@ const StageAccess = Effect.gen(function* () {
         name: "People",
         decision: "allow",
         include: principals.map((principal) => ({ email: principal.email })),
-        require: [{ loginMethod: google.identityProviderId }],
+        require: [{ loginMethod: login.identityProviderId }],
       },
     ],
   });
@@ -177,7 +179,8 @@ export default Cloudflare.Worker(
       namespaceId: 7311,
       simple: { limit: 120, period: 60 },
     });
-    const knownPrincipals = yield* Principals.make(principals, workloadIssuers);
+    const knownPrincipals = yield* Principals.make(yield* Principals.fromEnvironment, workloadIssuers);
+    const accessTeam = yield* AccessTeam;
     const artifacts = yield* Cloudflare.Artifacts.ReadWriteNamespace(Wikis);
     // Each is bound to the Worker at deploy and read while a request is served.
     const audience = yield* (yield* StageAccess).aud;

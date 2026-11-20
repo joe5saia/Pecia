@@ -52,7 +52,7 @@ Anyone else gets 401: a sandbox token, and a person Access lets in who is not a 
 
 A browser sends the person's Access cookie with a call from any site, so the handler also checks the `Origin` header: it has to be the origin the call itself is sent to. A call from a page of any other origin, `null` included, is 403 `ForbiddenOrigin`. A stage that answers on two hostnames (its own and workers.dev) publishes from pages of either, each to itself. A script sends no `Origin` and is not affected.
 
-The commit's author is the principal's `id` with an address made from it, such as `joe <joe@pecia.joesaia.trade>`, not the Access email: history is permanent and every agent clones it, and an email can be reassigned. The address has the stage's own hostname (`Cloudflare.URL`), whichever hostname the call came to. The committer is the service, `pecia`, which is what tells a person's edit from an agent's commit.
+The commit's author is the principal's `id` with an address made from it, such as `joe <joe@wiki.example.com>`, not the Access email: history is permanent and every agent clones it, and an email can be reassigned. The address has the stage's own hostname (`Cloudflare.URL`), whichever hostname the call came to. The committer is the service, `pecia`, which is what tells a person's edit from an agent's commit.
 
 ## Building the commit
 

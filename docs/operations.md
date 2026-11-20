@@ -4,23 +4,23 @@ How to deploy the Control Worker, run a session, read a wiki and see how the wik
 
 ## Deploy
 
-Each stage is a separate Worker with its own Artifacts namespace, `pecia-<stage>`.
+Each stage is a separate Worker with its own Artifacts namespace, `pecia-<stage>`. Setting up a new install from scratch is in [deploy.md](deploy.md); this section is about running one.
 
 | Stage | URL |
 | --- | --- |
-| prod | https://pecia.joesaia.trade |
-| staging | https://staging.pecia.joesaia.trade |
+| prod | `https://$PECIA_PROD_DOMAIN` |
+| staging | `https://$PECIA_STAGING_DOMAIN` |
 | `pr-<n>` | A preview: the `url` the deploy prints, on workers.dev |
 
 A preview stage is named by `PULL_REQUEST=<n>`: a Dependabot pull request's number, or any unused number for a change that will be pushed to main.
 
-Prod's and staging's hostnames are custom domains in the `joesaia.trade` zone of the saiaai account. The deploy task passes its stage's hostname to Alchemy as `PECIA_DOMAIN` (`PROD_DOMAIN` and `STAGING_DOMAIN` in Taskfile.yml), which attaches it to the Worker with its DNS record and certificate. A deploy without `PECIA_DOMAIN` leaves the Worker's custom domains as they are. Both Workers still answer on their workers.dev URLs too, which sessions created before the custom domains recorded.
+Prod's and staging's hostnames are custom domains in a zone of the account `CLOUDFLARE_ACCOUNT_ID`. The deploy task reads its stage's hostname from the environment and passes it to Alchemy as `PECIA_DOMAIN`, which attaches it to the Worker with its DNS record and certificate. A deploy without `PECIA_DOMAIN` leaves the Worker's custom domains as they are. Both Workers still answer on their workers.dev URLs too, which sessions created before the custom domains recorded.
 
 ```sh
 task deploy:staging   # or deploy:prod, or deploy:preview with PULL_REQUEST set
 ```
 
-A deploy needs only Cloudflare credentials. Each stage also declares its own Access application and service tokens ("Access" below), so a staging token never opens prod.
+A deploy needs only a Cloudflare API token (`CLOUDFLARE_API_TOKEN`); the account is `CLOUDFLARE_ACCOUNT_ID`, which every Alchemy task requires, so a token that reaches several accounts cannot deploy to another. The Access team, the login method and the principals are `PECIA_ACCESS_TEAM`, `PECIA_IDP_TYPE`, `PECIA_IDP_NAME` and `PECIA_PRINCIPALS`, which `src/worker.ts` reads at deploy and binds to the Worker. Where they are set is in [deploy.md](deploy.md), "Configure your install". Each stage also declares its own Access application and service tokens ("Access" below), so a staging token never opens prod.
 
 `PECIA_IDLE_TIMEOUT` (default `2 hours`) sets how long a session may go without a git operation (each one asks for tokens) or a land before it is ended. `PECIA_FORK_SETTLE` (`10 minutes`) is how long an ended session's fork is kept before it is deleted or parked for good, `PECIA_SWEEP_RETRY` (`5 minutes`) how soon the alarm tries again after Artifacts failed, and `PECIA_SANDBOX_TOKEN_TTL` (`1 hour`) how long a sandbox's git token lasts. Deploys leave all four at their defaults; the scenarios in `e2e/` set them to seconds.
 
@@ -30,20 +30,20 @@ Each deploy builds the viewer first (`task build:viewer`) and uploads it with th
 
 ## Access
 
-Cloudflare Access, in the saiaai account's Zero Trust team (`saiaai.cloudflareaccess.com`), stands in front of every URL of every stage: its custom domain, its workers.dev URL and its version previews. `src/worker.ts` declares, for each stage:
+Cloudflare Access, in the account's Zero Trust team (`PECIA_ACCESS_TEAM`), stands in front of every URL of every stage: its custom domain, its workers.dev URL and its version previews. `src/worker.ts` declares, for each stage:
 
 | Resource | What it is |
 | --- | --- |
-| `Access` | The application `pecia-<stage>`, with the Worker enrolled in it. Policy "People" allows `joe5saia@gmail.com` signed in with Google, for seven days. Policy "Agents" (Service Auth) admits the stage's two service tokens. |
+| `Access` | The application `pecia-<stage>`, with the Worker enrolled in it. Policy "People" allows the emails of `PECIA_PRINCIPALS`, signed in with the login method `PECIA_IDP_TYPE` (and `PECIA_IDP_NAME`), for seven days. Policy "Agents" (Service Auth) admits the stage's two service tokens. |
 | `OrchestratorToken` | `pecia-<stage> orchestrator`: for orchestrators, scripts, the smoke check and the viewer's dev server. It opens the orchestrator and reader endpoints. |
 | `SandboxToken` | `pecia-<stage> sandbox`: the service hands it to each sandbox in the session-create response. It opens the sandbox endpoints, and only with a session key. |
 | `McpBypass` | The application `pecia-<stage> mcp`, for the MCP server and its OAuth and git paths only (`bypassedPaths` in `src/worker.ts`), with one Bypass policy. MCP clients send OAuth tokens, not Access credentials, so the Worker checks those requests itself ([mcp.md](mcp.md), "Credentials"). `/authorize` is not bypassed: the consent page stays behind the Google login. |
 
-The Google login is the identity provider "Hearth Google", which the Hearth stack (github.com/joe5saia/Hearth, `alchemy.run.ts`) owns with its Google OAuth client. Pecia only looks it up, so a pecia deploy needs no Google credentials and never changes it. The OAuth client's callback is the team's, `https://saiaai.cloudflareaccess.com/cdn-cgi/access/callback`, which every application of the team shares. To let someone else in, add their email to `allowedEmails` in `src/worker.ts` and deploy.
+The login method is an identity provider set up in the Zero Trust dashboard, found by `PECIA_IDP_TYPE` and, if set, `PECIA_IDP_NAME`. Pecia only looks it up, so a deploy needs none of its credentials and never changes it. To let someone else in, add a principal to `PECIA_PRINCIPALS` where it is set and deploy.
 
 Access passes each request it lets through with a JWT in `Cf-Access-Jwt-Assertion`. The Worker checks it on every call (`src/Access.ts`): an RS256 signature by the team's keys, the team as issuer, the stage's application as audience and an expiry. A service token's JWT names the token's client ID, which must be one of the stage's two; a person's names their email. Anything else is a 401, logged as `access assertion refused` with jose's reason. A person's comments go under that email.
 
-A caller with a token sends `CF-Access-Client-Id` and `CF-Access-Client-Secret`. A stage's orchestrator token is in the Alchemy state, and `task access:token STAGE=<stage>` writes it to `$PECIA_HOME/access-<stage>.env` (default `~/.config/pecia`), readable only by its user, without printing it. That needs Cloudflare credentials that can read the state: `SAIAAI_CLOUDFLARE_*` in Joe's orbs, `CLOUDFLARE_API_TOKEN` in CI. `wiki-session` and `task smoke` run it themselves when they need to.
+A caller with a token sends `CF-Access-Client-Id` and `CF-Access-Client-Secret`. A stage's orchestrator token is in the Alchemy state, and `task access:token STAGE=<stage>` writes it to `$PECIA_HOME/access-<stage>.env` (default `~/.config/pecia`), readable only by its user, without printing it. That needs a Cloudflare API token that can read the state: `CLOUDFLARE_API_TOKEN` or `PECIA_CLOUDFLARE_API_TOKEN`. `wiki-session` and `task smoke` run it themselves when they need to.
 
 Both tokens last a year (`8760h`, created November 2026). Before they expire, bump `clientSecretVersion` on the token in `src/worker.ts` and deploy, which rotates its secret, then run `task access:token` again. A sandbox set up before a rotation of the sandbox token stops working; start a new session.
 
@@ -58,10 +58,10 @@ The deploy jobs read from GitHub:
 
 | Name | Kind | Where |
 | --- | --- | --- |
-| `CLOUDFLARE_ACCOUNT_ID` | Variable | Repository |
 | `CLOUDFLARE_API_TOKEN` | Secret | Repository |
+| `CLOUDFLARE_ACCOUNT_ID`, `PECIA_ACCESS_TEAM`, `PECIA_IDP_TYPE`, `PECIA_IDP_NAME`, `PECIA_PRINCIPALS`, `PECIA_PROD_DOMAIN`, `PECIA_STAGING_DOMAIN` | Variables | Repository |
 
-`CLOUDFLARE_API_TOKEN` is the account token "Pecia GitHub Actions deploy", with Workers Scripts Write, Workers KV Storage Write (the OAuth provider's namespace, [mcp.md](mcp.md)), Artifacts Write, Secrets Store Write (Alchemy keeps its state store's credentials there), Account Settings Read, Access: Apps and Policies Write, Access: Service Tokens Write and Access: Organizations, Identity Providers, and Groups Read. The smoke check reads the orchestrator token from the state with it, so the workflow needs no pecia secret of its own. `CLOUDFLARE_ACCOUNT_ID` is the saiaai account, the one `alchemy.run.ts` pins the state store to. The Alchemy state is in the `pecia-state` Worker, so a deploy from CI and one from an orb see the same state.
+`CLOUDFLARE_API_TOKEN` is the account token "Pecia GitHub Actions deploy", with the permissions [deploy.md](deploy.md), "Create the API token", lists. Workers KV Storage Write (the OAuth provider's namespace, [mcp.md](mcp.md)) is the one that is easy to miss. Zone Read for the hostnames' zone is needed when a custom domain is first attached. The smoke check reads the orchestrator token from the state with it, so the workflow needs no pecia secret of its own. The account, the hostnames, the Access settings and the principals are repository variables, read by both deploy jobs. The Alchemy state is in the `pecia-state` Worker, so a deploy from CI and one from an orb see the same state.
 
 A stage's first deploy creates its Worker. For some seconds after it, the Worker's URL can answer `error code: 1104` with status 500: Cloudflare has not finished publishing the script.
 
@@ -94,7 +94,7 @@ A person who is a principal edits in the viewer: "Edit page" on a page, or "New 
 
 ## Read a wiki
 
-Open the stage's URL in a browser and sign in with Google as an allowed person ("Access"). The sign-in lasts seven days. [viewer.md](viewer.md) has the reader endpoints, which scripts can call with the orchestrator token.
+Open the stage's URL in a browser and sign in as a principal ("Access"). The sign-in lasts seven days. [viewer.md](viewer.md) has the reader endpoints, which scripts can call with the orchestrator token.
 
 ## API statuses
 
@@ -104,7 +104,7 @@ Open the stage's URL in a browser and sign in with Google as an allowed person (
 | --- | --- | --- | --- |
 | 200 | The endpoint's response | The call succeeded. `wiki-land`'s `behind` and `nothing_to_land` are 200s: they are answers, not errors. | |
 | 400 | Problem with `errors: [{ path, message }]` | The path, or the JSON body, does not match the endpoint: a malformed workspace name or session ID, a missing field, invalid JSON. | No |
-| 302 | Empty, to `saiaai.cloudflareaccess.com` | Access: the caller has no sign-in and no valid service token. It never reaches the Worker. | No |
+| 302 | Empty, to the Access team (`accessTeam`) | Access: the caller has no sign-in and no valid service token. It never reaches the Worker. | No |
 | 401 | `{ "_tag": "Unauthorized" }`, with `WWW-Authenticate: Bearer` | The Access assertion does not verify or names a caller the endpoint is not for, or a sandbox call's session key is missing or wrong. It is checked before anything else, so a wrong credential never gets a 400, 404 or 409. | No |
 | 404 | `{ "_tag": "NotFound", "resource", "id" }` | The workspace, session, comment thread or comment does not exist; for a reader endpoint or a comment's anchor, the commit or file does not either. | No |
 | 404 | Problem | The API has no such path and method. | No |

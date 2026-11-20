@@ -7,7 +7,7 @@ import { api, createWorkspace, eventsOf, eventually, openSandbox } from "./suppo
 // The viewer in a browser, as a person Access signed in uses it: the pages,
 // the file tree, the links between pages and the editor (docs/editing.md).
 
-const joe = "joe5saia@gmail.com";
+const ada = "ada@example.com";
 
 const setup = [
   "# Setup",
@@ -50,7 +50,7 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
       yield* agent.git("push", "origin", "HEAD:main");
       expect((yield* agent.land).exitCode).toBe(0);
 
-      const page = yield* signedIn(joe);
+      const page = yield* signedIn(ada);
       // The list of wikis, without the session's fork.
       yield* step(() => page.goto(`${server.url}/`));
       yield* step(() => page.getByRole("link", { name: "browse" }).first().waitFor());
@@ -123,7 +123,7 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
       expect((yield* agent.land).exitCode).toBe(0);
       expect((yield* api("GET", "/workspaces/noreadme/file?path=README.md")).status).toBe(404);
 
-      const page = yield* signedIn(joe);
+      const page = yield* signedIn(ada);
       yield* step(() => page.goto(`${server.url}/w/noreadme`));
       yield* step(() => page.getByRole("heading", { name: "Guide A, again", level: 1 }).waitFor());
 
@@ -144,7 +144,7 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
       const token = "pecia-git-credential-".repeat(8);
       yield* agent.commit("long.md", `# Long\n\nThe helper is \`${token}\`, and nothing else.\n`);
       expect((yield* agent.land).exitCode).toBe(0);
-      const as = yield* server.access.person(joe);
+      const as = yield* server.access.person(ada);
       const url = `https://support.example.com/en/articles/${"1117516".repeat(12)}`;
       // Markdown, HTML and white space, which a comment shows as typed (docs/comments.md, "Format").
       const written = `- a list item ${"y".repeat(90)}\n- \`McpServer.layerHttpRequestScoped\`\n\n**bold** [docs](${url}) <b>tag</b>  two spaces`;
@@ -157,7 +157,7 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
         { discard: true },
       );
 
-      const page = yield* signedIn(joe);
+      const page = yield* signedIn(ada);
       yield* step(() => page.setViewportSize({ width: 1440, height: 900 }));
       yield* step(() => page.goto(`${server.url}/w/wrapping/long.md`));
       const threads = page.locator(".thread");
@@ -242,11 +242,11 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
         yield* agent.commit("guide.md", "# Guide\r\n\r\nRun the deploy.\r\n");
         expect((yield* agent.land).exitCode).toBe(0);
         yield* api("POST", "/workspaces/write/threads", {
-          as: yield* server.access.person(joe),
+          as: yield* server.access.person(ada),
           body: { path: "guide.md", body: "Which one?", anchor: { _tag: "Quote", quote: "Run the deploy" } },
         });
 
-        const page = yield* signedIn(joe);
+        const page = yield* signedIn(ada);
         /** Wait until the thread's passage is marked in the page that `within` holds. */
         const marked = (within: string) =>
           step(() =>
@@ -297,7 +297,7 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
         expect(page.url()).toBe(`${server.url}/w/write/guide.md`);
         yield* marked("main article");
         expect(yield* wiki.show("guide.md")).toBe("# Guide\r\n\r\nRun the deploy.\r\n\r\nThen **tell** the team.");
-        expect(yield* wiki.git("log", "-1", "--format=%an|%s")).toBe("joe|Tell the team");
+        expect(yield* wiki.git("log", "-1", "--format=%an|%s")).toBe("ada|Tell the team");
 
         // Someone Access lets in who is no principal reads the page and is offered no editing.
         const guest = yield* signedIn("guest@example.com");
@@ -322,7 +322,7 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
         expect(yield* wiki.show("guide.md")).toBe("# Guide\r\n\r\nShip it 🚀 then **tell** the team.");
         // A thread's passage is marked in the source where it is, also after a character of two UTF-16 units.
         yield* api("POST", "/workspaces/write/threads", {
-          as: yield* server.access.person(joe),
+          as: yield* server.access.person(ada),
           body: { path: "guide.md", body: "Who?", anchor: { _tag: "Quote", quote: "tell" } },
         });
         yield* step(() => page.reload());
@@ -357,7 +357,7 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
     Effect.gen(function* () {
       const server = yield* Server;
       const wiki = yield* createWorkspace("draft");
-      const page = yield* signedIn(joe);
+      const page = yield* signedIn(ada);
       // The editor's own URL opens it.
       yield* step(() => page.goto(`${server.url}/w/draft/README.md?edit=1`));
       const source = page.getByRole("textbox", { name: "Page source" });
@@ -396,7 +396,7 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
     Effect.gen(function* () {
       const server = yield* Server;
       const wiki = yield* createWorkspace("lost");
-      const page = yield* signedIn(joe);
+      const page = yield* signedIn(ada);
       yield* step(() => page.goto(`${server.url}/w/lost/README.md?edit=1`));
       const source = page.getByRole("textbox", { name: "Page source" });
       yield* step(() => source.click());
@@ -449,7 +449,7 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
         yield* agent.commit("page.md", "one\n\ntwo\n\nthree\n");
         expect((yield* agent.land).exitCode).toBe(0);
 
-        const page = yield* signedIn(joe);
+        const page = yield* signedIn(ada);
         yield* step(() => page.setViewportSize({ width: 1440, height: 900 }));
         yield* step(() => page.goto(`${server.url}/w/merge/page.md?edit=1`));
         const source = page.getByRole("textbox", { name: "Page source" });

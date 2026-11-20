@@ -10,8 +10,8 @@ import type { JWTPayload } from "jose";
 // the team's (`workerd/outbound.ts`), and `edge` is what Access does to a
 // request on its way in.
 
-/** The Access team the Worker trusts (`accessTeam` in packages/control-worker/src/worker.ts). */
-export const accessTeam = "https://saiaai.cloudflareaccess.com";
+/** The Access team the Worker trusts, which the server binds as `PECIA_ACCESS_TEAM`. */
+export const accessTeam = "https://pecia-e2e.cloudflareaccess.com";
 
 /** Headers a caller sends, or that Access adds. */
 export type Headers = Readonly<Record<string, string>>;

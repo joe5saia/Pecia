@@ -7,9 +7,9 @@ import type { JWTPayload } from "jose";
 // harness's own, served to the Worker in place of Amp's JWKS
 // (`workerd/outbound.ts`), and the claims are those Amp signs.
 
-/** Amp's issuer and the user of the principal `joe`, as packages/control-worker/src/worker.ts trusts them. */
+/** Amp's issuer, as packages/control-worker/src/worker.ts trusts it, and the user of the principal `ada` (`principals` in Server.ts). */
 export const ampIssuer = "https://ampcode.com/api/workload-identity";
-export const joeAmpUser = "user_01JT10C8QGGPETCT6FTHWJ524K";
+export const adaAmpUser = "user_e2e_ada";
 
 export interface Amp {
   /** Amp's signing keys, as its JWKS URL serves them. */
@@ -38,7 +38,7 @@ export const makeAmp: Effect.Effect<Amp> = Effect.promise(async () => {
     jwks: JSON.stringify({ keys: [jwk] }),
     idToken: (options) =>
       Effect.promise(() => {
-        const userId = options.userId ?? joeAmpUser;
+        const userId = options.userId ?? adaAmpUser;
         const token = new SignJWT({
           iss: ampIssuer,
           aud: options.audience,
@@ -46,7 +46,7 @@ export const makeAmp: Effect.Effect<Amp> = Effect.promise(async () => {
           token_use: "exchanged",
           user_id: userId,
           thread_id: options.threadId,
-          email: "joe5saia@gmail.com",
+          email: "ada@example.com",
           ...options.claims,
         })
           .setProtectedHeader({ alg: "RS256", kid: "e2e-amp", typ: "JWT" })

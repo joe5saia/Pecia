@@ -24,5 +24,5 @@ The web UI, served by the Control Worker as static assets. Its design is in `doc
 ## Debugging live
 
 - **In an orb.** `amp orb services ensure` prints the portal URL; `amp orb service logs viewer` has Vite's output, including proxy errors when staging does not answer.
-- **In the browser.** The network panel shows each read. A 401, or a redirect to `saiaai.cloudflareaccess.com`, means the Access sign-in has expired: the page offers to sign in again, which reloads it. Access's cookie is `CF_Authorization`.
+- **In the browser.** The network panel shows each read. A 401, or a redirect to the Access team (`PECIA_ACCESS_TEAM`), means the Access sign-in has expired: the page offers to sign in again, which reloads it. Access's cookie is `CF_Authorization`.
 - **On a deployed stage.** The assets are what `task build:viewer` wrote to `dist` at deploy time. `task smoke` checks that `/` serves the page. A page that loads but shows "Could not load this" is an API failure: look at the Worker's logs (`packages/control-worker/AGENTS.md`).
