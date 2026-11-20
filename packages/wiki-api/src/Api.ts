@@ -20,7 +20,7 @@ import {
   ThreadId,
   ThreadList,
 } from "./Comments.ts";
-import { EditRequest, EditResponse } from "./Edits.ts";
+import { EditRequest, EditResponse, PageSessions, UploadQuery } from "./Edits.ts";
 import {
   AnchorMismatch,
   ArtifactsUnavailable,
@@ -119,11 +119,26 @@ export class ReaderAuth extends HttpApiMiddleware.Service<ReaderAuth, { provides
  */
 export class Editor extends Context.Service<Editor, PrincipalId>()("pecia/Editor") {}
 
-/** The edit endpoint: a person who is a principal, or the orchestrator token. */
-export class EditorAuth extends HttpApiMiddleware.Service<EditorAuth, { provides: Editor }>()("pecia/EditorAuth", {
-  error: Unauthorized,
-  security: { access: AccessAssertion },
-}) {}
+/**
+ * The edit endpoint: a person who is a principal, or the orchestrator token. The `ReaderName`
+ * is the name the comments of an edit go under, as with any other comment.
+ */
+export class EditorAuth extends HttpApiMiddleware.Service<EditorAuth, { provides: Editor | ReaderName }>()(
+  "pecia/EditorAuth",
+  {
+    error: Unauthorized,
+    security: { access: AccessAssertion },
+  },
+) {}
+
+/** The upload endpoint: whoever `EditorAuth` admits. It is apart because its body is a file, with a limit of its own. */
+export class UploaderAuth extends HttpApiMiddleware.Service<UploaderAuth, { provides: Editor | ReaderName }>()(
+  "pecia/UploaderAuth",
+  {
+    error: Unauthorized,
+    security: { access: AccessAssertion },
+  },
+) {}
 
 const WorkspaceParams = Schema.Struct({ ws: WorkspaceName });
 const SessionParams = Schema.Struct({ id: SessionId });
@@ -299,16 +314,47 @@ export class EditorGroup extends HttpApiGroup.make("editor")
         NotFound,
         Conflict,
         PageRefused,
+        // A thread the edit re-pins is not on a page it writes, or its range is not in that page.
+        AnchorMismatch,
+        IdempotencyKeyReuse,
+        ArtifactsUnavailable,
+        WorkspaceUnavailable,
+      ],
+    }),
+    // The active sessions whose fork has another version of a page (docs/editing.md, "Sessions that have the page").
+    HttpApiEndpoint.get("pageSessions", "/workspaces/:ws/page-sessions", {
+      params: WorkspaceParams,
+      query: Schema.Struct({ path: FilePath }),
+      success: PageSessions,
+      error: [NotFound, ArtifactsUnavailable, WorkspaceUnavailable],
+    }),
+  )
+  .middleware(EditorAuth) {}
+
+/** Files of any kind, committed from the viewer like an edit of one page (docs/editing.md, "Uploads"). */
+export class UploaderGroup extends HttpApiGroup.make("uploader")
+  .add(
+    HttpApiEndpoint.post("upload", "/workspaces/:ws/uploads", {
+      params: WorkspaceParams,
+      query: UploadQuery,
+      // The file's bytes, whatever they are.
+      payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
+      success: EditResponse,
+      error: [
+        ForbiddenOrigin,
+        NotFound,
+        Conflict,
+        PageRefused,
         IdempotencyKeyReuse,
         ArtifactsUnavailable,
         WorkspaceUnavailable,
       ],
     }),
   )
-  .middleware(EditorAuth) {}
+  .middleware(UploaderAuth) {}
 
 export class WikiApi extends HttpApi.make("WikiApi")
-  .add(OrchestratorGroup, SandboxGroup, ReaderGroup, CommentsGroup, EditorGroup)
+  .add(OrchestratorGroup, SandboxGroup, ReaderGroup, CommentsGroup, EditorGroup, UploaderGroup)
   // A request that does not match its endpoint's schemas answers 400, and a
   // failure inside the service answers 500, both as RFC 9457 problems.
   .middleware(HttpApiMiddleware.ProblemDetails) {}

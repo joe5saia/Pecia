@@ -8,6 +8,7 @@ import type {
   SetThreadStateRequest,
   ThreadFilter,
   ThreadId,
+  UploadQuery,
   WorkspaceName,
 } from "@pecia/wiki-api";
 import * as Effect from "effect/Effect";
@@ -125,6 +126,18 @@ export const deleteComment = (ws: WorkspaceName, comment: CommentId) =>
 /** Publish a person's edit of pages: one commit on top of main (docs/editing.md). */
 export const publishEdit = (ws: WorkspaceName, request: EditRequest) =>
   Effect.flatMap(client, (api) => api.editor.edit({ params: { ws }, payload: request }));
+
+/** A file's bytes at a commit, whatever they are. */
+export const readBytes = (ws: WorkspaceName, ref: Ref, path: string) =>
+  Effect.flatMap(client, (api) => api.reader.readFile({ params: { ws }, query: { ref, path } }));
+
+/** Commit a file of any kind on top of main, like an edit of one page (docs/editing.md, "Uploads"). */
+export const uploadFile = (ws: WorkspaceName, query: UploadQuery, bytes: Uint8Array<ArrayBuffer>) =>
+  Effect.flatMap(client, (api) => api.uploader.upload({ params: { ws }, query, payload: bytes }));
+
+/** The active sessions whose fork has its own version of a page. */
+export const pageSessions = (ws: WorkspaceName, path: string) =>
+  Effect.flatMap(client, (api) => api.editor.pageSessions({ params: { ws }, query: { path } }));
 
 /** The name the logged-in reader's comments go under, and whether they may edit pages. */
 export const currentReader = () => Effect.flatMap(client, (api) => api.comments.currentReader());

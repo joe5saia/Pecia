@@ -1,4 +1,4 @@
-import { FilePath, Ref, WorkspaceName } from "@pecia/wiki-api";
+import { Ref, WorkspaceName } from "@pecia/wiki-api";
 import type { CommitSha, HistoryResponse, ThreadList, TreeResponse } from "@pecia/wiki-api";
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
@@ -6,6 +6,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import type { FormEvent, ReactNode, RefObject } from "react";
 import { currentReader, fileUrl, listWorkspaces, readHistory, readText, readTree, useRead } from "./api.ts";
 import type { Failure, ReadState } from "./api.ts";
+import { DeleteDialog, placeProblem, RenameDialog, RestoreDialog, UploadFile } from "./Changes.tsx";
 import { Comments } from "./Comments.tsx";
 import { fenced, Markdown } from "./Markdown.tsx";
 import type { OutlineEntry, Page } from "./Markdown.tsx";
@@ -20,7 +21,6 @@ import { timeAgo } from "./time.ts";
 
 const isWorkspaceName = Schema.is(WorkspaceName);
 const isRef = Schema.is(Ref);
-const isFilePath = Schema.is(FilePath);
 
 // The editor (docs/editing.md) comes with CodeMirror, so it is a chunk of its
 // own that only someone who opens it downloads.
@@ -224,17 +224,12 @@ const readingAt = (article: HTMLElement | null): number | undefined => {
 
 /** Why a new page cannot be at `path`, or `undefined` if it can. */
 const newPageProblem = (path: string, paths: ReadonlyArray<string>): string | undefined => {
-  if (!isFilePath(path)) {
-    return "Write a path such as guide/setup.md, without empty, '.' or '..' parts.";
-  }
-  if (path.split("/").some((segment) => segment.toLowerCase() === ".git")) {
-    return "No page can be inside .git.";
+  const refused = placeProblem(path, paths);
+  if (refused !== undefined) {
+    return refused;
   }
   if (paths.includes(path)) {
     return "That page exists. Open it to edit it.";
-  }
-  if (paths.some((existing) => existing.startsWith(`${path}/`) || path.startsWith(`${existing}/`))) {
-    return "A page and a folder cannot have the same name.";
   }
   if (editableAs(path) === undefined) {
     return "Only text pages are written here, such as .md files.";
@@ -426,7 +421,20 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
   const read = ref === "main" ? (published ?? ref) : ref;
   const state = useRead(`tree:${ws}:${read}`, () => readTree(ws, read));
   const me = useRead("me", () => currentReader());
-  const mayEdit = ref === "main" && me._tag === "Loaded" && me.value.editor;
+  const isEditor = me._tag === "Loaded" && me.value.editor;
+  const mayEdit = ref === "main" && isEditor;
+  // The change of a file the person is asked to confirm, and the file it is of.
+  const [changing, setChanging] = useState<
+    { readonly what: "rename" | "delete" | "restore"; readonly path: string } | undefined
+  >();
+  /** A change was committed: main is read at its commit, and the person is taken to where the file is now. */
+  const committed = (sha: CommitSha | undefined, to: string, options?: { readonly replace?: boolean }) => {
+    setChanging(undefined);
+    if (sha !== undefined) {
+      setPublished(sha);
+    }
+    navigate(fileHref(ws, to), options);
+  };
   const [openAt, setOpenAt] = useState<number | undefined>();
   const [threads, setThreads] = useState<ThreadList | undefined>();
   const onThreads = useCallback((list: ThreadList) => setThreads(list), []);
@@ -470,6 +478,9 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
             current !== "" &&
             (exists || !paths.some((other) => other.startsWith(`${current}/`) || current.startsWith(`${other}/`)));
           const language = isPage ? editableAs(current) : undefined;
+          // The file's hash at the commit being read: the version a change of it says the person saw.
+          const hash = tree.files.find((file) => file.path === current)?.sha;
+          const change = changing?.path === current ? changing.what : undefined;
           const editing = edit && mayEdit && language !== undefined;
           return (
             <div className={`wiki ${menuOpen ? "menu-open" : ""} ${editing ? "editing" : ""}`}>
@@ -489,6 +500,9 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
                   <Link href={`/history/${ws}`}>History</Link>
                 </div>
                 {mayEdit && <NewPage ws={ws} beside={current} paths={paths} />}
+                {mayEdit && (
+                  <UploadFile ws={ws} beside={current} tree={tree} onDone={(sha, to) => committed(sha, to)} />
+                )}
                 <FileTree directory={buildTree(paths)} page={page} />
                 {tree.truncated && <p className="note">This wiki has more files than the list shows.</p>}
               </nav>
@@ -522,18 +536,65 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
                     />
                   </Suspense>
                 )}
-                {!editing && mayEdit && exists && language !== undefined && (
+                {!editing && isEditor && exists && (
                   <div className="page-actions">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setOpenAt(language === "markdown" ? readingAt(article) : undefined);
-                        navigate(editHref(ws, current));
-                      }}
-                    >
-                      Edit page
-                    </button>
+                    {ref === "main" ? (
+                      <>
+                        {language !== undefined && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenAt(language === "markdown" ? readingAt(article) : undefined);
+                              navigate(editHref(ws, current));
+                            }}
+                          >
+                            Edit page
+                          </button>
+                        )}
+                        <button type="button" onClick={() => setChanging({ what: "rename", path: current })}>
+                          Rename page
+                        </button>
+                        <button type="button" onClick={() => setChanging({ what: "delete", path: current })}>
+                          Delete page
+                        </button>
+                      </>
+                    ) : (
+                      <button type="button" onClick={() => setChanging({ what: "restore", path: current })}>
+                        Restore this version
+                      </button>
+                    )}
                   </div>
+                )}
+                {change === "rename" && hash !== undefined && (
+                  <RenameDialog
+                    ws={ws}
+                    path={current}
+                    hash={hash}
+                    paths={paths}
+                    threads={threads}
+                    onCancel={() => setChanging(undefined)}
+                    onDone={(sha, to) => committed(sha, to, { replace: true })}
+                  />
+                )}
+                {change === "delete" && hash !== undefined && (
+                  <DeleteDialog
+                    ws={ws}
+                    path={current}
+                    hash={hash}
+                    threads={threads}
+                    onCancel={() => setChanging(undefined)}
+                    onDone={(sha) => committed(sha, "", { replace: true })}
+                  />
+                )}
+                {change === "restore" && hash !== undefined && (
+                  <RestoreDialog
+                    ws={ws}
+                    path={current}
+                    commit={tree.commit.sha}
+                    hash={hash}
+                    onCancel={() => setChanging(undefined)}
+                    onDone={(sha) => committed(sha, current)}
+                  />
                 )}
                 {!editing &&
                   current !== "" &&
@@ -565,7 +626,8 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
                 )}
                 {exists && (
                   <Comments
-                    key={current}
+                    // Read anew after the reader's own publish, which may have resolved or re-pinned threads.
+                    key={`${current}:${published ?? ""}`}
                     page={page}
                     text={isMarkdown(current) ? source : undefined}
                     article={article}

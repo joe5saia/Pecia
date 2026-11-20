@@ -73,7 +73,7 @@ export class AnchorMismatch extends Schema.TaggedError<AnchorMismatch>()(
   "AnchorMismatch",
   {
     path: Schema.String,
-    reason: Schema.Literals(["not_text", "out_of_range", "quote_not_found", "quote_ambiguous"]),
+    reason: Schema.Literals(["not_text", "out_of_range", "quote_not_found", "quote_ambiguous", "page_not_edited"]),
   },
   { httpApiStatus: 422 },
 ) {
@@ -83,6 +83,7 @@ export class AnchorMismatch extends Schema.TaggedError<AnchorMismatch>()(
       out_of_range: "has no such range",
       quote_not_found: "does not contain the quoted text",
       quote_ambiguous: "contains the quoted text more than once; quote more of it",
+      page_not_edited: "is not a page the edit writes, so the edit cannot say where a passage of it is",
     } as const satisfies Record<AnchorMismatch["reason"], string>;
     return `'${this.path}' ${why[this.reason]}`;
   }

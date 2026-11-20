@@ -1,16 +1,20 @@
-import { IdempotencyKey, locate, maxPageBytes, unitIndex } from "@pecia/wiki-api";
-import type { BlobSha, CommitSha, ThreadList, TreeResponse, WorkspaceName } from "@pecia/wiki-api";
+import { locate, maxPageBytes, maxThreadChanges, unitIndex } from "@pecia/wiki-api";
+import type { BlobSha, CommitSha, ThreadId, ThreadList, TreeResponse, WorkspaceName } from "@pecia/wiki-api";
 import type { EditorView } from "@codemirror/view";
 import * as Effect from "effect/Effect";
+import * as Match from "effect/Match";
 import * as Predicate from "effect/Predicate";
 import { useCallback, useDeferredValue, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { publishEdit, readText, readTree, run, useRead } from "./api.ts";
 import type { Failure } from "./api.ts";
+import { FailureNote, resolved, SessionsNote, shortened, ThreadChoices, useKey } from "./Changes.tsx";
 import { draftKey, loadDraft, removeDraft, saveDraft } from "./drafts.ts";
 import { fenced, Markdown } from "./Markdown.tsx";
 import type { OutlineEntry } from "./Markdown.tsx";
 import { conflictsIn, labelled, markerFloor, mergeThree } from "./merge.ts";
+import { fatesOf } from "./repin.ts";
+import type { Fate } from "./repin.ts";
 import { openDiff, openSource, replaceText, setMarkerFloor, setPassages, showOffset } from "./source.ts";
 
 // The editor on one page of main (docs/editing.md, "The editor"): its markdown
@@ -68,18 +72,6 @@ export interface EditorProps {
   readonly onClose: (published?: CommitSha) => void;
 }
 
-const FailureNote = ({ failure }: { readonly failure: Failure }) =>
-  failure._tag === "LoggedOut" ? (
-    <p className="problem" role="alert">
-      <strong>Your sign-in has expired.</strong> Your draft is kept in this browser.{" "}
-      <a href={globalThis.location.href}>Sign in again</a>
-    </p>
-  ) : (
-    <p className="problem" role="alert">
-      {failure.message}
-    </p>
-  );
-
 export const Editor = (props: EditorProps) => {
   const { ws, path, tree } = props;
   // A draft this browser kept goes on from the version it started from, not from main as it is now.
@@ -103,7 +95,7 @@ export const Editor = (props: EditorProps) => {
   if (state._tag === "Failed") {
     return (
       <div className="editor-failed">
-        <FailureNote failure={state.failure} />
+        <FailureNote failure={state.failure} draft />
         {start.draft !== undefined && (
           <button
             type="button"
@@ -164,6 +156,8 @@ const Session = ({
   const [publishing, setPublishing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [discarding, setDiscarding] = useState(false);
+  // The open threads the person settles with this publish.
+  const [resolve, setResolve] = useState<ReadonlySet<ThreadId>>(new Set());
   const [tab, setTab] = useState<"write" | "preview">("write");
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
@@ -339,23 +333,48 @@ const Session = ({
     );
   };
 
+  // What publishing the draft does to each open thread of the page (repin.ts), worked out when the
+  // dialog opens: the text does not change while it is open. The threads were anchored in the page
+  // as main has it, so both texts are taken with main's line endings.
+  const fates = useMemo(
+    () => (publishing ? fatesOf(threads ?? [], published(base.text), published(text)) : []),
+    [publishing, threads, text, base.text, published],
+  );
   /** One key for one publish of one text, so a publish whose answer was lost is repeated and not made twice. */
-  const key = useRef<{ readonly of: string; readonly key: IdempotencyKey } | undefined>(undefined);
+  const keyOf = useKey();
   const publish = async (message: string) => {
     const content = published(text);
-    const of = JSON.stringify([base.hash, content, message]);
-    if (key.current?.of !== of) {
-      key.current = { of, key: IdempotencyKey.make(crypto.randomUUID()) };
-    }
+    const settled = resolved(resolve);
+    // A thread the person resolves needs no new place.
+    const pins = fates
+      .flatMap((fate) =>
+        fate._tag === "Moved" && !resolve.has(fate.thread.id)
+          ? [{ thread: fate.thread.id, start: fate.start, end: fate.end }]
+          : [],
+      )
+      .slice(0, maxThreadChanges);
+    const send = (repin: typeof pins) =>
+      run(
+        publishEdit(ws, {
+          idempotencyKey: keyOf(JSON.stringify([base.hash, content, message, repin, settled])),
+          ...(message === "" ? {} : { message }),
+          changes: [{ _tag: "Write", path, expected: base.hash, content }],
+          ...(repin.length + settled.length === 0
+            ? {}
+            : {
+                threads: {
+                  ...(repin.length === 0 ? {} : { repin }),
+                  ...(settled.length === 0 ? {} : { resolve: settled }),
+                },
+              }),
+        }),
+      );
     setBusy(true);
     setProblem(undefined);
-    const result = await run(
-      publishEdit(ws, {
-        idempotencyKey: key.current.key,
-        ...(message === "" ? {} : { message }),
-        changes: [{ _tag: "Write", path, expected: base.hash, content }],
-      }),
-    );
+    const first = await send(pins);
+    // A thread is no longer on this page as the editor read it, so nothing was published. The page
+    // is published without the new places: readers go on finding the passages by their quotes.
+    const result = !first.ok && Predicate.isTagged(first.error, "AnchorMismatch") ? await send([]) : first;
     setBusy(false);
     if (result.ok) {
       done.current = true;
@@ -386,20 +405,6 @@ const Session = ({
     removeDraft(ws, path);
     onClose();
   };
-
-  const lost = useMemo(
-    () =>
-      publishing
-        ? (threads ?? []).filter(
-            (thread) =>
-              thread.state === "open" &&
-              thread.anchor !== null &&
-              locate(thread.anchor, text) === undefined &&
-              locate(thread.anchor, base.text) !== undefined,
-          )
-        : [],
-    [publishing, threads, text, base.text],
-  );
 
   return (
     <section className="editor" aria-label={`Editing ${path}`}>
@@ -458,6 +463,9 @@ const Session = ({
           </button>
         </p>
       )}
+      <SessionsNote ws={ws} path={path}>
+        {() => "Whichever of you publishes second has to merge what the other changed."}
+      </SessionsNote>
       {!stale && notice !== undefined && (
         <p className="editor-banner" role="status">
           {notice}{" "}
@@ -482,7 +490,7 @@ const Session = ({
           This page is over {maxPageBytes / 1024} KiB, the most a page may be. Shorten it to publish.
         </p>
       )}
-      {problem !== undefined && !publishing && <FailureNote failure={problem} />}
+      {problem !== undefined && !publishing && <FailureNote failure={problem} draft />}
       <div className={`editor-panes show-${tab}`}>
         <div className="editor-source" ref={host} />
         <div className="editor-preview">
@@ -500,12 +508,15 @@ const Session = ({
           adding={base.hash === null}
           original={base.text}
           text={text}
-          lost={lost.map((thread) => thread.anchor?.exact ?? "")}
+          fates={fates}
+          resolve={resolve}
+          onResolve={setResolve}
           busy={busy}
           problem={problem}
           onCancel={() => {
             setPublishing(false);
             setProblem(undefined);
+            setResolve(new Set());
           }}
           onPublish={(message) => void publish(message)}
         />
@@ -514,13 +525,27 @@ const Session = ({
   );
 };
 
+/** What the publish dialog says an edit does to a thread, beside the thread; nothing for one it leaves as it is. */
+const fateNote = (fate: Fate): ReactNode =>
+  Match.valueTags(fate, {
+    Kept: () => undefined,
+    Moved: ({ passage }) => (
+      <>
+        Follows its passage, which is now <q>{shortened(passage)}</q>
+      </>
+    ),
+    Lost: () => <>Loses its passage with this edit. It stays, marked outdated, unless you resolve it.</>,
+  });
+
 /** What is about to be published, and the message to publish it with. */
 const PublishDialog = ({
   path,
   adding,
   original,
   text,
-  lost,
+  fates,
+  resolve,
+  onResolve,
   busy,
   problem,
   onCancel,
@@ -530,8 +555,11 @@ const PublishDialog = ({
   readonly adding: boolean;
   readonly original: string;
   readonly text: string;
-  /** The quotes of the open threads whose passage the edit removes. */
-  readonly lost: ReadonlyArray<string>;
+  /** The page's open threads, with what the edit does to each. */
+  readonly fates: ReadonlyArray<Fate>;
+  /** The threads the person resolves with the publish. */
+  readonly resolve: ReadonlySet<ThreadId>;
+  readonly onResolve: (resolve: ReadonlySet<ThreadId>) => void;
   readonly busy: boolean;
   readonly problem: Failure | undefined;
   readonly onCancel: () => void;
@@ -564,21 +592,13 @@ const PublishDialog = ({
           This {adding ? "adds the page to" : "changes the page on"} main, for everyone, as one commit under your name.
         </p>
         <div className="publish-diff" ref={diff} aria-label="Changes" />
-        {lost.length > 0 && (
-          <div className="publish-lost">
-            <p>
-              {lost.length === 1 ? "An open comment thread loses" : `${lost.length} open comment threads lose`} the
-              passage {lost.length === 1 ? "it is" : "they are"} on. {lost.length === 1 ? "It stays" : "They stay"},
-              marked outdated:
-            </p>
-            <ul>
-              {lost.map((quote) => (
-                <li key={quote}>
-                  <q>{quote}</q>
-                </li>
-              ))}
-            </ul>
-          </div>
+        {fates.length > 0 && (
+          <ThreadChoices
+            legend={fates.length === 1 ? "The open comment thread on this page" : "Open comment threads on this page"}
+            choices={fates.map((fate) => ({ thread: fate.thread, note: fateNote(fate) }))}
+            resolve={resolve}
+            onResolve={onResolve}
+          />
         )}
         <label>
           Message
@@ -590,7 +610,7 @@ const PublishDialog = ({
             onChange={(event) => setMessage(event.target.value)}
           />
         </label>
-        {problem !== undefined && <FailureNote failure={problem} />}
+        {problem !== undefined && <FailureNote failure={problem} draft />}
         <div className="actions">
           <button type="button" className="quiet" onClick={onCancel} disabled={busy}>
             Cancel

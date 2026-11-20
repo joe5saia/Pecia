@@ -48,7 +48,8 @@ export const Author = Schema.Union([
 ]);
 export type Author = typeof Author.Type;
 
-const Offset = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
+/** A count of code points from the start of a page's source. */
+export const Offset = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
 
 /** At most this many code points of context are kept on each side of a quote. */
 export const contextLength = 32;

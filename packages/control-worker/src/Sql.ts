@@ -68,6 +68,11 @@ export const schema: ReadonlyArray<string> = [
     edited_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS edits_key ON edits (principal, key)`,
+  // The edits whose changes to comment threads are made (docs/editing.md, "Comments"). They are
+  // made after the push, so a call that died in between is finished by its repeat, and only once.
+  `CREATE TABLE IF NOT EXISTS edit_threads (
+    sha TEXT PRIMARY KEY
+  )`,
   // Comment threads on the wiki's pages (docs/comments.md). `anchor` is the
   // JSON of an `Anchor`, NULL for a comment on the whole page; `resolved_by`
   // and `comments.author` are the JSON of an `Author`.

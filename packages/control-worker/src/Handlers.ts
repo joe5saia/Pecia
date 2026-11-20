@@ -5,11 +5,13 @@ import {
   ForbiddenOrigin,
   IdempotencyKeyReuse,
   maxEditBytes,
+  maxUploadBytes,
   OrchestratorAuth,
   PrincipalId,
   ReaderAuth,
   ReaderEdits,
   ReaderName,
+  UploaderAuth,
   SessionAuth,
   SessionKey,
   Unauthorized,
@@ -120,12 +122,7 @@ const ReaderAuthLive = Layer.effect(
       access: (httpEffect, { credential }) =>
         Effect.gen(function* () {
           const caller = yield* access.verify(Redacted.value(credential));
-          const name = Match.valueTags(caller, {
-            Person: ({ email }) => email,
-            // A script with the orchestrator token reads, and comments as the orchestrator.
-            Orchestrator: () => "orchestrator",
-            Sandbox: () => undefined,
-          });
+          const name = readerOf(caller);
           if (name === undefined) {
             return yield* new Unauthorized();
           }
@@ -138,27 +135,40 @@ const ReaderAuthLive = Layer.effect(
   }),
 );
 
-const EditorAuthLive = Layer.effect(
-  EditorAuth,
-  Effect.gen(function* () {
-    const access = yield* Access;
-    const principals = yield* Principals;
-    return {
-      access: (httpEffect, { credential }) =>
-        Effect.gen(function* () {
-          const editor = editorOf(yield* access.verify(Redacted.value(credential)), principals);
-          if (editor === undefined) {
-            return yield* new Unauthorized();
-          }
-          return yield* httpEffect.pipe(
-            Effect.provideService(Editor, editor),
-            // An edit carries pages; every other request body is a few short fields.
-            Effect.provideService(HttpIncomingMessage.MaxBodySize, ByteSize.bytes(maxEditBytes)),
-          );
-        }),
-    };
-  }),
-);
+/** The name a caller's comments go under, if it may read: a person's email, or `orchestrator` for a script. */
+const readerOf = (caller: Caller): string | undefined =>
+  Match.valueTags(caller, {
+    Person: ({ email }) => email,
+    // A script with the orchestrator token reads, and comments as the orchestrator.
+    Orchestrator: () => "orchestrator",
+    Sandbox: () => undefined,
+  });
+
+/** Admit whoever may edit, with request bodies of up to `maxBytes`: every other request body is a few short fields. */
+const admitEditor = Effect.fnUntraced(function* (maxBytes: number) {
+  const access = yield* Access;
+  const principals = yield* Principals;
+  return {
+    access: <A, E, R>(httpEffect: Effect.Effect<A, E, R>, { credential }: { readonly credential: Redacted.Redacted }) =>
+      Effect.gen(function* () {
+        const caller = yield* access.verify(Redacted.value(credential));
+        const editor = editorOf(caller, principals);
+        const reader = readerOf(caller);
+        if (editor === undefined || reader === undefined) {
+          return yield* new Unauthorized();
+        }
+        return yield* httpEffect.pipe(
+          Effect.provideService(Editor, editor),
+          Effect.provideService(ReaderName, reader),
+          Effect.provideService(HttpIncomingMessage.MaxBodySize, ByteSize.bytes(maxBytes)),
+        );
+      }),
+  };
+});
+
+// An edit carries pages, and an upload a file.
+const EditorAuthLive = Layer.effect(EditorAuth, admitEditor(maxEditBytes));
+const UploaderAuthLive = Layer.effect(UploaderAuth, admitEditor(maxUploadBytes));
 
 const SessionAuthLive = Layer.effect(
   SessionAuth,
@@ -288,28 +298,55 @@ const CommentsLive = HttpApiBuilder.group(WikiApi, "comments", (handlers) =>
   }),
 );
 
+/**
+ * Refuse a call a browser sent from a page of another site. The browser sends the person's Access
+ * cookie with a call from any site. It also names the site, so a page of another one cannot
+ * publish as the person: only a page of the origin the call itself is sent to may, whichever of
+ * the stage's hostnames that is. A script sends no Origin.
+ */
+const requireOwnOrigin = Effect.gen(function* () {
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  const origin = request.headers["origin"];
+  const own = Option.getOrUndefined(HttpServerRequest.toURL(request))?.origin;
+  if (origin !== undefined && origin !== own) {
+    yield* new ForbiddenOrigin({ origin });
+  }
+});
+
+/**
+ * Who publishes: the principal, with an address made from its `id`, not the Access email: git
+ * history is permanent and every agent clones it, and an email can be reassigned. Its host is the
+ * stage's own, whichever hostname the call came to.
+ */
+const pageEditor = Effect.gen(function* () {
+  const principal = yield* Editor;
+  return { principal, email: `${principal}@${new URL(yield* StageOrigin).hostname}`, reader: yield* ReaderName };
+});
+
 /** A person's edits, committed under the principal Access signed in. */
 const EditorLive = HttpApiBuilder.group(WikiApi, "editor", (handlers) =>
   Effect.gen(function* () {
     const workspaces = yield* Workspaces;
-    return handlers.handle("edit", ({ params, payload }) =>
+    return handlers
+      .handle("edit", ({ params, payload }) =>
+        Effect.gen(function* () {
+          yield* requireOwnOrigin;
+          return yield* workspaces.get(params.ws).edit(params.ws, yield* pageEditor, payload);
+        }),
+      )
+      .handle("pageSessions", ({ params, query }) => workspaces.get(params.ws).pageSessions(params.ws, query.path));
+  }),
+);
+
+/** Files a person uploads, committed like an edit of one page. */
+const UploaderLive = HttpApiBuilder.group(WikiApi, "uploader", (handlers) =>
+  Effect.gen(function* () {
+    const workspaces = yield* Workspaces;
+    return handlers.handle("upload", ({ params, query, payload }) =>
       Effect.gen(function* () {
-        // The browser sends the person's Access cookie with a call from any site. It also names
-        // the site, so a page of another one cannot publish as the person: only a page of the
-        // origin the call itself is sent to may, whichever of the stage's hostnames that is.
-        // A script sends no Origin.
-        const request = yield* HttpServerRequest.HttpServerRequest;
-        const origin = request.headers["origin"];
-        const own = Option.getOrUndefined(HttpServerRequest.toURL(request))?.origin;
-        if (origin !== undefined && origin !== own) {
-          return yield* new ForbiddenOrigin({ origin });
-        }
-        const principal = yield* Editor;
-        // An address made from the principal's `id`, not the Access email: git history is
-        // permanent and every agent clones it, and an email can be reassigned. Its host is the
-        // stage's own, whichever hostname the call came to.
-        const email = `${principal}@${new URL(yield* StageOrigin).hostname}`;
-        return yield* workspaces.get(params.ws).edit(params.ws, { principal, email }, payload);
+        yield* requireOwnOrigin;
+        // The bytes cross to the workspace's object as they are: a copy that owns its buffer.
+        return yield* workspaces.get(params.ws).upload(params.ws, yield* pageEditor, query, new Uint8Array(payload));
       }),
     );
   }),
@@ -431,12 +468,13 @@ const Failures = HttpRouter.middleware(
 
 /** The API as a router layer, for `HttpRouter.toHttpEffect` in the Worker and `toWebHandler` in tests. */
 export const ApiLive = HttpApiBuilder.layer(WikiApi).pipe(
-  Layer.provide([OrchestratorLive, SandboxLive, ReaderLive, CommentsLive, EditorLive]),
+  Layer.provide([OrchestratorLive, SandboxLive, ReaderLive, CommentsLive, EditorLive, UploaderLive]),
   Layer.provide([
     OrchestratorAuthLive,
     SessionAuthLive,
     ReaderAuthLive,
     EditorAuthLive,
+    UploaderAuthLive,
     // A 400 says which part of the request was wrong.
     HttpApiMiddleware.layerProblemDetails({ includeDetails: true }),
   ]),

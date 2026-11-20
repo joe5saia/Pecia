@@ -49,6 +49,9 @@ import type {
   CreateWorkspaceResponse,
   EditRequest,
   EditResponse,
+  PageSessions,
+  ThreadChanges,
+  UploadQuery,
   EndSessionResponse,
   LandResponse,
   ListSessionsResponse,
@@ -65,6 +68,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Match from "effect/Match";
+import * as Number_ from "effect/Number";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
@@ -73,7 +77,7 @@ import * as Edit from "./Edit.ts";
 import * as Git from "./Git.ts";
 import { ForkName, forkOf, GrantId, Repos, TokenId } from "./Repos.ts";
 import type { RepoName, RepoToken, TokenHash, TokenScope, TreeSha } from "./Repos.ts";
-import { randomHex, sameText, sha256Hex } from "./Secrets.ts";
+import { randomHex, sameText, sha256Hex, sha256HexOf } from "./Secrets.ts";
 import { schema, Sql } from "./Sql.ts";
 import type { SqlValue } from "./Sql.ts";
 
@@ -111,6 +115,8 @@ export interface Once {
 export interface PageEditor {
   readonly principal: PrincipalId;
   readonly email: string;
+  /** The name the edit's comments go under, as the person's other comments do (docs/comments.md, "Who writes"). */
+  readonly reader: string;
 }
 
 /** Who starts a session over MCP, and which executor may run its git. */
@@ -205,7 +211,25 @@ export interface Workspace {
     name: WorkspaceName,
     editor: PageEditor,
     request: EditRequest,
+  ) => Effect.Effect<
+    EditResponse,
+    NotFound | Conflict | PageRefused | AnchorMismatch | IdempotencyKeyReuse | ArtifactsUnavailable
+  >;
+  /** Commit one file of any kind on top of main, like an edit of one page (docs/editing.md, "Uploads"). */
+  readonly upload: (
+    name: WorkspaceName,
+    editor: PageEditor,
+    request: UploadQuery,
+    bytes: Uint8Array<ArrayBuffer>,
   ) => Effect.Effect<EditResponse, NotFound | Conflict | PageRefused | IdempotencyKeyReuse | ArtifactsUnavailable>;
+  /**
+   * The active sessions whose fork has another version of the page at `path` than main, changed
+   * since the fork's own work began (docs/editing.md, "Sessions that have the page").
+   */
+  readonly pageSessions: (
+    name: WorkspaceName,
+    path: FilePath,
+  ) => Effect.Effect<PageSessions, NotFound | ArtifactsUnavailable>;
   /**
    * End every session idle longer than the timeout, and delete or park every
    * closed fork whose settle period is over. The Durable Object's alarm calls it.
@@ -431,6 +455,15 @@ interface OfEdit {
   readonly changes: number;
 }
 
+/** The fields of a published edit: its commit, and how many threads it re-pinned and resolved. */
+interface Published {
+  readonly status: "published";
+  readonly mainSha: string;
+  readonly sha: string;
+  readonly repinned: number;
+  readonly resolved: number;
+}
+
 /**
  * The usage events, by name, with the fields each one is logged with. It is the table in
  * docs/operations.md, "Monitor usage": an event or field added here is added there too.
@@ -469,11 +502,15 @@ interface UsageEvents {
   };
   readonly "page.edit": OfEdit &
     (
-      | { readonly status: "published"; readonly mainSha: string; readonly sha: string; readonly packBytes: number }
-      | { readonly status: "published"; readonly mainSha: string; readonly sha: string; readonly recovered: true }
+      | (Published & { readonly packBytes: number })
+      | (Published & { readonly recovered: true })
       | { readonly status: "unchanged"; readonly mainSha: string }
       | { readonly status: "conflict"; readonly path: string }
-      | { readonly status: "refused"; readonly path: string; readonly reason: PageRefused["reason"] }
+      | {
+          readonly status: "refused";
+          readonly path: string;
+          readonly reason: PageRefused["reason"] | AnchorMismatch["reason"];
+        }
     );
   readonly "git.token_issued": { readonly workspace: string; readonly sessionId: string; readonly issuer: string };
   readonly "thread.created": ByAuthor & {
@@ -520,6 +557,37 @@ interface Found {
   readonly session: SessionRow;
   readonly base: WorkspaceRow;
 }
+
+/** An edit as the workspace makes it: a person's changes, or the one change of an upload. */
+interface EditInput {
+  readonly changes: ReadonlyArray<Edit.Change>;
+  readonly message: string | undefined;
+  readonly threads: ThreadChanges | undefined;
+}
+
+/** The message of an edit that names none. */
+const messageOf = (changes: ReadonlyArray<Edit.Change>): string => {
+  const [first] = changes;
+  if (changes.length !== 1 || first === undefined) {
+    return `Edit ${changes.length} pages`;
+  }
+  return Match.valueTags(first, {
+    Write: ({ path, expected }) => `${expected === null ? "Add" : "Edit"} ${path}`,
+    Upload: ({ path, expected }) => `${expected === null ? "Add" : "Replace"} ${path}`,
+    Move: ({ from, to }) => `Rename ${from} to ${to}`,
+    Delete: ({ path }) => `Delete ${path}`,
+  });
+};
+
+/** The text each page an edit writes gets, by path: what a re-pinned thread's passage is found in. */
+const writtenBy = (changes: ReadonlyArray<Edit.Change>): ReadonlyMap<string, string> =>
+  new Map(changes.flatMap((change) => (change._tag === "Write" ? [[change.path, change.content] as const] : [])));
+
+/** At most this many active sessions, the ones active last, are looked at for a page. */
+const pageSessionsLimit = 10;
+
+/** How far back a fork's commits are read to find where its own work began. */
+const forkLogLimit = 30;
 
 const requireActive = (session: SessionRow): Effect.Effect<void, SessionNotActive> =>
   session.state === "active"
@@ -1114,25 +1182,20 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
   const buildEdit = Effect.fnUntraced(function* (
     base: WorkspaceRow,
     editor: PageEditor,
-    request: EditRequest,
+    input: EditInput,
     head: { readonly sha: CommitSha; readonly treeSha: TreeSha },
   ): Effect.fn.Return<Git.BuiltCommit, Conflict | PageRefused | Git.GitError | ArtifactsUnavailable> {
     const entries = yield* repos.readTree(base.name, head.treeSha);
     if (entries === undefined) {
       return yield* new ArtifactsUnavailable({ message: `main repo '${base.name}' could not be read` });
     }
-    const tree = yield* Edit.plan(entries, request.changes, (sha) => repos.readTree(base.name, sha));
-    const [first] = request.changes;
+    const tree = yield* Edit.plan(entries, input.changes, (sha) => repos.readTree(base.name, sha));
     return yield* Git.buildCommit({
       parent: head.sha,
       root: { sha: head.treeSha, entries },
       tree,
       author: { name: editor.principal, email: editor.email },
-      message:
-        request.message ??
-        (request.changes.length === 1 && first !== undefined
-          ? `${first.expected === null ? "Add" : "Edit"} ${first.path}`
-          : `Edit ${request.changes.length} pages`),
+      message: input.message ?? messageOf(input.changes),
       at: Math.floor((yield* Clock.currentTimeMillis) / 1000),
     });
   });
@@ -1150,14 +1213,116 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     (effect) => Effect.scoped(effect),
   );
 
+  /** A thread an edit re-pins has to be on a page the edit writes, at a range of that page's new text. */
+  const checkRepin = Effect.fnUntraced(function* (
+    pin: { readonly thread: ThreadId; readonly start: number; readonly end: number },
+    written: ReadonlyMap<string, string>,
+    at: CommitSha,
+  ): Effect.fn.Return<void, NotFound | AnchorMismatch> {
+    const thread = yield* requireThread(pin.thread);
+    const content = written.get(thread.path);
+    if (content === undefined) {
+      return yield* new AnchorMismatch({ path: thread.path, reason: "page_not_edited" });
+    }
+    if (anchorAt(content, at, pin.start, pin.end) === undefined) {
+      return yield* new AnchorMismatch({ path: thread.path, reason: "out_of_range" });
+    }
+    return undefined;
+  });
+
+  /** What an edit asks of comment threads, checked before anything is built: nothing is published if it cannot be done. */
+  const checkThreads = Effect.fnUntraced(function* (
+    input: EditInput,
+    at: CommitSha,
+  ): Effect.fn.Return<void, NotFound | AnchorMismatch> {
+    const written = writtenBy(input.changes);
+    yield* Effect.forEach(input.threads?.repin ?? [], (pin) => checkRepin(pin, written, at), { discard: true });
+    yield* Effect.forEach(input.threads?.resolve ?? [], (threadId) => requireThread(threadId), { discard: true });
+  });
+
+  /** Point one thread at where the edit says its passage is, in the page as the commit `sha` has it. */
+  const repin = Effect.fnUntraced(function* (
+    pin: { readonly thread: ThreadId; readonly start: number; readonly end: number },
+    written: ReadonlyMap<string, string>,
+    sha: CommitSha,
+  ): Effect.fn.Return<number> {
+    const [thread] = yield* threadsWhere("thread_id = ?", pin.thread);
+    const content = thread === undefined ? undefined : written.get(thread.path);
+    const anchor = content === undefined ? undefined : anchorAt(content, sha, pin.start, pin.end);
+    // `checkThreads` saw the thread on a page of the edit. Only a call repeated after the thread was moved finds otherwise.
+    if (anchor === undefined) {
+      return 0;
+    }
+    yield* sql.exec("UPDATE threads SET anchor = ? WHERE thread_id = ?", JSON.stringify(anchor), pin.thread);
+    yield* bumpRevisions([pin.thread]);
+    return 1;
+  });
+
+  /** Resolve one thread with a comment that names the edit's commit, under the person's name. */
+  const resolveWith = Effect.fnUntraced(function* (
+    base: WorkspaceRow,
+    editor: PageEditor,
+    threadId: ThreadId,
+    sha: CommitSha,
+  ): Effect.fn.Return<number> {
+    const [thread] = yield* threadsWhere("thread_id = ?", threadId);
+    if (thread === undefined || thread.state === "resolved") {
+      return 0;
+    }
+    yield* Effect.orDie(
+      setThreadState(
+        base.name,
+        { _tag: "Person", name: editor.reader },
+        threadId,
+        // Plain text, as every comment body is: the viewer renders no markdown.
+        { state: "resolved", body: `Done in ${sha}` },
+        undefined,
+      ),
+    );
+    return 1;
+  });
+
+  /**
+   * What a published edit does to comment threads (docs/editing.md, "Comments"): the threads of a
+   * renamed page go with it, then the re-pins, then the resolves. It is done once for a commit,
+   * after the commit is on main, and calls nothing outside the object: a call that died after its
+   * push is finished here by its repeat.
+   */
+  const applyThreads = Effect.fnUntraced(function* (
+    base: WorkspaceRow,
+    editor: PageEditor,
+    input: EditInput,
+    sha: CommitSha,
+  ): Effect.fn.Return<{ readonly repinned: number; readonly resolved: number }> {
+    const moves = input.changes.flatMap((change) => (change._tag === "Move" ? [change] : []));
+    const pins = input.threads?.repin ?? [];
+    const resolves = input.threads?.resolve ?? [];
+    if (moves.length + pins.length + resolves.length === 0) {
+      return { repinned: 0, resolved: 0 };
+    }
+    const done = yield* sql.exec("SELECT 1 FROM edit_threads WHERE sha = ?", sha);
+    if (done.length > 0) {
+      return { repinned: 0, resolved: 0 };
+    }
+    yield* sql.exec("INSERT INTO edit_threads (sha) VALUES (?)", sha);
+    yield* Effect.forEach(moves, (move) => relocateThreads(base, move.from, move.to), { discard: true });
+    const written = writtenBy(input.changes);
+    const repinned = yield* Effect.forEach(pins, (pin) => repin(pin, written, sha));
+    const resolved = yield* Effect.forEach(resolves, (threadId) => resolveWith(base, editor, threadId, sha));
+    return { repinned: Number_.sumAll(repinned), resolved: Number_.sumAll(resolved) };
+  });
+
   /** One edit, as it is made the first time its idempotency key gets an answer. Runs under `lock`. */
   const editNow = Effect.fnUntraced(function* (
     base: WorkspaceRow,
     editor: PageEditor,
-    request: EditRequest,
+    input: EditInput,
     once: Once,
-  ): Effect.fn.Return<EditResponse, Conflict | PageRefused | IdempotencyKeyReuse | ArtifactsUnavailable> {
-    const who = { workspace: base.name, principal: editor.principal, changes: request.changes.length };
+  ): Effect.fn.Return<
+    EditResponse,
+    NotFound | Conflict | PageRefused | AnchorMismatch | IdempotencyKeyReuse | ArtifactsUnavailable
+  > {
+    const who = { workspace: base.name, principal: editor.principal, changes: input.changes.length };
     const [head] = yield* repos.log(base.name, { ref: "main", limit: 1 });
     if (head === undefined) {
       return yield* new ArtifactsUnavailable({ message: `main repo '${base.name}' has no commits` });
@@ -1169,18 +1334,24 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
       if (earlier.input_hash !== once.inputHash) {
         return yield* new IdempotencyKeyReuse({ key: once.key });
       }
+      const threads = yield* applyThreads(base, editor, input, earlier.sha);
       yield* record("page.edit", {
         ...who,
         status: "published",
         mainSha: earlier.from_sha,
         sha: earlier.sha,
+        ...threads,
         recovered: true,
       });
       return { status: "published", sha: earlier.sha };
     }
     const refuse = (path: string, reason: PageRefused["reason"]) =>
       record("page.edit", { ...who, status: "refused", path, reason });
-    const built = yield* buildEdit(base, editor, request, head).pipe(
+    // A re-pin that does not fit is counted with the pages that are refused, under its own reason.
+    yield* Effect.tapErrorTag(checkThreads(input, mainSha), "AnchorMismatch", (error) =>
+      record("page.edit", { ...who, status: "refused", path: error.path, reason: error.reason }),
+    );
+    const built = yield* buildEdit(base, editor, input, head).pipe(
       Effect.catchTag("GitError", (error) => Effect.fail(unavailable(error))),
       // How often a person's edit meets someone else's change of the same page, and how often one is refused.
       Effect.tapErrorTag("Conflict", (error) => record("page.edit", { ...who, status: "conflict", path: error.id })),
@@ -1190,8 +1361,10 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
       Unchanged: () =>
         Effect.as(record("page.edit", { ...who, status: "unchanged", mainSha }), { status: "unchanged" } as const),
       Unreadable: Effect.fnUntraced(function* ({ directory }) {
-        const within = request.changes.find((change) => directory === "" || change.path.startsWith(`${directory}/`));
-        const path = within?.path ?? directory;
+        const within = input.changes
+          .flatMap((change) => Edit.pathsOf(change))
+          .find((path) => directory === "" || path.startsWith(`${directory}/`));
+        const path = within ?? directory;
         yield* refuse(path, "unwritable_directory");
         return yield* new PageRefused({ path, reason: "unwritable_directory" });
       }),
@@ -1211,11 +1384,19 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
           Effect.fail(unavailable(error)),
         );
         return yield* Match.valueTags(pushed, {
-          Committed: () =>
-            Effect.as(record("page.edit", { ...who, status: "published", mainSha, sha, packBytes: pack.byteLength }), {
+          Committed: Effect.fnUntraced(function* () {
+            // The threads change only now: one that pointed at a commit that never reached main would be wrong for good.
+            const threads = yield* applyThreads(base, editor, input, sha);
+            yield* record("page.edit", {
+              ...who,
               status: "published",
+              mainSha,
               sha,
-            } as const),
+              ...threads,
+              packBytes: pack.byteLength,
+            });
+            return { status: "published", sha } as const;
+          }),
           // Under `lock` nothing of this service moves main between the read and the push.
           Rejected: ({ reason }) =>
             Effect.fail(new ArtifactsUnavailable({ message: `main was moved by something else: ${reason}` })),
@@ -1234,10 +1415,126 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
         key: idempotencyKey,
         inputHash: yield* sha256Hex(JSON.stringify(input)),
       };
-      return yield* withOnce(once, EditResponseSchema, editNow(base, editor, request, once));
+      return yield* withOnce(
+        once,
+        EditResponseSchema,
+        editNow(base, editor, { changes: request.changes, message: request.message, threads: request.threads }, once),
+      );
     },
     (effect) => lock.withPermit(effect),
   );
+
+  const upload: Workspace["upload"] = Effect.fn("Workspace.upload")(
+    function* (name: WorkspaceName, editor: PageEditor, request: UploadQuery, bytes: Uint8Array<ArrayBuffer>) {
+      const base = yield* requireWorkspace(name);
+      const expected = request.expected ?? null;
+      // An upload shares its keys with the edits: the commit of either is found by its key.
+      const once = {
+        principal: editor.principal,
+        tool: "edit",
+        key: request.idempotencyKey,
+        inputHash: yield* sha256Hex(
+          JSON.stringify({
+            upload: request.path,
+            expected,
+            message: request.message ?? null,
+            content: yield* sha256HexOf(bytes),
+          }),
+        ),
+      };
+      const change = { _tag: "Upload", path: request.path, expected, bytes } as const;
+      return yield* withOnce(
+        once,
+        EditResponseSchema,
+        // An upload names no thread, so neither thread check can refuse it.
+        Effect.catchTag(
+          editNow(base, editor, { changes: [change], message: request.message, threads: undefined }, once),
+          "AnchorMismatch",
+          (error) => Effect.die(error),
+        ),
+      );
+    },
+    (effect) => lock.withPermit(effect),
+  );
+
+  /** The hash of the file at `path` in a tree of `repo`, or `undefined` if no file is there. */
+  const blobAt = (
+    repo: RepoName,
+    treeSha: TreeSha,
+    path: FilePath,
+  ): Effect.Effect<string | undefined, ArtifactsUnavailable> => {
+    const walk: (
+      tree: TreeSha,
+      segments: ReadonlyArray<string>,
+    ) => Effect.Effect<string | undefined, ArtifactsUnavailable> = Effect.fnUntraced(function* (tree, segments) {
+      const [name, ...rest] = segments;
+      const entries = yield* repos.readTree(repo, tree);
+      const entry = entries?.find((candidate) => candidate.name === name);
+      if (entry === undefined) {
+        return undefined;
+      }
+      if (entry.type === "tree") {
+        return rest.length === 0 ? undefined : yield* walk(entry.sha, rest);
+      }
+      return rest.length === 0 && entry.type !== "gitlink" ? entry.sha : undefined;
+    });
+    return walk(treeSha, path.split("/"));
+  };
+
+  /** Whether an active session's fork has its own version of the page: not main's, and not the one its work began from. */
+  const hasOwnVersion = Effect.fnUntraced(function* (
+    session: SessionRow,
+    base: WorkspaceRow,
+    path: FilePath,
+    main: { readonly sha: CommitSha; readonly blob: string | undefined },
+  ): Effect.fn.Return<boolean, ArtifactsUnavailable> {
+    const commits = yield* repos.log(session.fork_name, { ref: "main", limit: forkLogLimit });
+    const [forkHead] = commits;
+    if (forkHead === undefined || forkHead.sha === main.sha) {
+      return false;
+    }
+    // The fork's newest commit that main once pointed at: the session's own work is what follows it.
+    const landed = yield* Effect.forEach(commits, (commit) => isLanded(commit.sha, base));
+    const began = landed.indexOf(true);
+    if (began === 0) {
+      return false;
+    }
+    const inFork = yield* blobAt(session.fork_name, forkHead.treeSha, path);
+    if (inFork === main.blob) {
+      return false;
+    }
+    const from = commits[began];
+    // A fork whose own work is longer than was read is taken to have changed the page.
+    return from === undefined || inFork !== (yield* blobAt(session.fork_name, from.treeSha, path));
+  });
+
+  const pageSessions: Workspace["pageSessions"] = Effect.fn("Workspace.pageSessions")(function* (
+    name: WorkspaceName,
+    path: FilePath,
+  ) {
+    const base = yield* requireWorkspace(name);
+    const sessions = yield* select(
+      SessionRow,
+      "SELECT * FROM sessions WHERE state = 'active' AND fork_remote != '' ORDER BY last_active_at DESC, session_id LIMIT ?",
+      pageSessionsLimit,
+    );
+    const [head] = sessions.length === 0 ? [] : yield* repos.log(base.name, { ref: "main", limit: 1 });
+    if (head === undefined) {
+      return [];
+    }
+    const main = { sha: head.sha, blob: yield* blobAt(base.name, head.treeSha, path) };
+    const found = yield* Effect.forEach(
+      sessions,
+      (session) => Effect.map(hasOwnVersion(session, base, path, main), (own) => (own ? [session] : [])),
+      { concurrency: 4 },
+    );
+    return found.flat().map((session) => ({
+      sessionId: session.session_id,
+      agent: session.agent,
+      model: session.model,
+      lastActiveAt: timeOf(session.last_active_at),
+    }));
+  });
 
   const sweep: Workspace["sweep"] = Effect.fn("Workspace.sweep")(
     function* () {
@@ -1690,16 +1987,22 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
         return yield* new Conflict({ resource: "threads", id: request.from, expected, actual: actual || "none" });
       }
     }
+    const threadIds = yield* relocateThreads(base, request.from, request.to);
+    return { moved: threadIds.length, threadIds: threadIds.slice(0, 25) };
+  });
+
+  /** Point every thread on the page `from` at the page `to`, and answer which they were. */
+  const relocateThreads = Effect.fnUntraced(function* (base: WorkspaceRow, from: FilePath, to: FilePath) {
     const moved = yield* select(
       Schema.Struct({ thread_id: ThreadId }),
       "UPDATE threads SET path = ? WHERE path = ? RETURNING thread_id",
-      request.to,
-      request.from,
+      to,
+      from,
     );
     const threadIds = moved.map((row) => row.thread_id);
     yield* bumpRevisions(threadIds);
-    yield* record("threads.moved", { workspace: base.name, from: request.from, to: request.to, moved: moved.length });
-    return { moved: moved.length, threadIds: threadIds.slice(0, 25) };
+    yield* record("threads.moved", { workspace: base.name, from, to, moved: moved.length });
+    return threadIds;
   });
 
   /** A comment that is not deleted, if `author` may do `action` to it. */
@@ -1800,6 +2103,8 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     mintTokens,
     land,
     edit,
+    upload,
+    pageSessions,
     sweep,
     sessionAuthor,
     listThreads,

@@ -90,7 +90,7 @@ Ending a session revokes its fork's tokens and answers one of two states:
 
 ## Edit a page
 
-A person who is a principal edits in the viewer: "Edit page" on a page, or "New page" in the file tree ([editing.md](editing.md)). A script publishes with the orchestrator token: `POST /workspaces/<ws>/edits` with `{ "idempotencyKey", "changes": [{ "_tag": "Write", "path", "expected", "content" }] }`, where `expected` is the page's `sha` in `GET /workspaces/<ws>/tree`, or `null` for a new page.
+A person who is a principal edits in the viewer: "Edit page", "Rename page" and "Delete page" on a page, "New page" and "Upload file" in the file tree, and "Restore this version" on a page read at an older commit ([editing.md](editing.md)). A script publishes with the orchestrator token: `POST /workspaces/<ws>/edits` with `{ "idempotencyKey", "changes": [{ "_tag": "Write", "path", "expected", "content" }] }`, where `expected` is the page's `sha` in `GET /workspaces/<ws>/tree`, or `null` for a new page. A change can also be `{ "_tag": "Move", "from", "to", "expected" }` or `{ "_tag": "Delete", "path", "expected" }`. A file that is not text is uploaded: `curl --data-binary @chart.png -H 'content-type: application/octet-stream' '<url>/workspaces/<ws>/uploads?path=images/chart.png&idempotencyKey=<key>'`, with `&expected=<sha>` to replace a file.
 
 ## Read a wiki
 
@@ -111,13 +111,13 @@ Open the stage's URL in a browser and sign in as a principal ("Access"). The sig
 | 409 | `{ "_tag": "SessionNotActive", "sessionId", "state" }` | The session has ended: it is `closed`, `parked` or `deleted`. It does not become active again. | No |
 | 422 | `{ "_tag": "ForkTooLarge", "limit", "max" }` | `land` only: the fork's new commits are over a landing limit (see "Landing limits"). | No |
 | 403 | `{ "_tag": "NotYourComment", "commentId", "action" }` | A comment's edit or delete by someone other than its writer, or an edit by an agent ([comments.md](comments.md)). | No |
-| 422 | `{ "_tag": "AnchorMismatch", "path", "reason" }` | A comment's anchor does not fit its page: `not_text`, `out_of_range`, `quote_not_found` or `quote_ambiguous` ([comments.md](comments.md)). | No |
-| 409 | `{ "_tag": "Conflict", "resource": "page", "id", "expected", "actual" }` | An edit only: the page at `id` is not the version the edit expected. `expected` and `actual` are its hashes, `none` where it does not exist. Nothing was committed ([editing.md](editing.md)). | No: read the page, merge, publish again |
-| 422 | `{ "_tag": "PageRefused", "path", "reason" }` | An edit only: a page the service does not commit: `too_large`, `not_text`, `not_a_file`, `reserved_path`, `invalid_path` or `unwritable_directory` ([editing.md](editing.md), "The publish call"; "Editing limits" below). | No |
-| 422 | `{ "_tag": "IdempotencyKeyReuse", "key" }` | An edit only: its `idempotencyKey` was used for an edit with other changes. | No |
-| 403 | `{ "_tag": "ForbiddenOrigin", "origin" }` | An edit only: a browser sent it from a page of another origin than the one the call went to. `origin` is the header as sent. | No |
-| 413 | Empty | The request body is over 64 kB, or over 1,088 KiB for an edit. | No |
-| 415 | Text | The request body is not `application/json`. | No |
+| 422 | `{ "_tag": "AnchorMismatch", "path", "reason" }` | A comment's anchor does not fit its page: `not_text`, `out_of_range`, `quote_not_found` or `quote_ambiguous` ([comments.md](comments.md)). For an edit that re-pins a thread: `page_not_edited`, the thread is on a page the edit does not write, or `out_of_range` ([editing.md](editing.md), "Comments"). Nothing was committed. | No |
+| 409 | `{ "_tag": "Conflict", "resource": "page", "id", "expected", "actual" }` | An edit or an upload only: the file at `id` is not the version the call expected, or a file is where a move or a new file would go. `expected` and `actual` are its hashes, `none` where it does not exist. Nothing was committed ([editing.md](editing.md)). | No: read the page, merge, publish again |
+| 422 | `{ "_tag": "PageRefused", "path", "reason" }` | An edit or an upload only: a page the service does not commit: `too_large`, `not_text`, `not_a_file`, `reserved_path`, `invalid_path` or `unwritable_directory` ([editing.md](editing.md), "The publish call"; "Editing limits" below). | No |
+| 422 | `{ "_tag": "IdempotencyKeyReuse", "key" }` | An edit or an upload only: its `idempotencyKey` was used for one with other changes or other bytes. | No |
+| 403 | `{ "_tag": "ForbiddenOrigin", "origin" }` | An edit or an upload only: a browser sent it from a page of another origin than the one the call went to. `origin` is the header as sent. | No |
+| 413 | Empty | The request body is over 64 kB, over 1,088 KiB for an edit, or over 4 MiB for an upload. | No |
+| 415 | Text | The request body is not `application/json`, or not `application/octet-stream` for an upload. | No |
 | 500 | Problem | A bug in the service. The cause is in Workers Logs under `request failed with a defect`. | No |
 | 502 | `{ "_tag": "ArtifactsUnavailable", "message" }` | A Cloudflare Artifacts call failed after the service's own retries. | Yes |
 | 503 | `{ "_tag": "WorkspaceUnavailable", "message" }` | The workspace's Durable Object is overloaded or restarting. | Yes, after a pause |
@@ -162,9 +162,12 @@ A person's edit ([editing.md](editing.md)) carries its pages in the request, and
 | One page's content, as UTF-8 (`maxPageBytes`) | 512 KiB | 422 `PageRefused`, `too_large` |
 | The request body (`maxEditBytes`): two pages of the most a page may be, and 64 KiB | 1,088 KiB | 413 |
 | Pages in one edit (`maxEditChanges`) | 20 | 400 |
+| Threads one edit re-pins, and threads it resolves (`maxThreadChanges`) | 100 each | 400 |
+| One uploaded file, which is the request body (`maxUploadBytes`) | 4 MiB | 413 |
+| Sessions looked at for `page-sessions` | 10, the ones active last | The others are not named |
 | The commit's message | 200 characters | 400 |
 
-They are in `packages/wiki-api/src/Edits.ts`. An edit reads only the directories on the way to its pages and pushes only its new objects, so its cost does not grow with the wiki. It waits for the workspace's lock like a land, so behind a slow land it takes as long as that land.
+They are in `packages/wiki-api/src/Edits.ts`. An edit reads only the directories on the way to its pages and pushes only its new objects, so its cost does not grow with the wiki. It waits for the workspace's lock like a land, so behind a slow land it takes as long as that land. An upload holds its file in the Worker's memory twice over, as the request's body and in the pack. On a preview stage against Artifacts, an upload of 1 MiB of random bytes took 1.0 second and one of 4 MiB took 2.1 seconds; a rename took 0.6 seconds.
 
 ## Monitor usage
 
@@ -180,12 +183,12 @@ There are three records of what happened, from the most to the least detailed.
 | `land` | Every `wiki-land` call that gets an answer | `workspace`, `sessionId`, `agent`, `model`, `status` (`landed`, `behind`, `nothing_to_land`), `mainSha`, `forkHead`; for `landed`, and for `behind` when the fork has main's head, also `packBytes`, `objects` and `inflatedBytes`: the size of the commits it fetched, which are those main lacked |
 | `land.refused` | A land is refused because the fork's new commits are over a landing limit | `workspace`, `sessionId`, `agent`, `model`, `limit`, `max`, `mainSha`, `forkHead` |
 | `session.ended` | A session is closed or times out | `workspace`, `sessionId`, `agent`, `model`, `state` (`closed`, `parked`), `reason` (`closed`, `idle`), `forkHead` |
-| `page.edit` | A person's edit is published, changes nothing, meets a conflict or is refused ([editing.md](editing.md)) | `workspace`, `principal`, `changes` (a count), `status` (`published`, `unchanged`, `conflict`, `refused`); `mainSha` for `published` and `unchanged`; `sha` and `packBytes` for `published`; `recovered: true`, without `packBytes`, for a `published` answered from an earlier call whose push went through and whose answer was lost; `path` for `conflict` and `refused`, and `reason` for `refused`. Never a page's text |
+| `page.edit` | A person's edit is published, changes nothing, meets a conflict or is refused ([editing.md](editing.md)) | `workspace`, `principal`, `changes` (a count), `status` (`published`, `unchanged`, `conflict`, `refused`); `mainSha` for `published` and `unchanged`; `sha` and `packBytes` for `published`; `repinned` and `resolved` for `published`, the threads the edit re-pinned and resolved; `recovered: true`, without `packBytes`, for a `published` answered from an earlier call whose push went through and whose answer was lost; `path` for `conflict` and `refused`, and `reason` for `refused`: a `PageRefused` reason, or `page_not_edited` or `out_of_range` for a re-pin that does not fit. Never a page's text |
 | `thread.created` | A thread is created | `workspace`, `threadId`, `path`, `anchored`, `author` (`person`, `agent`), `sessionId` for an agent |
 | `thread.replied` | A reply is added | `workspace`, `threadId`, `repinned`, `author`, `sessionId` for an agent |
 | `thread.resolved`, `thread.reopened` | A thread changes state | `workspace`, `threadId`, `author`, `sessionId` for an agent |
 | `comment.edited`, `comment.deleted` | A comment is edited or deleted | `workspace`, `threadId`, `commentId`, `author`, `sessionId` for an agent |
-| `threads.moved` | `wiki-comments move` | `workspace`, `from`, `to`, `moved` |
+| `threads.moved` | `wiki-comments move`, or a person's rename of a page | `workspace`, `from`, `to`, `moved` |
 | `session.settled` | A closed fork's ten minutes are over | `workspace`, `sessionId`, `agent`, `model`, `state` (`deleted`, `parked`), `forkHead` |
 | `mcp.tool` | Every MCP tool call ([mcp.md](mcp.md)) | `tool`, `result` (`success`, `failure`, `outcome_unknown`), `durationMs`, `reference` (also in the failure the client got), `code` for a failure |
 | `oauth.consent` | A person approves an app on `/authorize` | `principal`, `clientId`, `scope` |

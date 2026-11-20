@@ -42,9 +42,9 @@ The service makes every anchor itself from the file at the commit, so an anchor 
 - `fuzzy`: text close to the passage, at most a quarter of its characters changed (`approx-string-match`).
 - Otherwise the thread is **outdated**: shown with its quote struck through, never deleted.
 
-A reply to a thread found `moved` or `fuzzy` carries where the passage is now, and the service replaces the anchor with one made at that commit (re-pinning). A renamed page keeps its threads only if an agent runs `wiki-comments move`.
+A reply to a thread found `moved` or `fuzzy` carries where the passage is now, and the service replaces the anchor with one made at that commit (re-pinning). A page an agent renamed keeps its threads only if the agent runs `wiki-comments move`; a page a person renamed in the viewer keeps them, since the rename moves them in the same call.
 
-A person's edit in the viewer ([editing.md](editing.md)) is one more version of the page: its threads are placed in it by `locate`, like after a land. The editor highlights each open thread's passage in the draft and says before publishing which threads the edit leaves outdated. A draft takes no new comment on a passage and no re-pin, since an anchor is made from a file at a commit.
+A person's edit in the viewer ([editing.md](editing.md)) is one more version of the page: its threads are placed in it by `locate`, like after a land. The editor highlights each open thread's passage in the draft. A draft takes no new comment on a passage, since an anchor is made from a file at a commit. The publish itself can re-pin and resolve threads: the editor follows each open thread's passage through the edit and sends where a reworded one ended up, the dialog says which threads lose their passage, and the person can resolve any of them with the publish, which adds the comment `Done in <sha>` ([editing.md](editing.md), "Comments").
 
 ## Who writes
 

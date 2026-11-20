@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
+import { maxUploadBytes } from "@pecia/wiki-api";
 import * as Effect from "effect/Effect";
 import { signedIn, step } from "./support/Browser.ts";
 import { Server, ServerLive } from "./support/Server.ts";
@@ -8,6 +10,16 @@ import { api, createWorkspace, eventsOf, eventually, openSandbox } from "./suppo
 // the file tree, the links between pages and the editor (docs/editing.md).
 
 const ada = "ada@example.com";
+
+/** A PNG of one pixel. */
+const pixel = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+/** The hash git gives a file of these bytes, worked out here and not by the service. */
+const blobHashOf = (bytes: Uint8Array): string =>
+  createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 
 const setup = [
   "# Setup",
@@ -248,11 +260,11 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
 
         const page = yield* signedIn(ada);
         /** Wait until the thread's passage is marked in the page that `within` holds. */
-        const marked = (within: string) =>
+        const marked = (within: string, passage = "Run the deploy") =>
           step(() =>
             page.waitForFunction(
               `[...(CSS.highlights.get("pecia-comment") ?? [])].some((range) =>
-                range.toString() === "Run the deploy" &&
+                range.toString() === ${JSON.stringify(passage)} &&
                 document.querySelector(${JSON.stringify(within)})?.contains(range.startContainer))`,
             ),
           );
@@ -308,29 +320,61 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
         expect(yield* step(() => guest.getByRole("button", { name: "New page" }).count())).toBe(0);
         expect(yield* step(() => guest.getByRole("textbox", { name: "Page source" }).count())).toBe(0);
 
-        // An edit that removes the passage of the thread says so before it is published.
+        // An edit that rewords the passage of the thread says where the thread goes, and takes it there.
         yield* step(() => page.getByRole("button", { name: "Edit page" }).click());
         yield* step(() => source.click());
         yield* step(() => page.keyboard.press("ControlOrMeta+A"));
         yield* step(() => page.keyboard.type("# Guide\n\nShip it 🚀 then **tell** the team.\n"));
         yield* step(() => publish.click());
-        yield* step(() => dialog.getByText("An open comment thread loses the passage it is on.").waitFor());
-        expect(yield* step(() => dialog.locator(".publish-lost q").textContent())).toBe("Run the deploy");
+        const choice = dialog.getByRole("group", { name: "The open comment thread on this page" });
+        yield* step(() => choice.getByText("Follows its passage, which is now").waitFor());
+        expect(yield* step(() => choice.locator("q").allTextContents())).toEqual(["Run the deploy", "Ship it 🚀 then"]);
         yield* step(() => dialog.getByRole("button", { name: "Publish", exact: true }).click());
         yield* step(() => source.waitFor({ state: "detached" }));
-        yield* step(() => page.locator(".thread").getByText("outdated").waitFor());
         expect(yield* wiki.show("guide.md")).toBe("# Guide\r\n\r\nShip it 🚀 then **tell** the team.");
+        // The thread is on the reworded passage at the new commit, and the page marks it there.
+        const reworded = yield* wiki.head;
+        const threadsOf = api("GET", "/workspaces/write/threads?state=all&path=guide.md");
+        expect((yield* threadsOf).body).toMatchObject([
+          { state: "open", anchor: { commit: reworded, exact: "Ship it 🚀 then", prefix: "# Guide\r\n\r\n" } },
+        ]);
+        yield* marked("main article", "Ship it 🚀 then");
+        expect(yield* step(() => page.locator(".thread").getByText("outdated").count())).toBe(0);
         // A thread's passage is marked in the source where it is, also after a character of two UTF-16 units.
         yield* api("POST", "/workspaces/write/threads", {
           as: yield* server.access.person(ada),
           body: { path: "guide.md", body: "Who?", anchor: { _tag: "Quote", quote: "tell" } },
         });
         yield* step(() => page.reload());
+        yield* step(() => page.locator(".thread").nth(1).waitFor());
         yield* step(() => page.getByRole("button", { name: "Edit page" }).click());
-        yield* step(() => page.locator(".cm-comment-passage").first().waitFor());
-        expect((yield* step(() => page.locator(".cm-comment-passage").allTextContents())).join("")).toBe("tell");
-        yield* step(() => page.getByRole("button", { name: "Close" }).click());
+        yield* step(() => page.locator(".cm-comment-passage").nth(1).waitFor());
+        expect((yield* step(() => page.locator(".cm-comment-passage").allTextContents())).join("|")).toBe(
+          "Ship it 🚀 then|tell",
+        );
+
+        // An edit that removes both passages says so for each, and settles the thread the person ticks.
+        yield* step(() => source.click());
+        yield* step(() => page.keyboard.press("ControlOrMeta+A"));
+        yield* step(() => page.keyboard.type("# Guide\n"));
+        yield* step(() => publish.click());
+        const choices = dialog.getByRole("group", { name: "Open comment threads on this page" });
+        expect(yield* step(() => choices.getByText("Loses its passage with this edit.").count())).toBe(2);
+        yield* step(() => choices.getByRole("listitem").filter({ hasText: "Ship it" }).getByLabel("Resolve").check());
+        yield* step(() => dialog.getByRole("button", { name: "Publish", exact: true }).click());
         yield* step(() => source.waitFor({ state: "detached" }));
+        // The thread left open is outdated; the other is resolved with the commit, under the person's name.
+        yield* step(() => page.locator(".thread").getByText("outdated").waitFor());
+        expect(yield* step(() => page.locator(".thread").count())).toBe(1);
+        expect(yield* wiki.show("guide.md")).toBe("# Guide");
+        expect((yield* threadsOf).body).toMatchObject([
+          {
+            state: "resolved",
+            resolvedBy: { _tag: "Person", name: ada },
+            comments: [{ body: "Which one?" }, { body: `Done in ${yield* wiki.head}` }],
+          },
+          { state: "open", anchor: { exact: "tell" } },
+        ]);
 
         // A new page, from the file tree.
         yield* step(() => page.getByRole("button", { name: "New page" }).click());
@@ -549,6 +593,209 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
         yield* step(() => source.waitFor({ state: "detached" }));
         yield* step(() => page.locator("main article").getByText("kept by the person").waitFor());
         expect(yield* wiki.show("page.md")).toBe("kept by the person");
+      }),
+  );
+
+  it.effect(
+    "a person renames a page from the page itself and its comments come along, then deletes it and settles a thread in doing so",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* Server;
+        const wiki = yield* createWorkspace("moves");
+        const person = yield* server.access.person(ada);
+        const added = yield* api("POST", "/workspaces/moves/edits", {
+          as: person,
+          body: {
+            idempotencyKey: "moves-1",
+            changes: [
+              { _tag: "Write", path: "guide/old.md", expected: null, content: "# Old name\n\nRun the deploy.\n" },
+            ],
+          },
+        });
+        expect(added.status).toBe(200);
+        yield* api("POST", "/workspaces/moves/threads", {
+          as: person,
+          body: { path: "guide/old.md", body: "Which one?", anchor: { _tag: "Quote", quote: "Run the deploy" } },
+        });
+        yield* api("POST", "/workspaces/moves/threads", {
+          as: person,
+          body: { path: "guide/old.md", body: "Is this page needed?" },
+        });
+
+        const page = yield* signedIn(ada);
+        yield* step(() => page.setViewportSize({ width: 1440, height: 900 }));
+        yield* step(() => page.goto(`${server.url}/w/moves/guide/old.md`));
+        yield* step(() => page.getByRole("heading", { name: "Old name", level: 1 }).waitFor());
+        yield* step(() => page.locator(".thread").nth(1).waitFor());
+
+        yield* step(() => page.getByRole("button", { name: "Rename page" }).click());
+        const rename = page.getByRole("dialog", { name: "Rename guide/old.md" });
+        yield* step(() => rename.getByText("Its 2 comment threads go with it.").waitFor());
+        // A page in the way is refused before anything is sent: a rename never replaces one.
+        yield* step(() => rename.getByLabel("New path").fill("README.md"));
+        yield* step(() => rename.getByRole("button", { name: "Rename", exact: true }).click());
+        yield* step(() => rename.getByText("A page is there already. A rename never replaces one.").waitFor());
+        yield* step(() => rename.getByLabel("New path").fill("guides/new.md"));
+        yield* step(() => rename.getByRole("button", { name: "Rename", exact: true }).click());
+
+        // The person is on the page where it is now, with its comments.
+        yield* step(() => page.waitForURL(`${server.url}/w/moves/guides/new.md`));
+        yield* step(() => page.getByRole("heading", { name: "Old name", level: 1 }).waitFor());
+        yield* step(() => page.locator(".thread").nth(1).waitFor());
+        expect(yield* wiki.git("log", "-1", "--format=%an|%s")).toBe("ada|Rename guide/old.md to guides/new.md");
+        const tree = page.getByRole("navigation", { name: "Pages" });
+        expect(yield* step(() => tree.locator("a.current").textContent())).toBe("new");
+        expect(yield* step(() => tree.getByRole("link", { name: "old" }).count())).toBe(0);
+
+        yield* step(() => page.getByRole("button", { name: "Delete page" }).click());
+        const remove = page.getByRole("dialog", { name: "Delete guides/new.md" });
+        const open = remove.getByRole("group", { name: "2 open comment threads stay on the path" });
+        yield* step(() =>
+          open.getByRole("listitem").filter({ hasText: "Is this page needed?" }).getByLabel("Resolve").check(),
+        );
+        yield* step(() => remove.getByRole("button", { name: "Delete", exact: true }).click());
+
+        // The page is gone, and the person is on the wiki's first page.
+        yield* step(() => page.waitForURL(`${server.url}/w/moves`));
+        yield* step(() => tree.locator("a.current").waitFor());
+        expect(yield* step(() => tree.getByRole("link", { name: "new" }).count())).toBe(0);
+        expect(yield* wiki.git("ls-tree", "-r", "--name-only", "main")).toBe("README.md");
+        expect(yield* wiki.git("log", "-1", "--format=%an|%s")).toBe("ada|Delete guides/new.md");
+        const head = yield* wiki.head;
+        // The thread the person ticked is resolved with the commit; the other stays open on the path.
+        const threads = yield* api("GET", "/workspaces/moves/threads?state=all&path=guides%2Fnew.md");
+        expect(threads.body).toMatchObject([
+          { state: "open", comments: [{ body: "Which one?" }] },
+          {
+            state: "resolved",
+            resolvedBy: { _tag: "Person", name: ada },
+            comments: [{ body: "Is this page needed?" }, { body: `Done in ${head}` }],
+          },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "a person uploads an image from the file tree, replaces it, and puts an old version of a page back on main",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* Server;
+        const wiki = yield* createWorkspace("files");
+        const person = yield* server.access.person(ada);
+        const write = Effect.fnUntraced(function* (key: string, expected: string | null, content: string) {
+          const answer = yield* api("POST", "/workspaces/files/edits", {
+            as: person,
+            body: { idempotencyKey: key, changes: [{ _tag: "Write", path: "notes.md", expected, content }] },
+          });
+          expect(answer.status).toBe(200);
+          return yield* wiki.head;
+        });
+        const first = yield* write("files-1", null, "# Notes\n\nFirst version.\n");
+        yield* write("files-2", yield* wiki.git("rev-parse", "main:notes.md"), "# Notes\n\nSecond version.\n");
+
+        const page = yield* signedIn(ada);
+        yield* step(() => page.setViewportSize({ width: 1440, height: 900 }));
+        yield* step(() => page.goto(`${server.url}/w/files/notes.md`));
+        yield* step(() => page.locator("main article").getByText("Second version.").waitFor());
+
+        // An image, beside the page the person is on unless they say where.
+        const form = page.getByRole("form", { name: "Upload a file" });
+        const choose = (name: string, buffer: Buffer) =>
+          step(() => form.getByLabel("File to upload").setInputFiles({ name, mimeType: "image/png", buffer }));
+        yield* step(() => page.getByRole("button", { name: "Upload file" }).click());
+        yield* choose("chart.png", pixel);
+        expect(yield* step(() => form.getByLabel("Path in the wiki").inputValue())).toBe("chart.png");
+        yield* step(() => form.getByLabel("Path in the wiki").fill("images/chart.png"));
+        yield* step(() => form.getByRole("button", { name: "Upload", exact: true }).click());
+        // The person is taken to the image, which the browser shows from main.
+        yield* step(() => page.waitForURL(`${server.url}/w/files/images/chart.png`));
+        yield* step(() => page.waitForFunction(`document.querySelector("figure.image-file img")?.naturalWidth === 1`));
+        expect(yield* wiki.git("log", "-1", "--format=%an|%s")).toBe("ada|Add images/chart.png");
+        expect(yield* wiki.git("rev-parse", "main:images/chart.png")).toBe(blobHashOf(pixel));
+
+        // Another file at the same path replaces it, and the form says it will.
+        const other = Buffer.concat([pixel, Buffer.from("more")]);
+        yield* step(() => page.getByRole("button", { name: "Upload file" }).click());
+        yield* choose("chart.png", other);
+        expect(yield* step(() => form.getByLabel("Path in the wiki").inputValue())).toBe("images/chart.png");
+        yield* step(() => form.getByText("A file is at this path. Uploading replaces it.").waitFor());
+        yield* step(() => form.getByRole("button", { name: "Replace", exact: true }).click());
+        yield* step(() => form.waitFor({ state: "detached" }));
+        yield* eventually(wiki.git("log", "-1", "--format=%s"), (message) => message === "Replace images/chart.png");
+        expect(yield* wiki.git("rev-parse", "main:images/chart.png")).toBe(blobHashOf(other));
+        // A file over the limit is refused in the browser, and nothing is sent.
+        const tip = yield* wiki.head;
+        yield* step(() => page.getByRole("button", { name: "Upload file" }).click());
+        yield* choose("big.png", Buffer.alloc(maxUploadBytes + 1));
+        yield* step(() => form.getByRole("button", { name: "Upload", exact: true }).click());
+        yield* step(() => form.getByText("The most a file may be here is 4.0 MiB.").waitFor());
+        yield* step(() => form.getByRole("button", { name: "Cancel" }).click());
+        expect(yield* wiki.head).toBe(tip);
+
+        // The page as it was at an older commit, which the person puts back.
+        yield* step(() => page.goto(`${server.url}/w/files/notes.md?at=${first}`));
+        yield* step(() => page.locator("main article").getByText("First version.").waitFor());
+        // An old version is read, not edited.
+        expect(yield* step(() => page.getByRole("button", { name: "Edit page" }).count())).toBe(0);
+        yield* step(() => page.getByRole("button", { name: "Restore this version" }).click());
+        const restore = page.getByRole("dialog", { name: "Restore notes.md" });
+        yield* step(() => restore.getByRole("button", { name: "Restore", exact: true }).click());
+        yield* step(() => page.waitForURL(`${server.url}/w/files/notes.md`));
+        yield* step(() => page.locator("main article").getByText("First version.").waitFor());
+        expect(yield* wiki.show("notes.md")).toBe("# Notes\n\nFirst version.");
+        expect(yield* wiki.git("log", "-1", "--format=%an|%s")).toBe(`ada|Restore notes.md to ${first.slice(0, 7)}`);
+        expect(yield* wiki.git("rev-parse", "main^")).toBe(tip);
+        // Main has that version now, so there is nothing to restore from the old commit.
+        yield* step(() => page.goto(`${server.url}/w/files/notes.md?at=${first}`));
+        yield* step(() => page.getByRole("button", { name: "Restore this version" }).click());
+        yield* step(() => restore.getByRole("button", { name: "Restore", exact: true }).click());
+        yield* step(() => restore.getByText("Main has this version of the file already.").waitFor());
+
+        // Someone who may not edit is offered none of it.
+        const guest = yield* signedIn("guest@example.com");
+        yield* step(() => guest.goto(`${server.url}/w/files/notes.md?at=${first}`));
+        yield* step(() => guest.locator("main article").getByText("First version.").waitFor());
+        yield* step(() => guest.locator(".comments-panel").waitFor());
+        expect(yield* step(() => guest.getByRole("button", { name: "Restore this version" }).count())).toBe(0);
+        yield* step(() => guest.goto(`${server.url}/w/files/notes.md`));
+        yield* step(() => guest.locator("main article").getByText("First version.").waitFor());
+        yield* step(() => guest.locator(".comments-panel").waitFor());
+        expect(
+          yield* step(() => guest.getByRole("button", { name: /^(Rename page|Delete page|Upload file)$/ }).count()),
+        ).toBe(0);
+      }),
+  );
+
+  it.effect(
+    "a person who edits or deletes a page that an agent session has changed in its fork is told so, and not for another page",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* Server;
+        yield* createWorkspace("busy");
+        const agent = yield* openSandbox("busy");
+        // The agent's work is in its fork only: it has not landed.
+        yield* agent.commit("README.md", "# Busy\n\nBy the agent.\n");
+
+        const page = yield* signedIn(ada);
+        yield* step(() => page.setViewportSize({ width: 1440, height: 900 }));
+        yield* step(() => page.goto(`${server.url}/w/busy/README.md?edit=1`));
+        const note = page.locator(".sessions-note");
+        yield* step(() => note.waitFor());
+        const said = yield* step(() => note.textContent());
+        expect(said).toContain("An agent session has changes of this page that are not on main yet: amp (test-model)");
+        expect(said).toContain("Whichever of you publishes second has to merge what the other changed.");
+        yield* step(() => page.getByRole("button", { name: "Close" }).click());
+        yield* step(() => page.getByRole("button", { name: "Delete page" }).click());
+        const remove = page.getByRole("dialog", { name: "Delete README.md" });
+        yield* step(() => remove.getByText("It has to settle the deletion when it merges main.").waitFor());
+        yield* step(() => remove.getByRole("button", { name: "Cancel" }).click());
+
+        // A page no session has changed gets no note, once the service has answered.
+        const answered = page.waitForResponse((response) => response.url().includes("/page-sessions?"));
+        yield* step(() => page.goto(`${server.url}/w/busy/other.md?edit=1`));
+        yield* step(() => page.getByRole("textbox", { name: "Page source" }).waitFor());
+        expect((yield* step(() => answered)).status()).toBe(200);
+        expect(yield* step(() => note.count())).toBe(0);
       }),
   );
 });

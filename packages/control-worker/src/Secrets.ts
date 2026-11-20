@@ -22,3 +22,10 @@ export const sha256Hex = (text: string): Effect.Effect<string> =>
     Effect.promise(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))),
     (digest) => new Uint8Array(digest).toHex(),
   );
+
+/** The SHA-256 digest of `bytes`, as hex. */
+export const sha256HexOf = (bytes: Uint8Array<ArrayBuffer>): Effect.Effect<string> =>
+  Effect.map(
+    Effect.promise(() => crypto.subtle.digest("SHA-256", bytes)),
+    (digest) => new Uint8Array(digest).toHex(),
+  );

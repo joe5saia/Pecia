@@ -9,7 +9,7 @@ The web UI for people to read a stage's wikis, comment on their pages and edit t
 - Follows links between pages relative to the page, as GitHub and a git checkout do. A link that climbs out of the wiki is shown as plain text.
 - Shows main's history and any commit of it: `?at=<sha>` reads the whole wiki at that commit.
 - Shows each page's comment threads beside it and takes new comments and replies ([comments.md](comments.md)). Comments are not in git.
-- Edits a page's source beside a preview and publishes it to main, for a person who is a principal ([editing.md](editing.md)).
+- Edits a page's source beside a preview and publishes it to main, for a person who is a principal ([editing.md](editing.md)). Such a person also renames and deletes pages, uploads files, and restores an old version of a page.
 
 Every page and image is read at one commit: the tree names it, and everything shown with it is read at that hash. A wiki that lands while someone reads it does not mix two versions on one page.
 
@@ -44,7 +44,7 @@ Reads go to Artifacts from the Worker, not through the workspace's Durable Objec
 
 ## How it is built
 
-- `packages/viewer`: React and Vite. `src/api.ts` derives its client from `WikiApi`, like the sandbox tools, and is the only place the viewer runs effects. `src/Markdown.tsx` is the renderer; `src/paths.ts` resolves links. `src/Editor.tsx` is the editor, with CodeMirror, in a chunk that is loaded when someone first opens it.
+- `packages/viewer`: React and Vite. `src/api.ts` derives its client from `WikiApi`, like the sandbox tools, and is the only place the viewer runs effects. `src/Markdown.tsx` is the renderer; `src/paths.ts` resolves links. `src/Editor.tsx` is the editor, with CodeMirror, in a chunk that is loaded when someone first opens it. `src/Changes.tsx` has the dialogs that rename, delete, upload and restore, which need no editor.
 - `task build:viewer` writes `packages/viewer/dist`. Every Alchemy task builds it first and uploads it as the Worker's static assets. A request for a file there is answered by Cloudflare's asset layer; a navigation to any other path that is not the API's gets `index.html`.
 - `task dev:viewer` serves the viewer with hot reload and passes its API calls to a deployed Worker (`PECIA_VIEWER_API`, default staging), so the UI can be worked on without running the Worker.
 

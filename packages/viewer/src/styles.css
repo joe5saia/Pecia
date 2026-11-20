@@ -667,13 +667,16 @@ button.primary {
   float: right;
   position: relative;
   z-index: 1;
+  display: flex;
+  gap: 6px;
   margin: 0 0 8px 16px;
 }
 .sidebar .new-page {
-  margin: 0 0 12px;
+  margin: 0 6px 12px 0;
   font-size: 13px;
 }
 .sidebar form.new-page {
+  margin-right: 0;
   display: grid;
   gap: 6px;
   padding: 10px;
@@ -698,9 +701,14 @@ button.primary {
   background: var(--bg);
   color: var(--fg);
 }
-.new-page input {
+.new-page input,
+.publish input.path {
   font-family: var(--mono);
   font-size: 12.5px;
+}
+.new-page input[type="file"] {
+  padding: 4px;
+  font-family: inherit;
 }
 .new-page input:focus,
 .publish input:focus {
@@ -880,19 +888,77 @@ dialog.publish::backdrop {
   border: 1px solid var(--border);
   border-radius: 6px;
 }
-.publish-lost {
+/* The open threads of a page that is about to change, each with a box to resolve it (ThreadChoices in Changes.tsx). */
+.publish-threads {
+  min-width: 0;
+  margin: 0;
   padding: 8px 12px;
-  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
   font-size: 13px;
 }
-.publish-lost p,
-.publish-lost ul {
-  margin: 0;
+.publish-threads legend {
+  padding: 0 4px;
+  color: var(--fg-soft);
 }
-.publish-lost ul {
-  padding-left: 20px;
+.publish-threads ul {
+  max-height: 22vh;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.publish-threads li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.publish-threads li:first-child {
+  border-top: none;
+}
+.publish-threads li > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.publish-threads .fate {
+  display: block;
+  color: var(--fg-soft);
+}
+.publish-threads li label {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+}
+.publish-threads input {
+  width: auto;
+}
+.publish-threads .note {
+  margin: 6px 0 0;
+}
+/* Agent sessions that have their own version of the page (SessionsNote in Changes.tsx). */
+.sessions-note {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--accent-soft);
+  font-size: 13px;
+}
+.editor > .sessions-note {
+  padding: 8px 16px;
+  border-width: 0 0 1px;
+  border-radius: 0;
+}
+button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--bg);
+  font-weight: 600;
 }
 .publish label {
   display: grid;
