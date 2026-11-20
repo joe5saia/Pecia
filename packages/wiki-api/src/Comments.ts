@@ -23,10 +23,21 @@ export const CommentId = Schema.String.check(
 ).pipe(Schema.brand("CommentId"));
 export type CommentId = typeof CommentId.Type;
 
-/** A comment's markdown. */
-export const CommentBody = Schema.String.check(
+/** The largest comment body, in UTF-16 code units (JavaScript's string length). */
+export const maxCommentLength = 10_000;
+
+/**
+ * What a comment body is, as agents are told it: the body field's description
+ * in the API and the MCP tools, and the pecia-wiki skill. The viewer shows a
+ * body as one text node under `white-space: pre-wrap` (`Comments.tsx`).
+ */
+export const commentBodyFormat =
+  "Plain text, shown exactly as written: nothing is rendered as markdown or HTML, so **bold**, `code`, # headings, - lists, [text](url) and <tags> show as those characters, and a URL is not a link. Line breaks (\\n), blank lines, spaces and tabs are kept; long lines wrap. Any Unicode, emoji included. It must contain a character that is not white space and be at most 10,000 UTF-16 code units long (most characters count 1, an emoji 2). It is stored as sent, without trimming.";
+
+/** A comment's text: plain text, never rendered (`commentBodyFormat`). */
+export const CommentBody = Schema.String.annotate({ description: commentBodyFormat }).check(
   Schema.isPattern(/\S/, { description: "text that is not only white space" }),
-  Schema.isMaxLength(10_000),
+  Schema.isMaxLength(maxCommentLength),
 );
 export type CommentBody = typeof CommentBody.Type;
 

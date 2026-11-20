@@ -8,6 +8,18 @@ In the workspace's Durable Object, in the SQLite tables `threads` and `comments`
 
 A thread's first comment is its root; replies follow it in order, with no replies to replies.
 
+## Format
+
+A comment body is plain text (`CommentBody`, `commentBodyFormat` in `packages/wiki-api/src/Comments.ts`). The viewer shows it as one text node under `white-space: pre-wrap` (`Comments.tsx`):
+
+- Nothing is rendered: not markdown, not HTML. `**bold**`, `` `code` ``, `# headings`, `- lists`, `[text](url)` and `<tags>` show as the characters typed, and a URL is not a link.
+- Line breaks (`\n`), blank lines, spaces and tabs are kept; a long line wraps inside the comments column.
+- Any Unicode, emoji included.
+- At least one character that is not white space, and at most 10,000 UTF-16 code units (JavaScript's string length: most characters count 1, an emoji 2). Any other body is refused before it is stored.
+- The service stores the body as sent. The viewer trims what a person types before sending it; an agent's body is not trimmed.
+
+`wiki-comments list` prints a body with its trailing white space removed and its later lines indented. The body field's description in the API and the MCP tools, and the `pecia-wiki` skill, state this format from `commentBodyFormat`; `e2e/mcp.test.ts` checks they do, and `e2e/viewer.test.ts` that the viewer shows a body as written.
+
 ## Editing and deleting
 
 - A person edits and deletes only comments under their own email. An edited comment shows that it was edited.

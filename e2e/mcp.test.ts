@@ -1,4 +1,5 @@
 import { expect, layer } from "@effect/vitest";
+import { commentBodyFormat, maxCommentLength } from "@pecia/wiki-api";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
@@ -790,5 +791,36 @@ layer(ServerLive("mcp"), { excludeTestServices: true })("mcp", (it) => {
       }
       expect([...named].filter((name) => !names.has(name))).toEqual([]);
     }),
+  );
+
+  it.effect(
+    "an agent is told the exact format of a comment body wherever it writes one: plain text, never rendered",
+    () =>
+      Effect.gen(function* () {
+        const { client } = yield* signIn({ write: true });
+        const { tools } = yield* Effect.promise(() => client.listTools());
+        const wiki = yield* Effect.map(
+          Effect.promise(() => client.readResource({ uri: "skill://pecia-wiki/SKILL.md" })),
+          (skill) => skill.contents.map((part) => ("text" in part ? part.text : "")).join(""),
+        );
+        // The format states the limit the schema enforces.
+        expect(commentBodyFormat).toContain(`at most ${maxCommentLength.toLocaleString("en-US")} UTF-16 code units`);
+        const writers = tools.filter((tool) => tool.name === "create_thread" || tool.name === "reply_thread");
+        expect(
+          writers.map((tool) => ({
+            name: tool.name,
+            plain: tool.description?.includes("plain text, shown as written: markdown is not rendered"),
+            body: tool.inputSchema.properties?.["body"],
+          })),
+        ).toEqual(
+          ["create_thread", "reply_thread"].map((name) => ({
+            name,
+            plain: true,
+            body: expect.objectContaining({ description: commentBodyFormat, maxLength: maxCommentLength }),
+          })),
+        );
+        expect(wiki).toContain(commentBodyFormat);
+        expect(client.getInstructions()).toContain("A comment body is plain text, shown exactly as written");
+      }),
   );
 });

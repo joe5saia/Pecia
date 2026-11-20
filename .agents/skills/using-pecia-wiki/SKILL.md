@@ -54,6 +54,8 @@ People comment on pages in the viewer, and agents can too. `wiki-comments` is bu
 - `wiki-comments move <old page> <new page>`: after renaming a page, so its threads follow.
 - `wiki-comments delete <comment>`: delete a comment this session wrote, by the ID `list` prints in brackets. You cannot edit comments, yours included: reply with a correction instead.
 
+A comment is plain text, shown exactly as written: the viewer renders no markdown or HTML, so `**bold**`, backticks, `#` and `[text](url)` show as typed and a URL is not a link. Line breaks, blank lines and spaces are kept. At most 10,000 UTF-16 code units, with a character that is not white space (`docs/comments.md`, "Format"). Write it like a chat message.
+
 Before editing a page, list its threads. Reply to the ones you act on, and resolve them once the change has landed. Do not resolve a thread you did not address. After landing, `wiki-land` says on stderr how many threads are open.
 
 ## Publish

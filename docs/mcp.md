@@ -23,7 +23,7 @@ Each stage serves an MCP server at `<stage URL>/mcp`. Agents use its tools to ma
 | `start_session` | `wiki:write` | Creates a session and its fork, bound to a workload identity; answers the remotes and setup commands. Takes an `idempotencyKey` |
 | `land_session` | `wiki:write` | Lands the fork when its head is `expectedForkHead`: `landed`, `behind`, or `nothing_to_land` |
 | `end_session` | `wiki:write` | `closed`, or `parked` when the fork has unlanded commits; repeating it answers the same state |
-| `create_thread`, `reply_thread`, `set_thread_state`, `delete_comment`, `move_threads` | `wiki:write` | Comments ([comments.md](comments.md)). A write names the thread revision it read (`expectedRevision`, or `expectedThreads` for a move); a stale one fails with `Conflict` |
+| `create_thread`, `reply_thread`, `set_thread_state`, `delete_comment`, `move_threads` | `wiki:write` | Comments ([comments.md](comments.md)). A write names the thread revision it read (`expectedRevision`, or `expectedThreads` for a move); a stale one fails with `Conflict`. A comment body is plain text, never rendered ([comments.md](comments.md), "Format") |
 
 A grant without `wiki:write` does not see the write tools. Calling one anyway answers 403 with `insufficient_scope`.
 

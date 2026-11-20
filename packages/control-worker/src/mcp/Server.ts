@@ -129,14 +129,16 @@ const specs: Record<
   },
   create_thread: {
     title: "Start a comment thread",
-    description: "Starts a thread on a page, on a quote that occurs once in main's copy of it or on the whole page.",
+    description:
+      "Starts a thread on a page, on a quote that occurs once in main's copy of it or on the whole page. body is plain text, shown as written: markdown is not rendered.",
     write: true,
     destructive: false,
     idempotent: false,
   },
   reply_thread: {
     title: "Reply in a comment thread",
-    description: "Adds a reply if the thread is at expectedRevision, re-pinned to quote if one is given.",
+    description:
+      "Adds a reply if the thread is at expectedRevision, re-pinned to quote if one is given. body is plain text, shown as written: markdown is not rendered.",
     write: true,
     destructive: false,
     idempotent: false,

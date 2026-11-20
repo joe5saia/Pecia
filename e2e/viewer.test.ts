@@ -136,7 +136,7 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
     }),
   );
 
-  it.effect("a person reads long comments wrapped inside the comments column and drags it wider, and it stays so", () =>
+  it.effect("a person reads comments as written and wrapped in the column, drags it wider, and it stays so", () =>
     Effect.gen(function* () {
       const server = yield* Server;
       yield* createWorkspace("wrapping");
@@ -146,10 +146,12 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
       expect((yield* agent.land).exitCode).toBe(0);
       const as = yield* server.access.person(joe);
       const url = `https://support.example.com/en/articles/${"1117516".repeat(12)}`;
+      // Markdown, HTML and white space, which a comment shows as typed (docs/comments.md, "Format").
+      const written = `- a list item ${"y".repeat(90)}\n- \`McpServer.layerHttpRequestScoped\`\n\n**bold** [docs](${url}) <b>tag</b>  two spaces`;
       yield* Effect.forEach(
         [
           { body: `Sources: ${url} and ${"x".repeat(120)}`, anchor: { _tag: "Quote", quote: token } },
-          { body: `- a list item ${"y".repeat(90)}\n- \`McpServer.layerHttpRequestScoped\`` },
+          { body: written },
         ],
         (thread) => api("POST", "/workspaces/wrapping/threads", { as, body: { path: "long.md", ...thread } }),
         { discard: true },
@@ -163,6 +165,15 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
       // Open the first thread, so its reply box shows too.
       yield* step(() => threads.first().click());
       yield* step(() => page.getByRole("textbox", { name: "Reply…" }).waitFor());
+      // The body is one text node: no element is made from its markdown or HTML, and its line breaks and spaces show.
+      expect(
+        yield* step(() =>
+          page.evaluate(`(() => {
+            const body = [...document.querySelectorAll(".thread .body")].find((element) => element.textContent.includes("**bold**"));
+            return { text: body.textContent, shown: body.innerText, elements: body.children.length };
+          })()`),
+        ),
+      ).toEqual({ text: written, shown: written, elements: 0 });
 
       const column = page.getByRole("complementary", { name: "On this page and comments" });
       const widthOf = (locator: typeof column) => step(async () => (await locator.boundingBox())?.width);
