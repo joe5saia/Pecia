@@ -4,7 +4,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type Browser, chromium, type Page } from "playwright-core";
+import { chromium } from "playwright-core";
+import type { Browser, Page } from "playwright-core";
 import { Server } from "./Server.ts";
 
 // A browser on the viewer, signed in as a person. `task check` downloads
@@ -22,7 +23,9 @@ const onPath = (name: string): string | undefined => {
 
 const agentBrowserChrome = (): string | undefined => {
   const browsers = join(homedir(), ".agent-browser", "browsers");
-  if (!existsSync(browsers)) return undefined;
+  if (!existsSync(browsers)) {
+    return undefined;
+  }
   return readdirSync(browsers)
     .toSorted()
     .toReversed()
@@ -41,8 +44,9 @@ const chrome = (): string | undefined =>
 const launch: Effect.Effect<Browser, never, Scope.Scope> = Effect.acquireRelease(
   Effect.promise(() => {
     const executablePath = chrome();
-    if (executablePath === undefined)
+    if (executablePath === undefined) {
       throw new Error("no Chrome to run the viewer scenarios: install one or set PECIA_E2E_CHROME to its path");
+    }
     return chromium.launch({ executablePath, args: ["--no-sandbox"] });
   }),
   (browser) => Effect.promise(() => browser.close()),

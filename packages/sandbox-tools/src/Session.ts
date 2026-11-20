@@ -51,7 +51,9 @@ export const parseLines = (text: string): Map<string, string> => {
   const values = new Map<string, string>();
   for (const line of text.split("\n")) {
     const separator = line.indexOf("=");
-    if (separator > 0) values.set(line.slice(0, separator), line.slice(separator + 1).trimEnd());
+    if (separator > 0) {
+      values.set(line.slice(0, separator), line.slice(separator + 1).trimEnd());
+    }
   }
   return values;
 };

@@ -19,7 +19,9 @@ const get = Effect.gen(function* () {
   // `credential.<host>.useHttpPath` makes git send the repo path, which tells the fork from main.
   const asked = normalize(`${request.get("protocol")}://${request.get("host")}/${request.get("path") ?? ""}`);
   const isFork = asked === normalize(session.forkRemote);
-  if (!isFork && asked !== normalize(session.mainRemote)) return 0;
+  if (!isFork && asked !== normalize(session.mainRemote)) {
+    return 0;
+  }
 
   // Nothing is cached here: the service hands out the session's current tokens,
   // and once the session has ended it says so, which git then shows.

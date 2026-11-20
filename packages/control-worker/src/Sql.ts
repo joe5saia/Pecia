@@ -5,13 +5,14 @@ import type * as Effect from "effect/Effect";
 // In the Durable Object it is the object's own storage; tests use node:sqlite.
 
 export type SqlValue = string | number | null;
-export type SqlRow = Readonly<Record<string, unknown>>;
+/** A row as SQLite answers it, by column, before a Schema decodes it. A blob column is an `ArrayBuffer`. */
+export type SqlRow = Readonly<Record<string, SqlValue | ArrayBuffer>>;
 
 export class Sql extends Context.Service<
   Sql,
   {
     /** Run one statement and return its rows. A failing statement is a defect. */
-    readonly exec: (query: string, ...bindings: readonly SqlValue[]) => Effect.Effect<ReadonlyArray<SqlRow>>;
+    readonly exec: (query: string, ...bindings: ReadonlyArray<SqlValue>) => Effect.Effect<ReadonlyArray<SqlRow>>;
   }
 >()("pecia/Sql") {}
 

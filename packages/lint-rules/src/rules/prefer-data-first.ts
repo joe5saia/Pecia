@@ -1,4 +1,5 @@
-import { effectMemberOf, type Rule } from "../Ast.ts";
+import { effectMemberOf } from "../Ast.ts";
+import type { Rule } from "../Ast.ts";
 
 // https://effect.website/docs/v4/code-style/dual: one operation reads best with
 // the data first; `.pipe` is for a chain of them.
@@ -18,11 +19,17 @@ export const preferDataFirst: Rule = {
   create: (context) => ({
     CallExpression: (node) => {
       const callee = node.callee;
-      if (callee.type !== "MemberExpression" || callee.computed || callee.property.name !== "pipe") return;
+      if (callee.type !== "MemberExpression" || callee.computed || callee.property.name !== "pipe") {
+        return;
+      }
       const [step, ...more] = node.arguments;
-      if (step === undefined || more.length > 0) return;
+      if (step === undefined || more.length > 0) {
+        return;
+      }
       const member = effectMemberOf(context, step.type === "CallExpression" ? step.callee : step);
-      if (member === undefined || !dualModules.has(member.module)) return;
+      if (member === undefined || !dualModules.has(member.module)) {
+        return;
+      }
       context.report({ node, messageId: "dataFirst", data: member });
     },
   }),

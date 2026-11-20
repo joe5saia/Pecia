@@ -1,40 +1,18 @@
-import {
-  type CommitSha,
-  FilePath,
-  type HistoryResponse,
-  Ref,
-  type ThreadList,
-  type TreeResponse,
-  WorkspaceName,
-} from "@pecia/wiki-api";
+import { FilePath, Ref, WorkspaceName } from "@pecia/wiki-api";
+import type { CommitSha, HistoryResponse, ThreadList, TreeResponse } from "@pecia/wiki-api";
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
-import {
-  type FormEvent,
-  lazy,
-  Suspense,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-  type RefObject,
-} from "react";
-import {
-  currentReader,
-  type Failure,
-  fileUrl,
-  listWorkspaces,
-  readHistory,
-  readText,
-  readTree,
-  type ReadState,
-  useRead,
-} from "./api.ts";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import type { FormEvent, ReactNode, RefObject } from "react";
+import { currentReader, fileUrl, listWorkspaces, readHistory, readText, readTree, useRead } from "./api.ts";
+import type { Failure, ReadState } from "./api.ts";
 import { Comments } from "./Comments.tsx";
-import { fenced, Markdown, type OutlineEntry, type Page } from "./Markdown.tsx";
-import { buildTree, type Directory, directoryOf, homePage, isImage, isMarkdown, titleOf } from "./paths.ts";
-import { editHref, fileHref, navigate, onLinkClick, type Route, useRoute } from "./router.ts";
+import { fenced, Markdown } from "./Markdown.tsx";
+import type { OutlineEntry, Page } from "./Markdown.tsx";
+import { buildTree, directoryOf, homePage, isImage, isMarkdown, titleOf } from "./paths.ts";
+import type { Directory } from "./paths.ts";
+import { editHref, fileHref, navigate, onLinkClick, useRoute } from "./router.ts";
+import type { Route } from "./router.ts";
 import { timeAgo } from "./time.ts";
 
 // The viewer's pages. Every read is of one commit: the tree names it, and the
@@ -75,8 +53,12 @@ const Problem = ({ failure }: { failure: Failure }) =>
 
 /** What a read shows while it loads or after it failed, or its content. */
 const Loaded = <A,>({ state, children }: { state: ReadState<A>; children: (value: A) => ReactNode }) => {
-  if (state._tag === "Loading") return <div className="loading">Loading…</div>;
-  if (state._tag === "Failed") return <Problem failure={state.failure} />;
+  if (state._tag === "Loading") {
+    return <div className="loading">Loading…</div>;
+  }
+  if (state._tag === "Failed") {
+    return <Problem failure={state.failure} />;
+  }
   return <>{children(state.value)}</>;
 };
 
@@ -174,7 +156,9 @@ const textLanguages: Readonly<Record<string, string>> = {
 
 const languageOf = (path: string): string | undefined => {
   const name = path.split("/").at(-1) ?? path;
-  if (!name.includes(".")) return "text";
+  if (!name.includes(".")) {
+    return "text";
+  }
   return textLanguages[name.slice(name.lastIndexOf(".") + 1).toLowerCase()];
 };
 
@@ -194,18 +178,20 @@ const FileView = ({
   const state = useRead(`file:${page.ws}:${page.sha}:${page.path}`, () => readText(page.ws, page.sha, page.path));
   const loaded = state._tag === "Loaded" ? state.value : undefined;
   useEffect(() => onSource(language === "markdown" ? loaded : undefined), [loaded, language, onSource]);
-  if (isImage(page.path))
+  if (isImage(page.path)) {
     return (
       <figure className="image-file">
         <img src={fileUrl(page.ws, page.sha, page.path)} alt={page.path} />
       </figure>
     );
-  if (language === undefined)
+  }
+  if (language === undefined) {
     return (
       <p>
         This file is not text. <a href={fileUrl(page.ws, page.sha, page.path)}>Download {titleOf(page.path)}</a>
       </p>
     );
+  }
   return (
     <Loaded state={state}>
       {(text) => (
@@ -222,7 +208,9 @@ const FileView = ({
 
 /** The language a file is edited and shown in, or `undefined` for a file that is not text. */
 const editableAs = (path: string): string | undefined => {
-  if (isMarkdown(path)) return "markdown";
+  if (isMarkdown(path)) {
+    return "markdown";
+  }
   return isImage(path) ? undefined : languageOf(path);
 };
 
@@ -236,12 +224,21 @@ const readingAt = (article: HTMLElement | null): number | undefined => {
 
 /** Why a new page cannot be at `path`, or `undefined` if it can. */
 const newPageProblem = (path: string, paths: ReadonlyArray<string>): string | undefined => {
-  if (!isFilePath(path)) return "Write a path such as guide/setup.md, without empty, '.' or '..' parts.";
-  if (path.split("/").some((segment) => segment.toLowerCase() === ".git")) return "No page can be inside .git.";
-  if (paths.includes(path)) return "That page exists. Open it to edit it.";
-  if (paths.some((existing) => existing.startsWith(`${path}/`) || path.startsWith(`${existing}/`)))
+  if (!isFilePath(path)) {
+    return "Write a path such as guide/setup.md, without empty, '.' or '..' parts.";
+  }
+  if (path.split("/").some((segment) => segment.toLowerCase() === ".git")) {
+    return "No page can be inside .git.";
+  }
+  if (paths.includes(path)) {
+    return "That page exists. Open it to edit it.";
+  }
+  if (paths.some((existing) => existing.startsWith(`${path}/`) || path.startsWith(`${existing}/`))) {
     return "A page and a folder cannot have the same name.";
-  if (editableAs(path) === undefined) return "Only text pages are written here, such as .md files.";
+  }
+  if (editableAs(path) === undefined) {
+    return "Only text pages are written here, such as .md files.";
+  }
   return undefined;
 };
 
@@ -249,12 +246,13 @@ const newPageProblem = (path: string, paths: ReadonlyArray<string>): string | un
 const NewPage = ({ ws, beside, paths }: { ws: WorkspaceName; beside: string; paths: ReadonlyArray<string> }) => {
   const [path, setPath] = useState<string | undefined>();
   const [problem, setProblem] = useState<string | undefined>();
-  if (path === undefined)
+  if (path === undefined) {
     return (
       <button type="button" className="new-page" onClick={() => setPath(directoryOf(beside))}>
         New page
       </button>
     );
+  }
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const trimmed = path.trim();
@@ -262,7 +260,9 @@ const NewPage = ({ ws, beside, paths }: { ws: WorkspaceName; beside: string; pat
     const named = trimmed === "" || (trimmed.split("/").at(-1) ?? "").includes(".") ? trimmed : `${trimmed}.md`;
     const refused = newPageProblem(named, paths);
     setProblem(refused);
-    if (refused !== undefined) return;
+    if (refused !== undefined) {
+      return;
+    }
     setPath(undefined);
     navigate(editHref(ws, named));
   };
@@ -299,12 +299,13 @@ const NewPage = ({ ws, beside, paths }: { ws: WorkspaceName; beside: string; pat
 const DirectoryView = ({ tree, page }: { tree: TreeResponse; page: Page }) => {
   const prefix = page.path.endsWith("/") ? page.path : `${page.path}/`;
   const files = tree.files.filter((file) => file.path.startsWith(prefix));
-  if (files.length === 0)
+  if (files.length === 0) {
     return (
       <div className="problem" role="alert">
         <strong>No such page.</strong> {page.path} is not in this wiki at {tree.commit.sha.slice(0, 7)}.
       </div>
     );
+  }
   return (
     <article className="markdown">
       <h1>{page.path.replace(/\/$/, "")}</h1>
@@ -388,10 +389,14 @@ const Resizer = ({
         setDragging(true);
       }}
       onPointerMove={(event) => {
-        if (dragging) onWidth(widthAt(event.clientX));
+        if (dragging) {
+          onWidth(widthAt(event.clientX));
+        }
       }}
       onPointerUp={(event) => {
-        if (!dragging) return;
+        if (!dragging) {
+          return;
+        }
         setDragging(false);
         storeWidth(widthAt(event.clientX));
       }}
@@ -401,7 +406,9 @@ const Resizer = ({
       }}
       onKeyDown={(event) => {
         const step = arrowSteps[event.key];
-        if (step === undefined) return;
+        if (step === undefined) {
+          return;
+        }
         event.preventDefault();
         const next = clampWidth(width + step);
         onWidth(next);
@@ -426,7 +433,9 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
   const [unpublished, setUnpublished] = useState(false);
   const onUnpublished = useCallback((value: boolean) => setUnpublished(value), []);
   const [outline, setOutline] = useState<ReadonlyArray<OutlineEntry>>([]);
-  const [menuOpen, setMenuOpen] = useState(false);
+  // The page the menu was opened on: following a link closes it.
+  const [menuOpenOn, setMenuOpenOn] = useState<string | undefined>();
+  const menuOpen = menuOpenOn === path;
   const onHeadings = useCallback((headings: ReadonlyArray<OutlineEntry>) => setOutline(headings), []);
   const [source, setSource] = useState<string | undefined>();
   const onSource = useCallback((text: string | undefined) => setSource(text), []);
@@ -434,11 +443,15 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
   const [article, setArticle] = useState<HTMLElement | null>(null);
   const column = useRef<HTMLElement>(null);
   const [width, setWidth] = useState(storedWidth);
-  useEffect(() => setMenuOpen(false), [path]);
-  useEffect(() => setThreads(undefined), [ws, path]);
-  useEffect(() => {
-    if (!edit) setUnpublished(false);
-  }, [edit]);
+  // Another page's threads are dropped when the page changes, before it renders.
+  const [threadsOf, setThreadsOf] = useState(`${ws}/${path}`);
+  if (threadsOf !== `${ws}/${path}`) {
+    setThreadsOf(`${ws}/${path}`);
+    setThreads(undefined);
+  }
+  if (!edit && unpublished) {
+    setUnpublished(false);
+  }
 
   return (
     <>
@@ -479,7 +492,7 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
                 <FileTree directory={buildTree(paths)} page={page} />
                 {tree.truncated && <p className="note">This wiki has more files than the list shows.</p>}
               </nav>
-              <button type="button" className="menu" onClick={() => setMenuOpen(!menuOpen)}>
+              <button type="button" className="menu" onClick={() => setMenuOpenOn(menuOpen ? undefined : path)}>
                 {menuOpen ? "Close pages" : "Pages"}
               </button>
               <main className="page">
@@ -499,7 +512,9 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
                       onSource={onSource}
                       onUnpublished={onUnpublished}
                       onClose={(sha) => {
-                        if (sha !== undefined) setPublished(sha);
+                        if (sha !== undefined) {
+                          setPublished(sha);
+                        }
                         setOpenAt(undefined);
                         // A new page that was not published is nowhere to go back to.
                         navigate(fileHref(ws, sha !== undefined || exists ? current : ""), { replace: true });

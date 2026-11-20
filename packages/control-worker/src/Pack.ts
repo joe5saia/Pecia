@@ -23,7 +23,7 @@ export type PackSize =
 const exceeds = (limit: keyof PackLimits): PackSize => ({ _tag: "Exceeds", limit });
 const malformed = (reason: string): PackSize => ({ _tag: "Malformed", reason });
 
-const signature = 0x5041434b; // "PACK"
+const signature = 0x50_41_43_4b; // "PACK"
 const headerBytes = 12;
 /** A pack ends with the SHA-1 of everything before it. */
 const trailerBytes = 20;
@@ -43,23 +43,31 @@ interface Entry {
 const entryAt = (pack: Uint8Array, offset: number): Entry | undefined => {
   let cursor = offset;
   let byte = pack[cursor++];
-  if (byte === undefined) return undefined;
+  if (byte === undefined) {
+    return undefined;
+  }
   const type = (byte >> 4) & 7;
   let size = byte & 15;
   // Multiplied, not shifted: a size can be wider than 32 bits.
   let scale = 16;
   while (byte & 0x80) {
     byte = pack[cursor++];
-    if (byte === undefined) return undefined;
+    if (byte === undefined) {
+      return undefined;
+    }
     size += (byte & 0x7f) * scale;
     scale *= 128;
   }
-  if (type === refDelta) return { size, isDelta: true, data: cursor + 20 };
+  if (type === refDelta) {
+    return { size, isDelta: true, data: cursor + 20 };
+  }
   if (type === ofsDelta) {
     // The distance back to the base, in as many bytes as have their high bit set, plus one.
     do {
       byte = pack[cursor++];
-      if (byte === undefined) return undefined;
+      if (byte === undefined) {
+        return undefined;
+      }
     } while (byte & 0x80);
     return { size, isDelta: true, data: cursor };
   }
@@ -77,7 +85,9 @@ const deltaResultSize = (delta: Uint8Array): number | undefined => {
     let byte: number | undefined;
     do {
       byte = delta[cursor++];
-      if (byte === undefined) return undefined;
+      if (byte === undefined) {
+        return undefined;
+      }
       value += (byte & 0x7f) * scale;
       scale *= 128;
     } while (byte & 0x80);
@@ -115,30 +125,48 @@ const inflate = (
  * more than `limits.objectBytes` of it, and stops at the first limit exceeded.
  */
 export const measure = (pack: Uint8Array, limits: PackLimits): PackSize => {
-  if (pack.byteLength < headerBytes + trailerBytes) return malformed("too short to be a pack");
+  if (pack.byteLength < headerBytes + trailerBytes) {
+    return malformed("too short to be a pack");
+  }
   const view = new DataView(pack.buffer, pack.byteOffset, pack.byteLength);
-  if (view.getUint32(0) !== signature) return malformed("does not start with PACK");
+  if (view.getUint32(0) !== signature) {
+    return malformed("does not start with PACK");
+  }
   const version = view.getUint32(4);
-  if (version !== 2 && version !== 3) return malformed(`pack version ${version}`);
+  if (version !== 2 && version !== 3) {
+    return malformed(`pack version ${version}`);
+  }
   const objects = view.getUint32(8);
-  if (objects > limits.objects) return exceeds("objects");
+  if (objects > limits.objects) {
+    return exceeds("objects");
+  }
 
   const end = pack.byteLength - trailerBytes;
   let offset = headerBytes;
   let inflatedBytes = 0;
   for (let index = 0; index < objects; index++) {
     const entry = entryAt(pack, offset);
-    if (entry === undefined || entry.data > end) return malformed(`object ${index} has no valid header`);
-    if (entry.size > limits.objectBytes) return exceeds("objectBytes");
+    if (entry === undefined || entry.data > end) {
+      return malformed(`object ${index} has no valid header`);
+    }
+    if (entry.size > limits.objectBytes) {
+      return exceeds("objectBytes");
+    }
     const data = inflate(pack.subarray(entry.data, end), entry.size);
     if (data === undefined || data.bytes.byteLength !== entry.size) {
       return malformed(`object ${index} does not inflate to the size its header gives`);
     }
     const size = entry.isDelta ? deltaResultSize(data.bytes) : entry.size;
-    if (size === undefined) return malformed(`object ${index} is a delta without a header`);
-    if (size > limits.objectBytes) return exceeds("objectBytes");
+    if (size === undefined) {
+      return malformed(`object ${index} is a delta without a header`);
+    }
+    if (size > limits.objectBytes) {
+      return exceeds("objectBytes");
+    }
     inflatedBytes += size;
-    if (inflatedBytes > limits.inflatedBytes) return exceeds("inflatedBytes");
+    if (inflatedBytes > limits.inflatedBytes) {
+      return exceeds("inflatedBytes");
+    }
     offset = entry.data + data.consumed;
   }
   return offset === end ? { _tag: "Fits", objects, inflatedBytes } : malformed("has data after its last object");

@@ -187,7 +187,9 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
       const drag = (by: number) =>
         step(async () => {
           const box = await handle.boundingBox();
-          if (box === null) throw new Error("the resize handle is not shown");
+          if (box === null) {
+            throw new Error("the resize handle is not shown");
+          }
           const x = box.x + box.width / 2;
           const y = box.y + 200;
           await page.mouse.move(x, y);
@@ -395,7 +397,9 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
       yield* step(() =>
         page.route("**/workspaces/lost/edits", async (route) => {
           publishes += 1;
-          if (publishes > 1) return route.continue();
+          if (publishes > 1) {
+            return route.continue();
+          }
           await route.fetch();
           return route.abort("connectionreset");
         }),

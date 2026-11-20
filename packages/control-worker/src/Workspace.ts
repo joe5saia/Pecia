@@ -1,48 +1,27 @@
 import {
-  type Anchor,
   AnchorMismatch,
-  type AnchorRequest,
   anchorAt,
   ArtifactsUnavailable,
   Anchor as AnchorSchema,
   Author,
   CommentId,
   CommitSha,
-  type CreateThreadRequest,
-  type EditCommentRequest,
   FilePath,
   findQuote,
-  type MoveThreadsRequest,
   NotYourComment,
   sameAuthor,
-  type MoveThreadsResponse,
-  type ReplyRequest,
-  type SetThreadStateRequest,
-  type Thread,
   Thread as ThreadSchema,
-  type ThreadFilter,
   ThreadId,
-  type ThreadList,
   ThreadState,
-  type CreateSessionRequest,
-  type SessionCreated,
-  type CreateWorkspaceResponse,
-  type EditRequest,
   EditResponse as EditResponseSchema,
-  type EditResponse,
-  type EndSessionResponse,
   PageRefused,
   ForkTooLarge,
-  type LandResponse,
-  type ListSessionsResponse,
   NotFound,
   RemoteUrl,
   SessionId,
   SessionNotActive,
   SessionState,
   timestampOf,
-  type Timestamp,
-  type TokenResponse,
   Unauthorized,
   WorkspaceName,
   Conflict,
@@ -50,13 +29,36 @@ import {
   IdempotencyKeyReuse,
   SessionStarted as SessionStartedSchema,
   tokenSecret,
-  type SessionStarted,
-  type SessionDetail,
-  type WorkloadBinding,
-  type GitRemote,
   workspaceOfSession,
-  type IdempotencyKey,
   PrincipalId,
+} from "@pecia/wiki-api";
+import type {
+  Anchor,
+  AnchorRequest,
+  CreateThreadRequest,
+  EditCommentRequest,
+  MoveThreadsRequest,
+  MoveThreadsResponse,
+  ReplyRequest,
+  SetThreadStateRequest,
+  Thread,
+  ThreadFilter,
+  ThreadList,
+  CreateSessionRequest,
+  SessionCreated,
+  CreateWorkspaceResponse,
+  EditRequest,
+  EditResponse,
+  EndSessionResponse,
+  LandResponse,
+  ListSessionsResponse,
+  Timestamp,
+  TokenResponse,
+  SessionStarted,
+  SessionDetail,
+  WorkloadBinding,
+  GitRemote,
+  IdempotencyKey,
 } from "@pecia/wiki-api";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -69,20 +71,11 @@ import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Edit from "./Edit.ts";
 import * as Git from "./Git.ts";
-import {
-  ForkName,
-  forkOf,
-  GrantId,
-  type RepoName,
-  Repos,
-  type RepoToken,
-  TokenId,
-  type TokenHash,
-  type TokenScope,
-  type TreeSha,
-} from "./Repos.ts";
+import { ForkName, forkOf, GrantId, Repos, TokenId } from "./Repos.ts";
+import type { RepoName, RepoToken, TokenHash, TokenScope, TreeSha } from "./Repos.ts";
 import { randomHex, sameText, sha256Hex } from "./Secrets.ts";
-import { schema, Sql, type SqlValue } from "./Sql.ts";
+import { schema, Sql } from "./Sql.ts";
+import type { SqlValue } from "./Sql.ts";
 
 // One workspace: its main repo, its sessions and its lands (docs/mvp.md,
 // "Session lifecycle", "Workspace Durable Object" and "Landing"). The Durable
@@ -413,15 +406,109 @@ const threadOf = (row: ThreadRow, comments: ReadonlyArray<CommentRow>): Thread =
   })),
 });
 
+/** The fields of an event about a comment or thread: who wrote it. */
+type ByAuthor = { readonly author: "person" } | { readonly author: "agent"; readonly sessionId: string };
+
 /** Who wrote something, for usage events: a person's name stays out of the logs. */
-const authorField = (author: Author) =>
+const authorField = (author: Author): ByAuthor =>
   Match.valueTags(author, {
-    Person: () => ({ author: "person" }),
-    Agent: ({ sessionId }) => ({ author: "agent", sessionId }),
+    Person: (): ByAuthor => ({ author: "person" }),
+    Agent: ({ sessionId }): ByAuthor => ({ author: "agent", sessionId }),
   });
 
+/** The fields of an event about a session. */
+interface OfSession {
+  readonly workspace: string;
+  readonly sessionId: string;
+  readonly agent: string;
+  readonly model: string;
+}
+
+/** The fields of an event about a person's edit. */
+interface OfEdit {
+  readonly workspace: string;
+  readonly principal: string;
+  readonly changes: number;
+}
+
+/**
+ * The usage events, by name, with the fields each one is logged with. It is the table in
+ * docs/operations.md, "Monitor usage": an event or field added here is added there too.
+ */
+interface UsageEvents {
+  readonly "workspace.created": { readonly workspace: string; readonly baseSha: string };
+  readonly "session.created": OfSession;
+  readonly "tokens.minted": {
+    readonly workspace: string;
+    readonly sessionId: string;
+    readonly remote?: GitRemote;
+  };
+  readonly land: OfSession & {
+    readonly status: "landed" | "behind" | "nothing_to_land";
+    readonly mainSha: string;
+    /** `undefined` for a fork with no main branch, which has nothing to land. */
+    readonly forkHead: string | undefined;
+    readonly packBytes?: number;
+    readonly objects?: number;
+    readonly inflatedBytes?: number;
+  };
+  readonly "land.refused": OfSession & {
+    readonly limit: ForkTooLarge["limit"];
+    readonly max: number;
+    readonly mainSha: string;
+    readonly forkHead: string;
+  };
+  readonly "session.ended": OfSession & {
+    readonly state: "closed" | "parked";
+    readonly reason: "closed" | "idle";
+    readonly forkHead: string | undefined;
+  };
+  readonly "session.settled": OfSession & {
+    readonly state: "deleted" | "parked";
+    readonly forkHead: string | undefined;
+  };
+  readonly "page.edit": OfEdit &
+    (
+      | { readonly status: "published"; readonly mainSha: string; readonly sha: string; readonly packBytes: number }
+      | { readonly status: "published"; readonly mainSha: string; readonly sha: string; readonly recovered: true }
+      | { readonly status: "unchanged"; readonly mainSha: string }
+      | { readonly status: "conflict"; readonly path: string }
+      | { readonly status: "refused"; readonly path: string; readonly reason: PageRefused["reason"] }
+    );
+  readonly "git.token_issued": { readonly workspace: string; readonly sessionId: string; readonly issuer: string };
+  readonly "thread.created": ByAuthor & {
+    readonly workspace: string;
+    readonly threadId: string;
+    readonly path: string;
+    readonly anchored: boolean;
+  };
+  readonly "thread.replied": ByAuthor & {
+    readonly workspace: string;
+    readonly threadId: string;
+    readonly repinned: boolean;
+  };
+  readonly "thread.resolved": ByAuthor & { readonly workspace: string; readonly threadId: string };
+  readonly "thread.reopened": ByAuthor & { readonly workspace: string; readonly threadId: string };
+  readonly "threads.moved": {
+    readonly workspace: string;
+    readonly from: string;
+    readonly to: string;
+    readonly moved: number;
+  };
+  readonly "comment.edited": ByAuthor & {
+    readonly workspace: string;
+    readonly threadId: string;
+    readonly commentId: string;
+  };
+  readonly "comment.deleted": ByAuthor & {
+    readonly workspace: string;
+    readonly threadId: string;
+    readonly commentId: string;
+  };
+}
+
 /** One log line per event, with the fields usage is measured by. */
-const record = (event: string, fields: Record<string, unknown>): Effect.Effect<void> =>
+const record = <Name extends keyof UsageEvents>(event: Name, fields: UsageEvents[Name]): Effect.Effect<void> =>
   Effect.annotateLogs(Effect.logInfo(event), { event, ...fields });
 
 const landNote = (session: SessionRow): string =>
@@ -480,7 +567,9 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     (tables) => tables.length > 0,
   );
   // A workspace created before a table was added gets it here.
-  if (yield* isCreated) yield* applySchema;
+  if (yield* isCreated) {
+    yield* applySchema;
+  }
 
   /** Run a query and decode its rows. SQLite returns them untyped; one that doesn't match its table is a defect. */
   const select = <S extends Schema.Top>(row: S, query: string, ...bindings: ReadonlyArray<SqlValue>) =>
@@ -490,7 +579,9 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     );
 
   const workspace: Effect.Effect<WorkspaceRow | undefined> = Effect.gen(function* () {
-    if (!(yield* isCreated)) return undefined;
+    if (!(yield* isCreated)) {
+      return undefined;
+    }
     const rows = yield* select(WorkspaceRow, "SELECT name, main_remote, base_sha FROM workspace");
     return rows[0];
   });
@@ -504,10 +595,14 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
   const findSession = Effect.fnUntraced(function* (sessionId: SessionId): Effect.fn.Return<Found, NotFound> {
     const unknown = new NotFound({ resource: "session", id: sessionId });
     const base = yield* workspace;
-    if (base === undefined) return yield* unknown;
+    if (base === undefined) {
+      return yield* unknown;
+    }
     const rows = yield* select(SessionRow, "SELECT * FROM sessions WHERE session_id = ?", sessionId);
     const session = rows[0];
-    if (session === undefined) return yield* unknown;
+    if (session === undefined) {
+      return yield* unknown;
+    }
     return { session, base };
   });
 
@@ -518,7 +613,9 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
   ): Effect.fn.Return<Found, Unauthorized | NotFound | SessionNotActive> {
     const found = yield* findSession(sessionId);
     // The key is checked first: only its holder learns that the session has ended.
-    if (!sameText(yield* sha256Hex(sessionKey), found.session.session_key_hash)) return yield* new Unauthorized();
+    if (!sameText(yield* sha256Hex(sessionKey), found.session.session_key_hash)) {
+      return yield* new Unauthorized();
+    }
     yield* requireActive(found.session);
     return found;
   });
@@ -537,7 +634,9 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     const found = yield* findSession(sessionId);
     const binding = yield* bindingRow(sessionId);
     // A session an orchestrator started has no binding: MCP reads it but does not change it.
-    if (binding === undefined || binding.principal !== principal) return yield* new NotYourSession({ sessionId });
+    if (binding === undefined || binding.principal !== principal) {
+      return yield* new NotYourSession({ sessionId });
+    }
     return { ...found, binding };
   });
 
@@ -572,7 +671,9 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
         once.key,
       );
       if (kept !== undefined) {
-        if (kept.input_hash !== once.inputHash) return yield* new IdempotencyKeyReuse({ key: once.key });
+        if (kept.input_hash !== once.inputHash) {
+          return yield* new IdempotencyKeyReuse({ key: once.key });
+        }
         return yield* Effect.orDie(Schema.decodeUnknownEffect(codec)(kept.result));
       }
       const answer = yield* write;
@@ -740,7 +841,9 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
   ): Effect.fn.Return<void, ArtifactsUnavailable> {
     const forkHead = yield* repos.head(session.fork_name);
     const landed = yield* isLanded(forkHead, base);
-    if (landed) yield* repos.delete(session.fork_name);
+    if (landed) {
+      yield* repos.delete(session.fork_name);
+    }
     const state = landed ? "deleted" : "parked";
     yield* sql.exec("UPDATE sessions SET state = ? WHERE session_id = ?", state, session.session_id);
     yield* record("session.settled", {
@@ -766,7 +869,9 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
         baseSha,
         yield* Clock.currentTimeMillis,
       );
-      if (inserted.length > 0) yield* record("workspace.created", { workspace: name, baseSha });
+      if (inserted.length > 0) {
+        yield* record("workspace.created", { workspace: name, baseSha });
+      }
       return { workspace: name, mainRemote };
     },
     (effect) => lock.withPermit(effect),
@@ -913,7 +1018,9 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     }
     const moved = (actual: CommitSha | undefined) =>
       new Conflict({ resource: "fork", id: sessionId, expected: expectedForkHead ?? "", actual: actual ?? "none" });
-    if (expectedForkHead !== undefined && forkHead !== expectedForkHead) return yield* moved(forkHead);
+    if (expectedForkHead !== undefined && forkHead !== expectedForkHead) {
+      return yield* moved(forkHead);
+    }
     const who = { workspace: base.name, sessionId, agent: session.agent, model: session.model };
     const outcome: Git.LandOutcome =
       forkHead === undefined || forkHead === mainHead
@@ -923,7 +1030,9 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
             record("land.refused", { ...who, limit: error.limit, max: error.max, mainSha: mainHead, forkHead }),
           );
     // The agent pushed again between the head read above and the land's own read.
-    if (outcome._tag === "ForkMoved") return yield* moved(outcome.head);
+    if (outcome._tag === "ForkMoved") {
+      return yield* moved(outcome.head);
+    }
 
     if (outcome._tag === "Landed") {
       yield* sql.exec(
@@ -1057,7 +1166,9 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     // A call with this key may have published already and failed before it could say so.
     const earlier = yield* publishedBefore(once, mainSha);
     if (earlier !== undefined) {
-      if (earlier.input_hash !== once.inputHash) return yield* new IdempotencyKeyReuse({ key: once.key });
+      if (earlier.input_hash !== once.inputHash) {
+        return yield* new IdempotencyKeyReuse({ key: once.key });
+      }
       yield* record("page.edit", {
         ...who,
         status: "published",
@@ -1132,7 +1243,9 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     function* () {
       const base = yield* workspace;
       // A workspace nobody created has no sessions to end.
-      if (base === undefined) return;
+      if (base === undefined) {
+        return;
+      }
       const now = yield* Clock.currentTimeMillis;
       // Each session reports whether its step was done; one that failed is tried again later.
       const attempt = (step: string, session: SessionRow, effect: Effect.Effect<unknown, ArtifactsUnavailable>) =>
@@ -1169,7 +1282,9 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     function* (sessionId: SessionId, principal: PrincipalId) {
       const { session, base } = yield* authorizeAs(sessionId, principal);
       // A repeat answers the state the session ended in; a deleted fork was closed with nothing unlanded.
-      if (session.state !== "active") return { state: session.state === "parked" ? "parked" : "closed" } as const;
+      if (session.state !== "active") {
+        return { state: session.state === "parked" ? "parked" : "closed" } as const;
+      }
       const result = yield* end(session, base, "closed");
       yield* scheduleSweep();
       return result;
@@ -1241,8 +1356,9 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
         binding.principal !== workload.principal ||
         binding.issuer !== workload.issuer ||
         binding.subject !== workload.subject
-      )
+      ) {
         return yield* new NotYourSession({ sessionId });
+      }
       yield* requireActive(session);
       const now = yield* Clock.currentTimeMillis;
       yield* sql.exec("DELETE FROM git_tokens WHERE expires_at <= ?", now);
@@ -1273,25 +1389,28 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
         tokenHash,
       );
       // The token is checked first: only its holder learns that the session has ended.
-      if (token === undefined || token.session_id !== sessionId || token.expires_at <= now)
+      if (token === undefined || token.session_id !== sessionId || token.expires_at <= now) {
         return yield* new Unauthorized();
+      }
       yield* requireActive(session);
       const binding = yield* bindingRow(sessionId);
-      if (binding === undefined)
+      if (binding === undefined) {
         return yield* Effect.die(new Error(`session '${sessionId}' has a git token and no binding`));
+      }
       yield* touch(sessionId);
       const minted =
         remote === "fork"
           ? yield* repos.mintToken(session.fork_name, "write", config.gitTokenTtlSeconds)
           : yield* repos.mintToken(base.name, "read", config.gitTokenTtlSeconds);
       // A main read token is not revoked with the fork's, so it is kept to be revoked when the session ends.
-      if (remote === "main")
+      if (remote === "main") {
         yield* sql.exec(
           "INSERT INTO main_read_tokens (token_id, session_id, expires_at) VALUES (?, ?, ?)",
           minted.id,
           sessionId,
           now + config.gitTokenTtlSeconds * 1000,
         );
+      }
       yield* record("tokens.minted", { workspace: base.name, sessionId, remote });
       return {
         // In the clear from here on: git sends it to Artifacts as the Basic password.
@@ -1345,7 +1464,9 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
 
   const requireThread = Effect.fnUntraced(function* (threadId: ThreadId): Effect.fn.Return<Thread, NotFound> {
     const [thread] = yield* threadsWhere("thread_id = ?", threadId);
-    if (thread === undefined) return yield* new NotFound({ resource: "thread", id: threadId });
+    if (thread === undefined) {
+      return yield* new NotFound({ resource: "thread", id: threadId });
+    }
     return thread;
   });
 
@@ -1357,9 +1478,13 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
   ): Effect.fn.Return<Anchor, NotFound | AnchorMismatch | ArtifactsUnavailable> {
     const ref = request.ref ?? "main";
     const [commit] = yield* repos.log(base.name, { ref, limit: 1 });
-    if (commit === undefined) return yield* new NotFound({ resource: "commit", id: ref });
+    if (commit === undefined) {
+      return yield* new NotFound({ resource: "commit", id: ref });
+    }
     const bytes = yield* repos.readFile(base.name, commit.sha, path);
-    if (bytes === undefined) return yield* new NotFound({ resource: "file", id: path });
+    if (bytes === undefined) {
+      return yield* new NotFound({ resource: "file", id: path });
+    }
     const text = yield* Effect.try({
       try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
       catch: () => new AnchorMismatch({ path, reason: "not_text" }),
@@ -1368,10 +1493,16 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
       Range: (selected) => ({ start: selected.start, end: selected.end }),
       Quote: ({ quote }) => findQuote(text, quote),
     });
-    if (range === "not_found") return yield* new AnchorMismatch({ path, reason: "quote_not_found" });
-    if (range === "ambiguous") return yield* new AnchorMismatch({ path, reason: "quote_ambiguous" });
+    if (range === "not_found") {
+      return yield* new AnchorMismatch({ path, reason: "quote_not_found" });
+    }
+    if (range === "ambiguous") {
+      return yield* new AnchorMismatch({ path, reason: "quote_ambiguous" });
+    }
     const anchor = anchorAt(text, commit.sha, range.start, range.end);
-    if (anchor === undefined) return yield* new AnchorMismatch({ path, reason: "out_of_range" });
+    if (anchor === undefined) {
+      return yield* new AnchorMismatch({ path, reason: "out_of_range" });
+    }
     return anchor;
   });
 
@@ -1500,11 +1631,17 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     const base = yield* requireWorkspace(name);
     const thread = yield* requireThread(threadId);
     // A thread already in the state, with nothing to add, is answered as it is: repeating the call changes nothing.
-    if (request.body === undefined && thread.state === request.state) return thread;
+    if (request.body === undefined && thread.state === request.state) {
+      return thread;
+    }
     yield* requireRevision(thread, expectedRevision);
     const now = yield* Clock.currentTimeMillis;
-    if (request.body !== undefined) yield* insertComment(threadId, author, request.body, now);
-    if (request.body !== undefined || thread.state !== request.state) yield* bumpRevisions([threadId]);
+    if (request.body !== undefined) {
+      yield* insertComment(threadId, author, request.body, now);
+    }
+    if (request.body !== undefined || thread.state !== request.state) {
+      yield* bumpRevisions([threadId]);
+    }
     if (thread.state !== request.state) {
       yield* request.state === "resolved"
         ? sql.exec(
@@ -1547,17 +1684,19 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
       if (actual !== expected) {
         // A repeat of a move that went through: every thread is at the new path, one revision on.
         const atTarget = new Map((yield* revisions(request.to)).map((row) => [row.thread_id, row.revision]));
-        if (actual === "" && expectedThreads.every((thread) => atTarget.get(thread.id) === thread.revision + 1))
+        if (actual === "" && expectedThreads.every((thread) => atTarget.get(thread.id) === thread.revision + 1)) {
           return { moved: 0, threadIds: expectedThreads.map((thread) => thread.id).slice(0, 25) };
+        }
         return yield* new Conflict({ resource: "threads", id: request.from, expected, actual: actual || "none" });
       }
     }
-    const moved = yield* sql.exec(
+    const moved = yield* select(
+      Schema.Struct({ thread_id: ThreadId }),
       "UPDATE threads SET path = ? WHERE path = ? RETURNING thread_id",
       request.to,
       request.from,
     );
-    const threadIds = moved.map((row) => ThreadId.make(String(row["thread_id"])));
+    const threadIds = moved.map((row) => row.thread_id);
     yield* bumpRevisions(threadIds);
     yield* record("threads.moved", { workspace: base.name, from: request.from, to: request.to, moved: moved.length });
     return { moved: moved.length, threadIds: threadIds.slice(0, 25) };
@@ -1574,11 +1713,13 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
       "SELECT comment_id, thread_id, author, body, created_at, edited_at, deleted_at FROM comments WHERE comment_id = ?",
       commentId,
     );
-    if (comment === undefined || comment.deleted_at !== null)
+    if (comment === undefined || comment.deleted_at !== null) {
       return yield* new NotFound({ resource: "comment", id: commentId });
+    }
     // An agent never edits a comment, its own included: what a person read stays what the agent said.
-    if ((action === "edit" && author._tag === "Agent") || !sameAuthor(author, comment.author))
+    if ((action === "edit" && author._tag === "Agent") || !sameAuthor(author, comment.author)) {
       return yield* new NotYourComment({ commentId, action });
+    }
     return comment;
   });
 
@@ -1620,8 +1761,9 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
         "SELECT comment_id, thread_id, author, body, created_at, edited_at, deleted_at FROM comments WHERE comment_id = ?",
         commentId,
       );
-      if (done !== undefined && done.deleted_at !== null && sameAuthor(author, done.author))
+      if (done !== undefined && done.deleted_at !== null && sameAuthor(author, done.author)) {
         return yield* requireThread(done.thread_id);
+      }
     }
     const comment = yield* ownComment(author, commentId, "delete");
     yield* requireRevision(yield* requireThread(comment.thread_id), expectedRevision);

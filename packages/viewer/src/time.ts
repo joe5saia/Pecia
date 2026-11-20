@@ -9,6 +9,10 @@ export const timeAgo = (iso: string): string => {
     ["minute", 60],
   ];
   const format = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-  for (const [unit, size] of units) if (seconds >= size) return format.format(-Math.floor(seconds / size), unit);
+  for (const [unit, size] of units) {
+    if (seconds >= size) {
+      return format.format(-Math.floor(seconds / size), unit);
+    }
+  }
   return "just now";
 };

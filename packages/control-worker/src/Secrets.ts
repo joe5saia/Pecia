@@ -6,8 +6,9 @@ import * as Effect from "effect/Effect";
 /** Whether two strings are equal, in time that does not depend on where they differ. */
 export const sameText = (a: string, b: string): boolean => {
   let difference = a.length ^ b.length;
-  for (let index = 0; index < a.length; index++)
+  for (let index = 0; index < a.length; index++) {
     difference |= a.charCodeAt(index) ^ b.charCodeAt(index % (b.length || 1));
+  }
   return difference === 0;
 };
 

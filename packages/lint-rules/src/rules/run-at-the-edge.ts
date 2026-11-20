@@ -1,9 +1,10 @@
-import { effectMemberOf, type Rule } from "../Ast.ts";
+import { effectMemberOf } from "../Ast.ts";
+import type { Rule } from "../Ast.ts";
 
 // https://effect.website/docs/v4/code-style/guidelines, "Using runMain": a
 // program is run once, at its entry point, by the platform's `runMain`. The
 // Worker's entry point is run by Alchemy. Tests and test doubles run effects
-// themselves; the rule is off for them in .oxlintrc.json.
+// themselves; the rule is off for them in oxlint.config.ts.
 
 export const runAtTheEdge: Rule = {
   meta: {

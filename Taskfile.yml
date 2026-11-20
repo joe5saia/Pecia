@@ -42,7 +42,7 @@ x-check-sources: &check-sources
   - "e2e/fixtures/**"
   - "*.ts"
   - tsconfig.json
-  - .oxlintrc.json
+  - oxlint.config.ts
   - .oxfmtrc.json
   - pnpm-lock.yaml
 

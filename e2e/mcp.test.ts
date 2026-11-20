@@ -101,7 +101,9 @@ const startBound = Effect.fnUntraced(function* (
     workload: { issuer: ampIssuer, subject: thread },
     idempotencyKey: key,
   });
-  if (started.isError) return yield* Effect.die(new Error(JSON.stringify(started.body)));
+  if (started.isError) {
+    return yield* Effect.die(new Error(JSON.stringify(started.body)));
+  }
   return Schema.decodeUnknownSync(
     Schema.Struct({
       sessionId: Schema.String,
@@ -277,7 +279,7 @@ layer(ServerLive("mcp"), { excludeTestServices: true })("mcp", (it) => {
                 },
               },
               (answer) => {
-                const chunks: Buffer[] = [];
+                const chunks: Array<Buffer> = [];
                 answer.on("data", (chunk: Buffer) => chunks.push(chunk));
                 answer.on("end", () =>
                   resolve({ status: answer.statusCode ?? 0, body: JSON.parse(Buffer.concat(chunks).toString()) }),
@@ -351,7 +353,9 @@ layer(ServerLive("mcp"), { excludeTestServices: true })("mcp", (it) => {
         const failed = yield* Effect.exit(connect(memory.provider, server.url));
         expect(failed._tag).toBe("Failure");
         const url = memory.authorization();
-        if (url === undefined) return yield* Effect.die(new Error("no authorization URL"));
+        if (url === undefined) {
+          return yield* Effect.die(new Error("no authorization URL"));
+        }
         return url;
       });
 
@@ -509,7 +513,9 @@ layer(ServerLive("mcp"), { excludeTestServices: true })("mcp", (it) => {
         expect.arrayContaining(["binding", "principal", "audience", "claims", "signature", "expired"]),
       );
       const everything = JSON.stringify(yield* server.logs);
-      for (const token of [good, gitToken, ...Object.values(tokens)]) expect(everything).not.toContain(token);
+      for (const token of [good, gitToken, ...Object.values(tokens)]) {
+        expect(everything).not.toContain(token);
+      }
     }),
   );
 
@@ -545,8 +551,9 @@ layer(ServerLive("mcp"), { excludeTestServices: true })("mcp", (it) => {
       expect(sessions.structured).toMatchObject({ items: [{ agent: "amp" }], remaining: 0, next: null });
       // No secret the service holds is in the answer.
       const answer = JSON.stringify(first.raw);
-      for (const secret of [server.access.sandboxToken.clientSecret, server.access.orchestratorToken.clientSecret])
+      for (const secret of [server.access.sandboxToken.clientSecret, server.access.orchestratorToken.clientSecret]) {
         expect(answer).not.toContain(secret);
+      }
       expect(answer).not.toMatch(/sessionKey|art_v1_/);
     }),
   );
@@ -762,9 +769,12 @@ layer(ServerLive("mcp"), { excludeTestServices: true })("mcp", (it) => {
       expect(wiki).toContain("name: pecia-wiki");
       expect(setup).toContain("name: pecia-setup");
       // The usage skill covers the whole flow; the setup skill covers what comes before it.
-      for (const tool of ["start_session", "land_session", "end_session", "reply_thread", "move_threads"])
+      for (const tool of ["start_session", "land_session", "end_session", "reply_thread", "move_threads"]) {
         expect(wiki).toContain(tool);
-      for (const step of ["wiki:write", "mcp_2026_07_28", "SHA-256", "amp orb id-token"]) expect(setup).toContain(step);
+      }
+      for (const step of ["wiki:write", "mcp_2026_07_28", "SHA-256", "amp orb id-token"]) {
+        expect(setup).toContain(step);
+      }
       const text = [client.getInstructions() ?? "", wiki, setup].join("\n");
       // A snake_case word is a tool's name, except outcomes, recovery actions and an OAuth error of the same form.
       const named = new Set(text.match(/\b[a-z]+(?:_[a-z]+)+\b/g) ?? []);
@@ -775,8 +785,9 @@ layer(ServerLive("mcp"), { excludeTestServices: true })("mcp", (it) => {
         "start_new_session",
         "insufficient_scope",
         "mcp_servers",
-      ])
+      ]) {
         named.delete(word);
+      }
       expect([...named].filter((name) => !names.has(name))).toEqual([]);
     }),
   );

@@ -1,10 +1,12 @@
 import { tokenSecret } from "@pecia/wiki-api";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer } from "node:http";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -122,24 +124,30 @@ class BindingError extends Error {
 
 const portOf = (server: Server): number => {
   const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("the server is not listening on a port");
+  if (address === null || typeof address === "string") {
+    throw new Error("the server is not listening on a port");
+  }
   return address.port;
 };
 
 const readBody = (request: IncomingMessage): Promise<Buffer> =>
   new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
+    const chunks: Array<Buffer> = [];
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
     request.on("end", () => resolve(Buffer.concat(chunks)));
     request.on("error", reject);
   });
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+const isRecord = Schema.is(Schema.JsonObject);
 
 /** `value` with every time field, at any depth, replaced by text that is not a time. */
 const breakTimes = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map((item) => breakTimes(item));
-  if (!isRecord(value)) return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => breakTimes(item));
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
   return Object.fromEntries(
     Object.entries(value).map(([name, field]) => [
       name,
@@ -192,12 +200,20 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
 
         const authorize = (request: IncomingMessage, repo: string, needsWrite: boolean): 200 | 401 | 403 => {
           const header = request.headers.authorization;
-          if (header === undefined || !header.startsWith("Basic ")) return 401;
+          if (header === undefined || !header.startsWith("Basic ")) {
+            return 401;
+          }
           const [, password] = Buffer.from(header.slice(6), "base64").toString().split(":");
-          if (password !== undefined && revoked.has(password)) return 403;
+          if (password !== undefined && revoked.has(password)) {
+            return 403;
+          }
           const token = [...tokens.values()].find((candidate) => candidate.secret === password);
-          if (token === undefined) return 401;
-          if (needsWrite && refused.has(repo)) return 403;
+          if (token === undefined) {
+            return 401;
+          }
+          if (needsWrite && refused.has(repo)) {
+            return 403;
+          }
           return token.repo === repo && token.expiresAtMs > Date.now() && (!needsWrite || token.scope === "write")
             ? 200
             : 403;
@@ -236,7 +252,7 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
               REMOTE_ADDR: "127.0.0.1",
             },
           });
-          const output: Buffer[] = [];
+          const output: Array<Buffer> = [];
           backend.stdout.on("data", (chunk: Buffer) => output.push(chunk));
           backend.on("close", () => {
             if (request.method === "POST" && needsWrite && unanswered.delete(repo ?? "")) {
@@ -253,8 +269,11 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
               const colon = line.indexOf(":");
               const name = line.slice(0, colon).toLowerCase();
               const value = line.slice(colon + 1).trim();
-              if (name === "status") status = Number.parseInt(value, 10);
-              else headers[name] = value;
+              if (name === "status") {
+                status = Number.parseInt(value, 10);
+              } else {
+                headers[name] = value;
+              }
             }
             response.writeHead(status, headers).end(raw.subarray(split + 4));
           });
@@ -264,7 +283,9 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
         };
 
         const requireRepo = async (repo: string) => {
-          if (!(await exists(repo))) throw new BindingError(`repo '${repo}' not found`, "NOT_FOUND");
+          if (!(await exists(repo))) {
+            throw new BindingError(`repo '${repo}' not found`, "NOT_FOUND");
+          }
         };
         const resolves = (repo: string, ref: string) =>
           gitIn(repo, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).then(
@@ -275,7 +296,9 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
         /** What each call of the binding does, with Artifacts' answers. */
         const operations: Record<BindingOperation, (repo: string, args: ReadonlyArray<unknown>) => Promise<unknown>> = {
           create: async (repo) => {
-            if (await exists(repo)) throw new BindingError(`repo '${repo}' already exists`, "ALREADY_EXISTS");
+            if (await exists(repo)) {
+              throw new BindingError(`repo '${repo}' already exists`, "ALREADY_EXISTS");
+            }
             await run("git", ["init", "--bare", "--initial-branch", "main", repoDir(repo)]);
             return { name: repo, remote: remoteOf(repo) };
           },
@@ -292,9 +315,15 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
             ),
           }),
           delete: async (repo) => {
-            if (!(await exists(repo))) return false;
+            if (!(await exists(repo))) {
+              return false;
+            }
             await rm(repoDir(repo), { recursive: true, force: true });
-            for (const token of tokens.values()) if (token.repo === repo) tokens.delete(token.id);
+            for (const token of tokens.values()) {
+              if (token.repo === repo) {
+                tokens.delete(token.id);
+              }
+            }
             return true;
           },
           info: async (repo) => {
@@ -304,16 +333,20 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
           listTokens: async (repo) => {
             await requireRepo(repo);
             return {
-              tokens: [...tokens.values()]
-                .filter((token) => token.repo === repo)
-                .map((token) => ({ id: token.id, state: token.expiresAtMs > Date.now() ? "active" : "expired" })),
+              tokens: [...tokens.values()].flatMap((token) =>
+                token.repo === repo
+                  ? [{ id: token.id, state: token.expiresAtMs > Date.now() ? "active" : "expired" }]
+                  : [],
+              ),
             };
           },
           log: async (repo, [options]) => {
             await requireRepo(repo);
             const ref = isRecord(options) ? text(options["ref"]) : "main";
             const limit = isRecord(options) ? text(options["limit"]) : "10";
-            if (!(await resolves(repo, ref))) return [];
+            if (!(await resolves(repo, ref))) {
+              return [];
+            }
             const { stdout } = await gitIn(repo, [
               "log",
               "--first-parent",
@@ -323,7 +356,7 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
               "--",
             ]);
             return stdout
-              .split("\x1e")
+              .split("\u001e")
               .filter((record) => record.trim() !== "")
               .map((record) => {
                 const [hash = "", treeHash = "", author = "", committedAt = "", message = ""] = record
@@ -352,7 +385,9 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
             await requireRepo(repo);
             const ref = isRecord(options) ? text(options["ref"]) : "main";
             const path = isRecord(options) ? text(options["path"]) : "";
-            if (!(await resolves(repo, ref))) throw new BindingError(`ref '${ref}' not found`, "NOT_FOUND");
+            if (!(await resolves(repo, ref))) {
+              throw new BindingError(`ref '${ref}' not found`, "NOT_FOUND");
+            }
             return promisify(execFile)("git", ["--git-dir", repoDir(repo), "cat-file", "blob", `${ref}:${path}`], {
               encoding: "buffer",
               maxBuffer: 64 * 1024 * 1024,
@@ -378,7 +413,9 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
           revokeToken: async (repo, [id]) => {
             await requireRepo(repo);
             const token = tokens.get(text(id));
-            if (token === undefined) return false;
+            if (token === undefined) {
+              return false;
+            }
             revoked.add(token.secret);
             tokens.delete(token.id);
             return true;
@@ -386,7 +423,9 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
           fork: async (source, [name]) => {
             await requireRepo(source);
             const fork = text(name);
-            if (await exists(fork)) throw new BindingError(`repo '${fork}' already exists`, "ALREADY_EXISTS");
+            if (await exists(fork)) {
+              throw new BindingError(`repo '${fork}' already exists`, "ALREADY_EXISTS");
+            }
             // Like `fork(name, { defaultBranchOnly: true })`: main only, so no notes.
             await run("git", [
               "clone",
@@ -410,18 +449,24 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
           const args = isRecord(call) && Array.isArray(call["args"]) ? call["args"] : [];
           calls.push({ operation, repo });
           const answer = async (): Promise<unknown> => {
-            if (!isOperation(operation)) throw new BindingError(`no operation '${operation}'`, "INVALID_INPUT");
+            if (!isOperation(operation)) {
+              throw new BindingError(`no operation '${operation}'`, "INVALID_INPUT");
+            }
             // Keyed by the repo the call makes for `create` and `fork`, by the repo it reads otherwise.
             const key = operation === "fork" ? text(args[0]) : repo;
             const index = holds.findIndex((hold) => hold.operation === operation && hold.repo === key);
             const [hold] = index === -1 ? [] : holds.splice(index, 1);
             const wait = async (when: "before" | "after") => {
-              if (hold?.when !== when) return;
+              if (hold?.when !== when) {
+                return;
+              }
               hold.reach();
               await hold.released;
             };
             await wait("before");
-            if (unavailable > 0) throw new BindingError("Artifacts is unavailable", "INTERNAL_ERROR");
+            if (unavailable > 0) {
+              throw new BindingError("Artifacts is unavailable", "INTERNAL_ERROR");
+            }
             const result = await operations[operation](repo, args);
             await wait("after");
             return corrupted.delete(`${operation} ${key}`) ? breakTimes(result) : result;
@@ -452,7 +497,9 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
         });
         // A land computes between two of its calls; Node's five seconds would close the connection meanwhile.
         server.keepAliveTimeout = 120_000;
-        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+        await new Promise<void>((resolve) => {
+          server.listen(0, "127.0.0.1", () => resolve());
+        });
         origin = `http://127.0.0.1:${portOf(server)}`;
 
         const artifacts: Artifacts = {
@@ -502,7 +549,9 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
           artifacts,
           close: async () => {
             server.closeAllConnections();
-            await new Promise<void>((resolve) => server.close(() => resolve()));
+            await new Promise<void>((resolve) => {
+              server.close(() => resolve());
+            });
             await rm(root, { recursive: true, force: true });
           },
         };

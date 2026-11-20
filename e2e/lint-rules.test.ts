@@ -38,16 +38,19 @@ const lint = Effect.promise(
           const diagnostics = itemsOf(isRecord(output) ? output["diagnostics"] : undefined);
           resolve(
             diagnostics.flatMap((diagnostic) => {
-              if (!isRecord(diagnostic)) return [];
+              if (!isRecord(diagnostic)) {
+                return [];
+              }
               const [label] = itemsOf(diagnostic["labels"]);
+              const { filename, code } = diagnostic;
               const span = isRecord(label) && isRecord(label["span"]) ? label["span"] : {};
               return [
                 {
-                  file: String(diagnostic["filename"]).split("/").at(-1) ?? "",
+                  file: typeof filename === "string" ? (filename.split("/").at(-1) ?? "") : "",
                   line: Number(span["line"]),
                   column: Number(span["column"]),
                   // oxlint writes `pecia(no-tacit)` for the rule `pecia/no-tacit`.
-                  rule: String(diagnostic["code"]).replace(/^(\w+)\((.+)\)$/, "$1/$2"),
+                  rule: (typeof code === "string" ? code : "").replace(/^(\w+)\((.+)\)$/, "$1/$2"),
                 },
               ];
             }),
@@ -64,7 +67,9 @@ const expected = Effect.promise(async () => {
     files.map(async (file) =>
       (await readFile(join(fixtures, file), "utf8")).split("\n").flatMap((text, index) => {
         const comment = /\/\/ expect: (.+)$/.exec(text)?.[1];
-        if (comment === undefined) return [];
+        if (comment === undefined) {
+          return [];
+        }
         return comment.split(",").map((entry) => {
           const [rule = "", at] = entry.trim().split(" @");
           return { file, line: index + 1, rule, column: at === undefined ? undefined : Number(at) };
@@ -94,7 +99,9 @@ it.live("each project lint rule reports exactly the fixture lines that break its
     );
     expect(reported.map((report) => key(report)).toSorted()).toEqual(wanted.map((report) => key(report)).toSorted());
     for (const report of wanted) {
-      if (report.column === undefined) continue;
+      if (report.column === undefined) {
+        continue;
+      }
       expect(
         reported.some((found) => key(found) === key(report) && found.column === report.column),
         `${key(report)} @${report.column}`,

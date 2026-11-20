@@ -1,7 +1,8 @@
 import { expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { Server, ServerLive } from "./support/Server.ts";
-import { api, asSandbox, createWorkspace, eventsOf, eventually, openSandbox, type Sandbox } from "./support/Wiki.ts";
+import { api, asSandbox, createWorkspace, eventsOf, eventually, openSandbox } from "./support/Wiki.ts";
+import type { Sandbox } from "./support/Wiki.ts";
 
 // The landing limits (docs/operations.md, "Landing limits"), on both sides of
 // each. A land holds the fork's new commits in the Worker's memory, so it
@@ -194,7 +195,9 @@ layer(ServerLive("limits"), { excludeTestServices: true })("landing limits", (it
         Effect.gen(function* () {
           const server = yield* Server;
           const { wiki, sandbox } = yield* wikiWithSandbox(`deltas-${deltas.replace(" ", "-")}`);
-          if (deltas === "by id") yield* server.artifacts.refDeltas(sandbox.fork);
+          if (deltas === "by id") {
+            yield* server.artifacts.refDeltas(sandbox.fork);
+          }
           // Four versions of a 4 MiB page, each one character apart: git packs three of them as deltas.
           yield* fill(sandbox, "big.md", "a", limits.objectBytes);
           yield* commitAll(sandbox, "Version 1");
@@ -229,7 +232,9 @@ layer(ServerLive("limits"), { excludeTestServices: true })("landing limits", (it
         Effect.gen(function* () {
           const server = yield* Server;
           const { wiki, sandbox, base } = yield* wikiWithSandbox(`delta-object-${deltas.replace(" ", "-")}`);
-          if (deltas === "by id") yield* server.artifacts.refDeltas(sandbox.fork);
+          if (deltas === "by id") {
+            yield* server.artifacts.refDeltas(sandbox.fork);
+          }
           // Git packs small.md before big.md (it sorts by a hash of the name), so it keeps the
           // page that fits whole and stores the one over the limit as a delta of it.
           yield* fill(sandbox, "small.md", "a", limits.objectBytes);

@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
-import { exportJWK, generateKeyPair, type JWTPayload, SignJWT } from "jose";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import type { JWTPayload } from "jose";
 
 // A stand-in for Cloudflare Access, the only place the scenarios know how
 // callers prove who they are. Access stands in front of every URL of a stage:
@@ -85,7 +86,9 @@ export const makeAccess: Effect.Effect<Access> = Effect.promise(async () => {
         return;
       }
       const cookie = /(?:^|;\s*)CF_Authorization=([^;]+)/.exec(headers.get("cookie") ?? "")?.[1];
-      if (cookie !== undefined) headers.set("cf-access-jwt-assertion", cookie);
+      if (cookie !== undefined) {
+        headers.set("cf-access-jwt-assertion", cookie);
+      }
     },
   };
 });

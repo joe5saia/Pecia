@@ -34,7 +34,9 @@ const isInfrastructureFailure = (cause: unknown): boolean =>
 const reached = <A, E>(call: Effect.Effect<A, E | RpcCallError>): Effect.Effect<A, E | WorkspaceUnavailable> =>
   // `E` is generic, so `Effect.catchTag` cannot narrow it by tag; the class can.
   Effect.catch(call, (error): Effect.Effect<never, E | WorkspaceUnavailable> => {
-    if (!(error instanceof RpcCallError)) return Effect.fail(error);
+    if (!(error instanceof RpcCallError)) {
+      return Effect.fail(error);
+    }
     return isInfrastructureFailure(error.cause)
       ? Effect.fail(new WorkspaceUnavailable({ message: error.message }))
       : Effect.die(error);

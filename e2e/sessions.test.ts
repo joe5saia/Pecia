@@ -119,7 +119,7 @@ layer(ServerLive("sessions"), { excludeTestServices: true })("workspaces and ses
           "--recursive",
           "--files-with-matches",
           "--regexp",
-          patterns.join("\\|"),
+          patterns.join(String.raw`\|`),
           where,
         ]);
         return found.stdout;
@@ -131,7 +131,9 @@ layer(ServerLive("sessions"), { excludeTestServices: true })("workspaces and ses
         yield* a.git("remote", "--verbose"),
         yield* find("docs", secrets),
       ].join("\n");
-      for (const secret of secrets) expect(places).not.toContain(secret);
+      for (const secret of secrets) {
+        expect(places).not.toContain(secret);
+      }
       // The session key is kept for the tools; tokens are never written to disk.
       expect(yield* find(".", tokenSecrets)).toBe("");
     }),

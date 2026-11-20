@@ -6,7 +6,7 @@ import { preferForEach } from "./rules/prefer-for-each.ts";
 import { runAtTheEdge } from "./rules/run-at-the-edge.ts";
 
 // The oxlint plugin for the parts of the Effect code style (AGENTS.md, "Effect
-// style") that oxlint has no rule for. .oxlintrc.json loads it as `pecia`.
+// style") that oxlint has no rule for. oxlint.config.ts loads it as `pecia`.
 
 export default {
   meta: { name: "pecia" },

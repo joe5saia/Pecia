@@ -3,7 +3,8 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import type * as Redacted from "effect/Redacted";
-import { errors, jwtVerify, type JWTVerifyGetKey } from "jose";
+import { errors, jwtVerify } from "jose";
+import type { JWTVerifyGetKey } from "jose";
 
 // Who sent a request, as Cloudflare Access vouches for it (docs/operations.md,
 // "Access"). Access stands in front of every hostname of a stage and passes
@@ -75,7 +76,9 @@ export const make = (settings: Effect.Effect<Settings>, keys: JWTVerifyGetKey): 
     clientSecret: stage.sandboxClientSecret,
   })),
   verify: Effect.fn("Access.verify")(function* (assertion) {
-    if (assertion === "") return yield* new Unauthorized();
+    if (assertion === "") {
+      return yield* new Unauthorized();
+    }
     const { issuer, audience, orchestratorClientId, sandboxClientId } = yield* settings;
     const verified = Effect.tryPromise({
       try: () => jwtVerify(assertion, keys, { issuer, audience, algorithms: ["RS256"], requiredClaims: ["exp"] }),
@@ -92,11 +95,17 @@ export const make = (settings: Effect.Effect<Settings>, keys: JWTVerifyGetKey): 
     // A service token's JWT names its client ID and no person.
     const { common_name: clientId, email } = payload;
     if (clientId !== undefined) {
-      if (clientId === orchestratorClientId) return Caller.Orchestrator();
-      if (clientId === sandboxClientId) return Caller.Sandbox();
+      if (clientId === orchestratorClientId) {
+        return Caller.Orchestrator();
+      }
+      if (clientId === sandboxClientId) {
+        return Caller.Sandbox();
+      }
       return yield* refuse("another service token");
     }
-    if (typeof email !== "string" || email === "") return yield* refuse("no email");
+    if (typeof email !== "string" || email === "") {
+      return yield* refuse("no email");
+    }
     return Caller.Person({ email });
   }),
 });

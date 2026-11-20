@@ -9,7 +9,7 @@ Agent wiki on Cloudflare Artifacts. The design is in `docs/mvp.md`; comments on 
 - `packages/viewer`: the web UI (React and Vite), served as the Control Worker's static assets. Its design and sign-in are in `docs/viewer.md`, its editor in `docs/editing.md`. `src/App.tsx` has every page as a component (`Workspaces` is the list of wikis, `Wiki` a wiki, `History` its commits), `src/Editor.tsx` the editor, which is loaded only when someone opens it, `src/styles.css` every style, with the fonts and colors as variables at its top. It is type-checked as its own project (`packages/viewer/tsconfig.json`), with the DOM's types; `task typecheck` covers it, and there is no viewer-only check.
 - `packages/sandbox-tools`: what runs in a sandbox: `wiki-credential`, `wiki-land`, `wiki-comments`, `setup.sh` and `agent-instructions.md`.
 - `.agents/skills/using-pecia-wiki`: the project skill that lets an Amp thread read and publish to a deployed wiki.
-- `packages/lint-rules`: the oxlint plugin `pecia`, which enforces the Effect style below. `.oxlintrc.json` loads it.
+- `packages/lint-rules`: the oxlint plugin `pecia`, which enforces the Effect style below. `oxlint.config.ts` loads it.
 - `e2e`: the only tests, end-to-end scenarios that run the built Worker in workerd ("Tests" below). `e2e/support` is the harness: the server, a fake Access, a fake Artifacts, sandboxes and a browser.
 
 `docs/operations.md` covers deploying, running a session and monitoring usage.
@@ -85,6 +85,7 @@ The code follows the Effect v4 code style pages, starting at https://effect.webs
 - `pecia/run-at-the-edge`: `Effect.run*` outside `e2e/`.
 - Built-in rules: no `flow`, no nested ternary, no `as` assertion (`as const` is fine), no `console`, and none of `process.stdout`, `process.stderr`, `process.stdin`, `process.argv`, `process.exitCode` or `process.exit`.
 - `typescript/no-unsafe-*`: no use of a value typed `any`. A dependency whose types do not resolve yields `any` without a compiler error; these rules are what reports it (see `packages/control-worker/src/artifacts.d.ts`).
+- Cloudflare's preset, `@cloudflare/oxlint-config` (on `@nkzw/oxlint-config`), which `oxlint.config.ts` spreads before the rules above: among others `eqeqeq` (also against `null`), `import type` for type-only imports, `Array<A>` and `ReadonlyArray<A>` over `A[]`, braces around every `if` and loop body (`curly`, also for a one-line guard), no floating or misused promises, no non-null assertion, `catch (error)`, a value from every `.then` (`promise/always-return`: write the chain as an `async` function instead), no extra effect dependencies, no dictionary of `unknown` values, and in `packages/` no function that returns `unknown` (decode it with a Schema where it enters). The rules of the preset that clash with this style are off or configured in `oxlint.config.ts`, each with its reason; turn another one off the same way, never with a comment in the code.
 
 Fix what a rule reports instead of disabling it. A rule that reports good code has a bug: fix the rule and add the case to the rule's fixture in `e2e/fixtures/lint`. Branded identifiers, `Effect.gen` over nested callbacks, `Effect.acquireRelease` and `Config` over `process.env` are not checked; check your change for them before you push it, since nothing reviews it in between.
 
@@ -97,6 +98,13 @@ Fix what a rule reports instead of disabling it. A rule that reports good code h
 - Exported effects state their error type, so a new failure is a compile error at the callers that must handle it.
 - The service does not drop a failure silently: recover with a value, or log it with `Effect.logWarning` and its fields, and say in a comment why going on is right.
 - A new error that reaches the API is added to the endpoint in `Api.ts`, to the status table in `docs/operations.md` and to the status list in `e2e/contract.test.ts`.
+
+## Usage events
+
+- A usage event is one structured log entry, logged with `record`. Its name and fields are typed: `UsageEvents` in `packages/control-worker/src/Workspace.ts` maps each event name to the fields it is logged with, and `WorkloadExchange` in `OAuth.ts` is the fields of `oauth.workload_exchange`. A misspelled name, a missing field or a field of the wrong type is a compile error.
+- A field is a value Workers Observability can filter on: a string, a number, a boolean or `undefined`, never an object. An event with several shapes, such as `page.edit` by its `status`, is a union with one member per shape.
+- A new event or field is added to its type and to the table in `docs/operations.md`, "Monitor usage", in the same commit. A scenario that reads the event (`eventsOf`) shows it is logged.
+- Never log a page's text, a token or a person's name in an event; `authorField` stands for who wrote a comment.
 
 ## Environment and tests
 

@@ -63,10 +63,13 @@ export const make = Effect.fn("Principals.make")(function* (
     duplicate(principals.flatMap((principal) => principal.workloads.map((identity) => workloadKey(identity)))),
     duplicate(issuers.map((issuer) => issuer.issuer)),
   ].filter((clash) => clash !== undefined);
-  if (clashes.length > 0) return yield* Effect.die(new Error(`principals or issuers repeat: ${clashes.join(", ")}`));
+  if (clashes.length > 0) {
+    return yield* Effect.die(new Error(`principals or issuers repeat: ${clashes.join(", ")}`));
+  }
   // The orchestrator token's edits go under this name (docs/editing.md, "Auth").
-  if (principals.some((principal) => principal.id === "orchestrator"))
+  if (principals.some((principal) => principal.id === "orchestrator")) {
     return yield* Effect.die(new Error("no principal may have the id 'orchestrator'"));
+  }
   return {
     byEmail: (email) => principals.find((principal) => principal.email.toLowerCase() === email.toLowerCase()),
     byId: (id) => principals.find((principal) => principal.id === id),

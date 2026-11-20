@@ -9,9 +9,15 @@ const isText = (node: Node): boolean => node.type === "Literal" && typeof node.v
 
 /** `x.status === "landed"` as `"x.status"`: what a test compares with a string, if that is what it does. */
 const subjectOf = (context: Context, test: Node): string | undefined => {
-  if (test.type !== "BinaryExpression" || test.operator !== "===") return undefined;
-  if (isText(test.right)) return context.sourceCode.getText(test.left);
-  if (isText(test.left)) return context.sourceCode.getText(test.right);
+  if (test.type !== "BinaryExpression" || test.operator !== "===") {
+    return undefined;
+  }
+  if (isText(test.right)) {
+    return context.sourceCode.getText(test.left);
+  }
+  if (isText(test.left)) {
+    return context.sourceCode.getText(test.right);
+  }
   return undefined;
 };
 
@@ -28,7 +34,9 @@ export const matchUnions: Rule = {
     SwitchStatement: (node) => context.report({ node, messageId: "match" }),
     IfStatement: (node) => {
       const next = node.alternate;
-      if (next === null || next.type !== "IfStatement") return;
+      if (next === null || next.type !== "IfStatement") {
+        return;
+      }
       const subject = subjectOf(context, node.test);
       if (subject !== undefined && subject === subjectOf(context, next.test)) {
         context.report({ node: next, messageId: "match" });

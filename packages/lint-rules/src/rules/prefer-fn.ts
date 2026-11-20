@@ -1,4 +1,5 @@
-import { type Context, effectMemberOf, isInlineFunction, type Node, type Rule } from "../Ast.ts";
+import { effectMemberOf, isInlineFunction } from "../Ast.ts";
+import type { Context, Node, Rule } from "../Ast.ts";
 
 // The Effect library's own guidance (node_modules/effect/AGENTS.md, "Using
 // Effect.fn and Effect.fnUntraced"): a reusable function whose body is a
@@ -12,7 +13,9 @@ import { type Context, effectMemberOf, isInlineFunction, type Node, type Rule } 
 
 /** `Effect.gen(...)`, or `Effect.gen(...).pipe(...)`. */
 const isGen = (context: Context, node: Node): boolean => {
-  if (node.type !== "CallExpression") return false;
+  if (node.type !== "CallExpression") {
+    return false;
+  }
   const callee = node.callee;
   if (callee.type === "MemberExpression" && !callee.computed && callee.property.name === "pipe") {
     return isGen(context, callee.object);
@@ -23,12 +26,20 @@ const isGen = (context: Context, node: Node): boolean => {
 
 /** What a function returns, when returning it is all the function does. */
 const onlyReturnOf = (fn: Node): Node | undefined => {
-  if (fn.type !== "ArrowFunctionExpression" && fn.type !== "FunctionExpression") return undefined;
+  if (fn.type !== "ArrowFunctionExpression" && fn.type !== "FunctionExpression") {
+    return undefined;
+  }
   const body = fn.body;
-  if (body === null) return undefined;
-  if (body.type !== "BlockStatement") return body;
+  if (body === null) {
+    return undefined;
+  }
+  if (body.type !== "BlockStatement") {
+    return body;
+  }
   const [statement, ...more] = body.body;
-  if (statement === undefined || more.length > 0 || statement.type !== "ReturnStatement") return undefined;
+  if (statement === undefined || more.length > 0 || statement.type !== "ReturnStatement") {
+    return undefined;
+  }
   return statement.argument ?? undefined;
 };
 
@@ -45,9 +56,13 @@ export const preferFn: Rule = {
   create: (context) => ({
     VariableDeclarator: (node) => {
       const init = node.init;
-      if (init === null || !isInlineFunction(init)) return;
+      if (init === null || !isInlineFunction(init)) {
+        return;
+      }
       const returned = onlyReturnOf(init);
-      if (returned !== undefined && isGen(context, returned)) context.report({ node: init, messageId: "fn" });
+      if (returned !== undefined && isGen(context, returned)) {
+        context.report({ node: init, messageId: "fn" });
+      }
     },
   }),
 };

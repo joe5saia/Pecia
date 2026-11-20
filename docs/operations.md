@@ -170,7 +170,7 @@ They are in `packages/wiki-api/src/Edits.ts`. An edit reads only the directories
 
 There are three records of what happened, from the most to the least detailed.
 
-**Workers Logs.** The workspace Durable Object writes one structured log entry per event. Filter on `annotations.event` in Workers Observability:
+**Workers Logs.** The workspace Durable Object writes one structured log entry per event. Each event's fields are typed in the code (`UsageEvents` in `packages/control-worker/src/Workspace.ts`, `WorkloadExchange` in `OAuth.ts`), and this table follows them. Filter on `annotations.event` in Workers Observability:
 
 | `annotations.event` | When | Other fields under `annotations` |
 | --- | --- | --- |

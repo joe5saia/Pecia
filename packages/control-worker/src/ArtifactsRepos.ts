@@ -1,11 +1,13 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
-import { ArtifactsUnavailable, CommitSha, RemoteUrl, type Timestamp, timestampOf } from "@pecia/wiki-api";
+import { ArtifactsUnavailable, CommitSha, RemoteUrl, timestampOf } from "@pecia/wiki-api";
+import type { Timestamp } from "@pecia/wiki-api";
 import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
-import { type RepoName, type RepoSummary, type Repos, TokenId, treeEntry, TreeSha } from "./Repos.ts";
+import { TokenId, treeEntry, TreeSha } from "./Repos.ts";
+import type { RepoName, RepoSummary, Repos } from "./Repos.ts";
 
 // Repos over the Cloudflare Artifacts Worker binding.
 //
@@ -44,7 +46,9 @@ const taking = <A, B>(
 ): Effect.Effect<B, ArtifactsError, RuntimeContext> =>
   Effect.map(answer, (answered) => {
     const taken = take(answered);
-    if (isDisposable(answered)) answered[Symbol.dispose]();
+    if (isDisposable(answered)) {
+      answered[Symbol.dispose]();
+    }
     return taken;
   });
 
@@ -62,8 +66,12 @@ const revokeActive: (
   const active = yield* taking(repo.listTokens(), ({ tokens }) =>
     tokens.filter((token) => token.state === "active").map((token) => TokenId.make(token.id)),
   );
-  if (active.length === 0) return true;
-  if (passes === 0) return false;
+  if (active.length === 0) {
+    return true;
+  }
+  if (passes === 0) {
+    return false;
+  }
   yield* Effect.forEach(active, (tokenId) => repo.revokeToken(tokenId), { discard: true });
   return yield* revokeActive(repo, passes - 1);
 });
@@ -88,7 +96,9 @@ const listFrom: (
         next: listed.cursor,
       }),
     );
-    if (page.next === undefined || page.repos.length === 0) return page.repos;
+    if (page.next === undefined || page.repos.length === 0) {
+      return page.repos;
+    }
     return [...page.repos, ...(yield* listFrom(artifacts, page.next))];
   },
 );

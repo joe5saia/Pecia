@@ -1,4 +1,5 @@
-import { type CallExpression, type Context, effectMemberOf, isPipeArgument, type Node, type Rule } from "../Ast.ts";
+import { effectMemberOf, isPipeArgument } from "../Ast.ts";
+import type { CallExpression, Context, Node, Rule } from "../Ast.ts";
 
 // https://effect.website/docs/v4/code-style/guidelines, "Avoid Tacit Usage".
 //
@@ -38,23 +39,35 @@ const isReference = (node: Node): boolean => node.type === "Identifier" || node.
 
 const check = (context: Context, call: CallExpression): void => {
   const member = effectMemberOf(context, call.callee);
-  if (member === undefined) return;
+  if (member === undefined) {
+    return;
+  }
   const report = (node: Node) => context.report({ node, messageId: "tacit" });
 
   for (const argument of call.arguments) {
-    if (argument.type !== "ObjectExpression") continue;
+    if (argument.type !== "ObjectExpression") {
+      continue;
+    }
     for (const property of argument.properties) {
-      if (property.type !== "Property" || property.key.type !== "Identifier") continue;
-      if (functionOptions.has(property.key.name) && isReference(property.value)) report(property.value);
+      if (property.type !== "Property" || property.key.type !== "Identifier") {
+        continue;
+      }
+      if (functionOptions.has(property.key.name) && isReference(property.value)) {
+        report(property.value);
+      }
     }
   }
 
   const leading = combinators[member.name];
-  if (leading === undefined) return;
+  if (leading === undefined) {
+    return;
+  }
   // Called on its own, `Effect.map(effect, f)` takes the effect first. In a pipe, `Effect.map(f)` does not.
   const data = !isPipeArgument(call) && call.arguments.length > 1 ? 1 : 0;
   for (const argument of call.arguments.slice(data + leading)) {
-    if (isReference(argument)) report(argument);
+    if (isReference(argument)) {
+      report(argument);
+    }
   }
 };
 

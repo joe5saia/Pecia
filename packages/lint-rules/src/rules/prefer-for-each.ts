@@ -1,4 +1,5 @@
-import { type Context, effectMemberOf, type Node, type Rule } from "../Ast.ts";
+import { effectMemberOf } from "../Ast.ts";
+import type { Context, Node, Rule } from "../Ast.ts";
 
 // https://effect.website/docs/v4/code-style/control-flow, "Looping": an effect
 // run once per element of an iterable is `Effect.forEach`, which says in one
@@ -16,12 +17,18 @@ const loopAround = (context: Context, node: Node): Node | undefined => {
   let loop: Node | undefined;
   let current = node.parent;
   while (current !== null && current.type !== "Program" && !isFunction(current)) {
-    if (current.type === "ForOfStatement" || current.type === "ForInStatement") loop ??= current;
+    if (current.type === "ForOfStatement" || current.type === "ForInStatement") {
+      loop ??= current;
+    }
     current = current.parent;
   }
-  if (loop === undefined || current === null || current.type === "Program") return undefined;
+  if (loop === undefined || current === null || current.type === "Program") {
+    return undefined;
+  }
   const call = current.parent;
-  if (call === null || call.type !== "CallExpression") return undefined;
+  if (call === null || call.type !== "CallExpression") {
+    return undefined;
+  }
   // `Effect.gen(function* () {})`, `Effect.fn(function* () {})` and `Effect.fn("name")(function* () {})`.
   const callee = call.callee.type === "CallExpression" ? call.callee.callee : call.callee;
   const name = effectMemberOf(context, callee)?.name;
@@ -39,7 +46,9 @@ export const preferForEach: Rule = {
   },
   create: (context) => ({
     YieldExpression: (node) => {
-      if (node.delegate && loopAround(context, node) !== undefined) context.report({ node, messageId: "forEach" });
+      if (node.delegate && loopAround(context, node) !== undefined) {
+        context.report({ node, messageId: "forEach" });
+      }
     },
   }),
 };

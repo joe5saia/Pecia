@@ -2,7 +2,8 @@ import { expect, layer } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import { type EdgeRequest, Server, ServerLive } from "./support/Server.ts";
+import { Server, ServerLive } from "./support/Server.ts";
+import type { EdgeRequest } from "./support/Server.ts";
 import { alarmsOf, api, asSandbox, createWorkspace, eventsOf, eventually, openSandbox } from "./support/Wiki.ts";
 
 // How sessions end: by the orchestrator, or by the idle alarm, and what is
@@ -323,7 +324,9 @@ layer(
         // The fork could not be confirmed gone, so the session stays for the alarm to end.
         const [session] = yield* wiki.sessions;
         expect(session).toMatchObject({ state: "active" });
-        if (session === undefined) return;
+        if (session === undefined) {
+          return;
+        }
         yield* reaches(wiki, session, "deleted");
       }),
   );

@@ -18,10 +18,11 @@ interface Env {
 export default {
   fetch: (request: Request, env: Env): Promise<Response> | Response => {
     const url = new URL(request.url);
-    if (url.hostname === env.ACCESS_HOST && url.pathname === "/cdn-cgi/access/certs")
+    if (url.hostname === env.ACCESS_HOST && url.pathname === "/cdn-cgi/access/certs") {
       return new Response(env.JWKS, { headers: { "content-type": "application/json" } });
+    }
     // The scenarios' MCP client's metadata document (CIMD), as a client publishes it (`Mcp.ts`).
-    if (url.hostname === "client.pecia-e2e.dev" && url.pathname === "/client.json")
+    if (url.hostname === "client.pecia-e2e.dev" && url.pathname === "/client.json") {
       return new Response(
         JSON.stringify({
           client_id: url.href,
@@ -33,8 +34,10 @@ export default {
         }),
         { headers: { "content-type": "application/json", "cache-control": "max-age=60" } },
       );
-    if (url.hostname === "ampcode.com" && url.pathname === "/api/workload-identity/jwks.json")
+    }
+    if (url.hostname === "ampcode.com" && url.pathname === "/api/workload-identity/jwks.json") {
       return new Response(env.AMP_JWKS, { headers: { "content-type": "application/json" } });
+    }
     return env.NETWORK.fetch(request);
   },
 };

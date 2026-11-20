@@ -1,26 +1,25 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import workerd from "workerd";
 import { spawn } from "node:child_process";
 import { appendFileSync, createReadStream, existsSync, mkdirSync, rmSync } from "node:fs";
 import { copyFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import {
-  createServer,
-  request as httpRequest,
-  type IncomingMessage,
-  type Server as HttpServer,
-  type ServerResponse,
-} from "node:http";
+import { createServer, request as httpRequest } from "node:http";
+import type { IncomingMessage, Server as HttpServer, ServerResponse } from "node:http";
 import { stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { type Access, accessTeam, makeAccess } from "./Access.ts";
-import { type Amp, makeAmp } from "./Amp.ts";
-import { type Artifacts, startArtifacts } from "./Artifacts.ts";
+import { accessTeam, makeAccess } from "./Access.ts";
+import type { Access } from "./Access.ts";
+import { makeAmp } from "./Amp.ts";
+import type { Amp } from "./Amp.ts";
+import { startArtifacts } from "./Artifacts.ts";
+import type { Artifacts } from "./Artifacts.ts";
 
 // The product as it runs in production, on loopback: the Control Worker as
 // `task build:worker` bundles it for `alchemy deploy`, run with its Durable
@@ -57,7 +56,7 @@ const deployed: Settings = {
 export interface LogEntry {
   readonly message: string;
   readonly level: string;
-  readonly annotations: Readonly<Record<string, unknown>>;
+  readonly annotations: Schema.JsonObject;
   /** When the Worker logged it, in ms. */
   readonly timestamp: number;
 }
@@ -125,12 +124,16 @@ const contentTypes: Readonly<Record<string, string>> = {
 
 const portOf = (server: HttpServer): number => {
   const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("the server is not listening on a port");
+  if (address === null || typeof address === "string") {
+    throw new Error("the server is not listening on a port");
+  }
   return address.port;
 };
 
 const listen = async (server: HttpServer) => {
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
   return portOf(server);
 };
 
@@ -142,14 +145,17 @@ const close = (server: HttpServer) =>
 
 const readBody = (request: IncomingMessage): Promise<Buffer> =>
   new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
+    const chunks: Array<Buffer> = [];
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
     request.on("end", () => resolve(Buffer.concat(chunks)));
     request.on("error", reject);
   });
 
-export const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null;
+/** Whether `value` is a JSON object, checked all the way down. */
+export const isRecord = Schema.is(Schema.JsonObject);
+
+/** `value` if it is a JSON object, else `undefined`. */
+const objectOf = (value: unknown): Schema.JsonObject | undefined => (isRecord(value) ? value : undefined);
 
 /** `value`'s items when it is an array, else none. */
 export const itemsOf = (value: unknown): ReadonlyArray<unknown> =>
@@ -158,13 +164,15 @@ export const itemsOf = (value: unknown): ReadonlyArray<unknown> =>
 /** The log entries of one tail event. */
 const entriesOf = (event: unknown): ReadonlyArray<LogEntry> =>
   itemsOf(isRecord(event) ? event["logs"] : undefined).flatMap((log) => {
-    if (!isRecord(log)) return [];
+    if (!isRecord(log)) {
+      return [];
+    }
     const parts = itemsOf(log["message"]);
     const [first] = parts;
     const level = typeof log["level"] === "string" ? log["level"] : "log";
     const timestamp = typeof log["timestamp"] === "number" ? log["timestamp"] : 0;
     // Logs.structured logs one object per entry; the runtime's own logger logs text.
-    if (isRecord(first) && isRecord(first["annotations"]))
+    if (isRecord(first) && isRecord(first["annotations"])) {
       return [
         {
           // Effect's logger gives a message with fields as [text, fields].
@@ -174,6 +182,7 @@ const entriesOf = (event: unknown): ReadonlyArray<LogEntry> =>
           timestamp,
         },
       ];
+    }
     return [{ message: parts.map((part) => String(part)).join(" "), level, annotations: {}, timestamp }];
   });
 
@@ -314,16 +323,20 @@ const startWorkerd = (configPath: string, cwd: string, log: (line: string) => vo
       );
       const [, stdout, stderr, control] = child.stdio;
       for (const stream of [stdout, stderr]) {
-        if (stream instanceof Readable)
+        if (stream instanceof Readable) {
           createInterface({ input: stream }).on("line", (line) => log(`workerd: ${line}`));
+        }
       }
-      if (!(control instanceof Readable)) throw new Error("workerd has no control channel");
+      if (!(control instanceof Readable)) {
+        throw new Error("workerd has no control channel");
+      }
       const port = await new Promise<number>((resolve, reject) => {
         child.on("exit", (code) => reject(new Error(`workerd exited with ${code} before it listened`)));
         createInterface({ input: control }).on("line", (line) => {
           const message: unknown = JSON.parse(line);
-          if (isRecord(message) && message["event"] === "listen" && typeof message["port"] === "number")
+          if (isRecord(message) && message["event"] === "listen" && typeof message["port"] === "number") {
             resolve(message["port"]);
+          }
         });
       });
       return { child, port };
@@ -332,7 +345,10 @@ const startWorkerd = (configPath: string, cwd: string, log: (line: string) => vo
       Effect.promise(
         () =>
           new Promise<void>((resolve) => {
-            if (child.exitCode !== null) return resolve();
+            if (child.exitCode !== null) {
+              resolve();
+              return;
+            }
             child.on("exit", () => resolve());
             child.stdin?.end();
           }),
@@ -362,7 +378,9 @@ const serveEdge = (options: {
     const answer = async () => {
       const headers = new Headers();
       for (const [name, value] of Object.entries(request.headers)) {
-        if (value !== undefined) headers.set(name, Array.isArray(value) ? value.join(", ") : value);
+        if (value !== undefined) {
+          headers.set(name, Array.isArray(value) ? value.join(", ") : value);
+        }
       }
       await options.access.edge(headers);
       // Cloudflare's asset layer answers GET and HEAD; anything else goes to the Worker.
@@ -374,13 +392,18 @@ const serveEdge = (options: {
           const served = isFile ? file : join(viewerDist, "index.html");
           response.writeHead(200, { "content-type": contentTypes[extname(served)] ?? "application/octet-stream" });
           received.status = 200;
-          if (request.method === "HEAD") response.end();
-          else createReadStream(served).pipe(response);
+          if (request.method === "HEAD") {
+            response.end();
+          } else {
+            createReadStream(served).pipe(response);
+          }
           options.log(`edge ${request.method} ${url.pathname} -> asset ${served.slice(viewerDist.length)}`);
           return;
         }
       }
-      for (const name of ["connection", "keep-alive", "transfer-encoding", "content-length"]) headers.delete(name);
+      for (const name of ["connection", "keep-alive", "transfer-encoding", "content-length"]) {
+        headers.delete(name);
+      }
       const body = request.method === "GET" || request.method === "HEAD" ? undefined : await readBody(request);
       // Through node:http, not fetch, so the Worker sees the Host the client sent, as Cloudflare passes it on.
       const answered = await new Promise<{ status: number; headers: IncomingMessage["headers"]; bytes: Buffer }>(
@@ -395,7 +418,7 @@ const serveEdge = (options: {
               },
             },
             (reply) => {
-              const chunks: Buffer[] = [];
+              const chunks: Array<Buffer> = [];
               reply.on("data", (chunk: Buffer) => chunks.push(chunk));
               reply.on("end", () =>
                 resolve({ status: reply.statusCode ?? 502, headers: reply.headers, bytes: Buffer.concat(chunks) }),
@@ -431,10 +454,11 @@ export const ServerLive = (name: string, settings: Partial<Settings> = {}) =>
   Layer.effect(
     Server,
     Effect.gen(function* () {
-      if (!existsSync(join(workerDist, "manifest.json")) || !existsSync(join(viewerDist, "index.html")))
+      if (!existsSync(join(workerDist, "manifest.json")) || !existsSync(join(viewerDist, "index.html"))) {
         return yield* Effect.die(
           new Error("the Worker or the viewer is not built: run `task test`, which builds both"),
         );
+      }
       const evidence = join(root, "e2e/.evidence", name);
       rmSync(evidence, { recursive: true, force: true });
       mkdirSync(evidence, { recursive: true });
@@ -459,19 +483,24 @@ export const ServerLive = (name: string, settings: Partial<Settings> = {}) =>
       const storage = join(dir, "storage");
       mkdirSync(storage);
 
-      const invocations: Invocation[] = [];
+      const invocations: Array<Invocation> = [];
       const collector = createServer((request, response) => {
-        void readBody(request).then((body) => {
+        const collect = async () => {
+          const body = await readBody(request);
           const events: unknown = JSON.parse(body.toString());
           invocations.push(...itemsOf(events).map((event) => invocationOf(event)));
           // The requests' headers carry credentials; the rest of each event is kept.
           for (const event of itemsOf(events)) {
-            if (isRecord(event) && isRecord(event["event"]) && isRecord(event["event"]["request"]))
-              delete event["event"]["request"]["headers"];
-            log("tail.jsonl")(JSON.stringify(event));
+            const sent = objectOf(objectOf(objectOf(event)?.["event"])?.["request"]);
+            log("tail.jsonl")(
+              JSON.stringify(event, function withoutHeaders(this: unknown, key: string, value: unknown) {
+                return this === sent && key === "headers" ? undefined : value;
+              }),
+            );
           }
           response.writeHead(200).end();
-        });
+        };
+        void collect();
       });
       const collectorPort = yield* Effect.acquireRelease(
         Effect.promise(() => listen(collector)),
@@ -481,7 +510,9 @@ export const ServerLive = (name: string, settings: Partial<Settings> = {}) =>
       const manifest: unknown = JSON.parse(
         yield* Effect.promise(() => readFile(join(workerDist, "manifest.json"), "utf8")),
       );
-      if (!isManifest(manifest)) return yield* Effect.die(new Error("dist/manifest.json is not a build manifest"));
+      if (!isManifest(manifest)) {
+        return yield* Effect.die(new Error("dist/manifest.json is not a build manifest"));
+      }
       yield* Effect.promise(async () => {
         await Promise.all(manifest.modules.map((module) => copyFile(join(workerDist, module), join(dir, module))));
         await Promise.all(

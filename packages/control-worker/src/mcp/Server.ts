@@ -1,16 +1,5 @@
-import {
-  type Author,
-  McpTools,
-  type Thread,
-  NotFound,
-  type PrincipalId,
-  type ThreadSummary,
-  type ToolErrorTag,
-  ToolFailure,
-  toolFailureOf,
-  workspaceOfSession,
-  type WorkspaceName,
-} from "@pecia/wiki-api";
+import { McpTools, NotFound, ToolFailure, toolFailureOf, workspaceOfSession } from "@pecia/wiki-api";
+import type { Author, Thread, PrincipalId, ThreadSummary, ToolErrorTag, WorkspaceName } from "@pecia/wiki-api";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -22,10 +11,11 @@ import * as McpProtocol from "effect/ai/McpProtocol";
 import * as McpServer from "effect/ai/McpServer";
 import * as Tool from "effect/ai/Tool";
 import * as Toolkit from "effect/ai/Toolkit";
-import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import type * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { Readers } from "../Reader.ts";
-import { type RemoteWorkspace, Workspaces } from "../Handlers.ts";
+import { Workspaces } from "../Handlers.ts";
+import type { RemoteWorkspace } from "../Handlers.ts";
 import { bearerOf, grantOf, OAuth, scopes } from "../OAuth.ts";
 import type { GrantId } from "../Repos.ts";
 import { Principals } from "../Principals.ts";
@@ -180,7 +170,9 @@ const specs: Record<
 const isName = (tool: string): tool is Name => Object.hasOwn(specs, tool);
 
 export const scopeOf = (tool: string): string | undefined => {
-  if (!isName(tool)) return undefined;
+  if (!isName(tool)) {
+    return undefined;
+  }
   return specs[tool].write ? scopes.write : scopes.read;
 };
 
@@ -237,7 +229,9 @@ type SortKey = ReadonlyArray<string>;
 const compareKeys = (a: SortKey, b: SortKey): number => {
   for (const [index, part] of a.entries()) {
     const other = b[index] ?? "";
-    if (part !== other) return part < other ? -1 : 1;
+    if (part !== other) {
+      return part < other ? -1 : 1;
+    }
   }
   return a.length - b.length;
 };
@@ -261,15 +255,19 @@ const keyOfCursor = (cursor: string): SortKey | undefined => {
 const paged = <A>(all: ReadonlyArray<A>, cursor: string | undefined, limit: number, keyOf: (item: A) => SortKey) => {
   const items = all.toSorted((a, b) => compareKeys(keyOf(a), keyOf(b)));
   const after = cursor === undefined ? undefined : keyOfCursor(cursor);
-  if (cursor !== undefined && after === undefined) return Effect.fail(new InvalidCursor());
+  if (cursor !== undefined && after === undefined) {
+    return Effect.fail(new InvalidCursor());
+  }
   const found = after === undefined ? 0 : items.findIndex((item) => compareKeys(keyOf(item), after) > 0);
   const start = found === -1 ? items.length : found;
-  const page: A[] = [];
+  const page: Array<A> = [];
   let bytes = 0;
   for (const item of items.slice(start, start + limit)) {
     // UTF-8 bytes, as the answer is sent, not UTF-16 units.
     bytes += utf8.encode(JSON.stringify(item)).byteLength;
-    if (page.length > 0 && bytes > 64_000) break;
+    if (page.length > 0 && bytes > 64_000) {
+      break;
+    }
     page.push(item);
   }
   const end = start + page.length;
@@ -307,7 +305,8 @@ const summaryOf = (thread: Thread): ThreadSummary => {
 };
 
 /** The SHA-256 of a request's input without its idempotency key, which `withOnce` compares. */
-const inputHash = (input: object) => sha256Hex(JSON.stringify({ ...input, idempotencyKey: undefined }));
+const inputHash = (input: { readonly idempotencyKey: string }) =>
+  sha256Hex(JSON.stringify({ ...input, idempotencyKey: undefined }));
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 
@@ -440,7 +439,9 @@ const HandlersLive = Tools.toLayer(
         Effect.gen(function* () {
           const threads = yield* workspaces.get(workspace).listThreads(workspace, { state: "all" });
           const thread = threads.find((candidate) => candidate.id === threadId);
-          if (thread === undefined) return yield* Effect.fail(notFoundThread(threadId));
+          if (thread === undefined) {
+            return yield* Effect.fail(notFoundThread(threadId));
+          }
           const comments = yield* paged(thread.comments, cursor, 20, (comment) => [comment.createdAt, comment.id]);
           return { ...thread, comments: comments.items, remaining: comments.remaining, next: comments.next };
         }),
@@ -553,7 +554,7 @@ const Visibility = McpServer.visibility(({ target }) =>
 /** The JSON-RPC error body of an HTTP refusal (TR-5). */
 const rpcRefusal = (status: number, message: string, headers: Record<string, string> = {}) =>
   HttpServerResponse.fromWeb(
-    new Response(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32600, message } }), {
+    new Response(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32_600, message } }), {
       status,
       headers: { "content-type": "application/json", ...headers },
     }),
@@ -583,43 +584,52 @@ export const admit = Effect.fn("Mcp.admit")(function* (
   const principals = yield* Principals;
   const oauth = yield* OAuth;
   const stage = new URL(oauth.origin);
-  if (request.headers["host"] !== stage.host) return refuse(rpcRefusal(403, `the Host header must be ${stage.host}`));
+  if (request.headers["host"] !== stage.host) {
+    return refuse(rpcRefusal(403, `the Host header must be ${stage.host}`));
+  }
   const origin = request.headers["origin"];
-  if (origin !== undefined && origin !== oauth.origin)
+  if (origin !== undefined && origin !== oauth.origin) {
     return refuse(rpcRefusal(403, `the Origin header must be ${oauth.origin}`));
+  }
   const metadata = `${oauth.origin}/.well-known/oauth-protected-resource/mcp`;
   const bearer = bearerOf(request.headers["authorization"]);
-  if (bearer === undefined)
+  if (bearer === undefined) {
     return refuse(
       rpcRefusal(401, "this endpoint needs an OAuth access token", {
         "www-authenticate": `Bearer resource_metadata="${metadata}", scope="${scopes.read}"`,
       }),
     );
+  }
   // The provider's API takes the token's text.
   const checked = yield* Effect.result(
     Effect.tryPromise({ try: () => oauth.verify(Redacted.value(bearer)), catch: () => "unreachable" as const }),
   );
   // KV out of reach is nobody's fault: the client tries again.
-  if (checked._tag === "Failure") return refuse(rpcRefusal(503, "try again in a few seconds", { "retry-after": "5" }));
+  if (checked._tag === "Failure") {
+    return refuse(rpcRefusal(503, "try again in a few seconds", { "retry-after": "5" }));
+  }
   const verified = checked.success;
-  if (verified === null)
+  if (verified === null) {
     return refuse(
       rpcRefusal(401, "the access token is not valid", {
         "www-authenticate": `Bearer error="invalid_token", resource_metadata="${metadata}", scope="${scopes.read}"`,
       }),
     );
-  if (principals.byId(verified.props.principal) === undefined)
+  }
+  if (principals.byId(verified.props.principal) === undefined) {
     return refuse(rpcRefusal(403, "your principal no longer has access to pecia"));
+  }
   // The body is read once and kept, so the MCP server reads it again after this.
   const text = yield* Effect.orElseSucceed(request.text, () => "");
   const call = Schema.decodeUnknownOption(Schema.fromJsonString(ToolCall))(text);
   const needed = call._tag === "Some" ? scopeOf(call.value.params.name) : undefined;
-  if (needed !== undefined && !verified.scope.includes(needed))
+  if (needed !== undefined && !verified.scope.includes(needed)) {
     return refuse(
       rpcRefusal(403, `this tool needs the scope ${needed}`, {
         "www-authenticate": `Bearer error="insufficient_scope", scope="${scopes.read} ${scopes.write}", resource_metadata="${metadata}"`,
       }),
     );
+  }
   return {
     _tag: "Admitted",
     grant: {

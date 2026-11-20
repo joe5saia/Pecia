@@ -41,7 +41,9 @@ class ProtocolError extends Error {}
 
 /** An error's message and those of its causes: `fetch` says only "fetch failed" and puts the reason in `cause`. */
 const describe = (cause: unknown): string => {
-  if (!(cause instanceof Error)) return typeof cause === "string" ? cause : (JSON.stringify(cause) ?? "unknown error");
+  if (!(cause instanceof Error)) {
+    return typeof cause === "string" ? cause : (JSON.stringify(cause) ?? "unknown error");
+  }
   return cause.cause === undefined ? cause.message : `${cause.message}: ${describe(cause.cause)}`;
 };
 
@@ -71,12 +73,18 @@ const concat = (parts: ReadonlyArray<Uint8Array>): Uint8Array<ArrayBuffer> => {
 const firstPkt = (
   bytes: Uint8Array,
 ): { readonly payload: Uint8Array | "flush"; readonly length: number } | undefined => {
-  if (bytes.byteLength < 4) return undefined;
+  if (bytes.byteLength < 4) {
+    return undefined;
+  }
   const header = decoder.decode(bytes.subarray(0, 4));
   const length = /^[0-9a-f]{4}$/.test(header) ? Number.parseInt(header, 16) : Number.NaN;
-  if (length === 0) return { payload: "flush", length: 4 };
+  if (length === 0) {
+    return { payload: "flush", length: 4 };
+  }
   // 1 to 3 are not lengths: they are markers of protocol v2, which is not asked for.
-  if (Number.isNaN(length) || length < 4) throw new ProtocolError(`'${header}' is not a pkt-line length`);
+  if (Number.isNaN(length) || length < 4) {
+    throw new ProtocolError(`'${header}' is not a pkt-line length`);
+  }
   return bytes.byteLength < length ? undefined : { payload: bytes.subarray(4, length), length };
 };
 
@@ -92,7 +100,9 @@ const pktLines = async function* (body: ReadableStream<Uint8Array>): AsyncGenera
         yield line.payload;
       }
     }
-    if (pending.byteLength > 0) throw new ProtocolError("the response ends inside a pkt-line");
+    if (pending.byteLength > 0) {
+      throw new ProtocolError("the response ends inside a pkt-line");
+    }
   } finally {
     await reader.cancel().catch(() => {});
   }
@@ -137,7 +147,9 @@ const request = <A>(
   });
 
 const bodyOf = (response: Response): ReadableStream<Uint8Array> => {
-  if (response.body === null) throw new ProtocolError("the response has no body");
+  if (response.body === null) {
+    throw new ProtocolError("the response has no body");
+  }
   return response.body;
 };
 
@@ -145,10 +157,14 @@ const bodyOf = (response: Response): ReadableStream<Uint8Array> => {
 export const advertised = (endpoint: Endpoint, ref: string): Effect.Effect<string | undefined, SmartHttpError> =>
   request(`read ${ref}`, endpoint, { path: "info/refs?service=git-upload-pack" }, async (response) => {
     for await (const line of pktLines(bodyOf(response))) {
-      if (line === "flush") continue;
+      if (line === "flush") {
+        continue;
+      }
       // `<sha> <ref>`, and on the first ref a NUL and the remote's capabilities.
       const [sha, name] = (textOf(line).split("\0")[0] ?? "").split(" ");
-      if (name === ref && sha !== undefined) return sha;
+      if (name === ref && sha !== undefined) {
+        return sha;
+      }
     }
     return undefined;
   });
@@ -187,16 +203,24 @@ export const fetchPack = (
       if (answer !== `ACK ${options.have}`) {
         throw new ProtocolError(`the remote answered '${answer.slice(0, 200)}' where ACK or NAK belongs`);
       }
-      const parts: Uint8Array[] = [];
+      const parts: Array<Uint8Array> = [];
       let bytes = 0;
       for await (const line of lines) {
-        if (line === "flush") break;
+        if (line === "flush") {
+          break;
+        }
         // Side-band: 1 carries the pack, 2 progress for a person, 3 an error.
         const band = line[0];
-        if (band === 3) throw new ProtocolError(`the remote reported: ${textOf(line.subarray(1)).slice(0, 200)}`);
-        if (band !== 1) continue;
+        if (band === 3) {
+          throw new ProtocolError(`the remote reported: ${textOf(line.subarray(1)).slice(0, 200)}`);
+        }
+        if (band !== 1) {
+          continue;
+        }
         bytes += line.byteLength - 1;
-        if (bytes > options.maxBytes) return { _tag: "TooLarge" };
+        if (bytes > options.maxBytes) {
+          return { _tag: "TooLarge" };
+        }
         parts.push(line.subarray(1));
       }
       return { _tag: "Pack", pack: concat(parts) };
@@ -224,16 +248,24 @@ export const pushPack = (
       ]),
     },
     async (response): Promise<Pushed> => {
-      const report: string[] = [];
+      const report: Array<string> = [];
       for await (const line of pktLines(bodyOf(response))) {
-        if (line !== "flush") report.push(textOf(line));
+        if (line !== "flush") {
+          report.push(textOf(line));
+        }
       }
       // `unpack ok`, then `ok <ref>` or `ng <ref> <reason>`.
       const [unpack, update] = report;
-      if (unpack !== "unpack ok") throw new ProtocolError(`the remote answered '${(unpack ?? "").slice(0, 200)}'`);
-      if (update === `ok ${options.ref}`) return { _tag: "Updated" };
+      if (unpack !== "unpack ok") {
+        throw new ProtocolError(`the remote answered '${(unpack ?? "").slice(0, 200)}'`);
+      }
+      if (update === `ok ${options.ref}`) {
+        return { _tag: "Updated" };
+      }
       const refused = `ng ${options.ref} `;
-      if (update?.startsWith(refused) === true) return { _tag: "Rejected", reason: update.slice(refused.length) };
+      if (update?.startsWith(refused) === true) {
+        return { _tag: "Rejected", reason: update.slice(refused.length) };
+      }
       throw new ProtocolError(`the remote did not report on ${options.ref}`);
     },
   );

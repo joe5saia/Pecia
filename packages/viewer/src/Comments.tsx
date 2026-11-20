@@ -1,30 +1,30 @@
-import {
-  type AnchorRequest,
-  type Author,
-  type Comment,
-  codePointIndex,
-  type Located,
-  locate,
-  type Thread,
-  type ThreadId,
-  type ThreadList,
-  unitIndex,
+import { codePointIndex, locate, unitIndex } from "@pecia/wiki-api";
+import type {
+  AnchorRequest,
+  Author,
+  Comment,
+  Located,
+  Thread,
+  ThreadId,
+  ThreadList,
+  WorkspaceName,
 } from "@pecia/wiki-api";
 import type * as Effect from "effect/Effect";
 import type * as HttpClient from "effect/http/HttpClient";
 import * as Match from "effect/Match";
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent } from "react";
 import {
   createThread,
   currentReader,
   deleteComment,
   editComment,
-  type Failure,
   listThreads,
   replyToThread,
   run,
   setThreadState,
 } from "./api.ts";
+import type { Failure } from "./api.ts";
 import type { Page } from "./Markdown.tsx";
 import { timeAgo } from "./time.ts";
 
@@ -47,7 +47,7 @@ type Draft =
   | { readonly _tag: "Page" }
   | { readonly _tag: "Passage"; readonly start: number; readonly end: number; readonly quote: string };
 
-const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const escapeRegExp = (text: string): string => text.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 
 /**
  * Where `needle` occurs in `haystack`, with any run of white space matching
@@ -55,10 +55,12 @@ const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/
  * characters, so text selected in the rendered page is found in the source.
  */
 const occurrences = (haystack: string, needle: string, markup: boolean) => {
-  const characters = Array.from(needle.replace(/\s+/g, " ").trim());
-  if (characters.length === 0) return [];
+  const characters = Array.from(needle.replaceAll(/\s+/g, " ").trim());
+  if (characters.length === 0) {
+    return [];
+  }
   const pattern = characters
-    .map((character) => (character === " " ? "\\s+" : escapeRegExp(character)))
+    .map((character) => (character === " " ? String.raw`\s+` : escapeRegExp(character)))
     .join(markup ? "[`*_~\\\\]*" : "");
   return [...haystack.matchAll(new RegExp(pattern, "gu"))].map((match) => ({
     start: match.index,
@@ -110,11 +112,17 @@ const rangeOfText = (root: Element, start: number, end: number): Range | undefin
 const passageOf = (article: HTMLElement, text: string, located: Located, exact: string): Range | undefined => {
   const from = unitIndex(text, located.start);
   const to = unitIndex(text, located.end);
-  if (from === undefined || to === undefined) return undefined;
+  if (from === undefined || to === undefined) {
+    return undefined;
+  }
   const host = hostOf(article, from, to);
-  if (host === undefined) return undefined;
-  const [match] = occurrences(host.textContent ?? "", exact.replace(/[`*_~\\]/g, ""), false);
-  if (match !== undefined) return rangeOfText(host, match.start, match.end);
+  if (host === undefined) {
+    return undefined;
+  }
+  const [match] = occurrences(host.textContent ?? "", exact.replaceAll(/[`*_~\\]/g, ""), false);
+  if (match !== undefined) {
+    return rangeOfText(host, match.start, match.end);
+  }
   const whole = document.createRange();
   whole.selectNodeContents(host);
   return whole;
@@ -126,11 +134,15 @@ const passageOf = (article: HTMLElement, text: string, located: Located, exact: 
  * the selection, otherwise that whole element.
  */
 const selectedPassage = (article: HTMLElement, text: string, selection: Selection | null): Draft | undefined => {
-  if (selection === null || selection.rangeCount === 0 || selection.isCollapsed) return undefined;
+  if (selection === null || selection.rangeCount === 0 || selection.isCollapsed) {
+    return undefined;
+  }
   const range = selection.getRangeAt(0);
   const common = range.commonAncestorContainer;
   const element = (common instanceof Element ? common : common.parentElement)?.closest<HTMLElement>("[data-src-start]");
-  if (element === null || element === undefined || !article.contains(element)) return undefined;
+  if (element === null || element === undefined || !article.contains(element)) {
+    return undefined;
+  }
   const { from, to } = sourceRangeOf(element);
   const matches = occurrences(text.slice(from, to), range.toString(), true);
   const [only] = matches.length === 1 ? matches : [];
@@ -179,22 +191,25 @@ const Composer = ({
   const box = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     const textarea = box.current;
-    if (!focus || textarea === null) return;
+    if (!focus || textarea === null) {
+      return;
+    }
     textarea.focus({ preventScroll: true });
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
     textarea.scrollIntoView({ block: "nearest" });
   }, [focus]);
   const [busy, setBusy] = useState(false);
-  const submit = (event: FormEvent) => {
+  const submit = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
-    void onSubmit(body.trim()).then((ok) => {
-      setBusy(false);
-      if (ok) setBody("");
-    });
+    const ok = await onSubmit(body.trim());
+    setBusy(false);
+    if (ok) {
+      setBody("");
+    }
   };
   return (
-    <form className="composer" onSubmit={submit}>
+    <form className="composer" onSubmit={(event) => void submit(event)}>
       <textarea
         ref={box}
         value={body}
@@ -203,7 +218,9 @@ const Composer = ({
         rows={2}
         onChange={(event) => setBody(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) submit(event);
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            void submit(event);
+          }
         }}
       />
       <div className="actions">
@@ -233,12 +250,13 @@ const CommentItem = ({
   readonly onDelete: () => Promise<boolean>;
 }) => {
   const [editing, setEditing] = useState(false);
-  if (comment.deletedAt !== null)
+  if (comment.deletedAt !== null) {
     return (
       <li className="deleted">
         <span className="note">This comment was deleted {timeAgo(comment.deletedAt)}.</span>
       </li>
     );
+  }
   return (
     <li>
       <div className="who">
@@ -249,25 +267,25 @@ const CommentItem = ({
         </span>
       </div>
       {editing ? (
-        <div onClick={(event) => event.stopPropagation()}>
-          <Composer
-            label="Save"
-            placeholder="Edit your comment…"
-            initial={comment.body}
-            focus
-            onCancel={() => setEditing(false)}
-            onSubmit={async (body) => {
-              const ok = await onEdit(body);
-              if (ok) setEditing(false);
-              return ok;
-            }}
-          />
-        </div>
+        <Composer
+          label="Save"
+          placeholder="Edit your comment…"
+          initial={comment.body}
+          focus
+          onCancel={() => setEditing(false)}
+          onSubmit={async (body) => {
+            const ok = await onEdit(body);
+            if (ok) {
+              setEditing(false);
+            }
+            return ok;
+          }}
+        />
       ) : (
         <div className="body">{comment.body}</div>
       )}
       {mine && !editing && (
-        <div className="comment-actions" onClick={(event) => event.stopPropagation()}>
+        <div className="comment-actions">
           <button type="button" className="quiet" onClick={() => setEditing(true)}>
             Edit
           </button>
@@ -275,7 +293,9 @@ const CommentItem = ({
             type="button"
             className="quiet"
             onClick={() => {
-              if (globalThis.confirm("Delete this comment? Its place in the thread stays.")) void onDelete();
+              if (globalThis.confirm("Delete this comment? Its place in the thread stays.")) {
+                void onDelete();
+              }
             }}
           >
             Delete
@@ -309,8 +329,29 @@ const ThreadCard = ({
   const { thread, located, outdated } = placed;
   const moved = located !== undefined && located.how !== "exact" ? located.how : undefined;
   const where = outdated ? "outdated" : moved;
+  const card = useRef<HTMLLIElement>(null);
   return (
-    <li id={`thread-${thread.id}`} className={`thread ${thread.state} ${active ? "active" : ""}`} onClick={onSelect}>
+    <li
+      id={`thread-${thread.id}`}
+      className={`thread ${thread.state} ${active ? "active" : ""}`}
+      ref={card}
+      tabIndex={-1}
+    >
+      {/* A closed thread is opened by this button, which covers the card, so a click anywhere on it opens it too.
+          The card then takes the focus, and the reply box is next in the tab order. */}
+      {!active && (
+        <button
+          type="button"
+          className="thread-select"
+          aria-label={
+            thread.anchor === null ? "Open the thread on the whole page" : `Open the thread on “${thread.anchor.exact}”`
+          }
+          onClick={() => {
+            onSelect();
+            card.current?.focus({ preventScroll: true });
+          }}
+        />
+      )}
       {thread.anchor === null ? (
         <p className="scope">On the whole page</p>
       ) : (
@@ -339,7 +380,7 @@ const ThreadCard = ({
         </p>
       )}
       {active && (
-        <div className="thread-actions" onClick={(event) => event.stopPropagation()}>
+        <div className="thread-actions">
           <Composer label="Reply" placeholder="Reply…" onSubmit={onReply} />
           <button type="button" onClick={() => void onSetState(thread.state === "open" ? "resolved" : "open")}>
             {thread.state === "open" ? "Resolve" : "Reopen"}
@@ -373,8 +414,6 @@ export const Comments = ({
   /** The page's threads each time they are read, for the editor to show where their passages are. */
   readonly onThreads?: ((threads: ThreadList) => void) | undefined;
 }) => {
-  const [version, setVersion] = useState(0);
-  const refresh = useCallback(() => setVersion((current) => current + 1), []);
   const [threads, setThreads] = useState<ThreadList | undefined>();
   const [problem, setProblem] = useState<Failure | undefined>();
   const [show, setShow] = useState<"open" | "resolved">("open");
@@ -385,33 +424,58 @@ export const Comments = ({
   const [reader, setReader] = useState<string | undefined>();
 
   useEffect(() => {
-    void run(currentReader()).then((result) => {
-      if (result.ok) setReader(result.value.name);
-    });
+    const readReader = async () => {
+      const result = await run(currentReader());
+      if (result.ok) {
+        setReader(result.value.name);
+      }
+    };
+    void readReader();
   }, []);
 
+  // Each read of the threads has a number. An answer that a later read, or leaving the page, made
+  // stale is dropped, so a slow answer never replaces a newer one.
+  const latestRead = useRef(0);
+  /** The page's threads, or `undefined` when the answer is stale. */
+  const readThreads = useCallback(async (ws: WorkspaceName, path: string) => {
+    latestRead.current += 1;
+    const read = latestRead.current;
+    const result = await run(listThreads(ws, { path, state: "all" }));
+    return read === latestRead.current ? result : undefined;
+  }, []);
+  const showRead = useCallback((result: Awaited<ReturnType<typeof readThreads>>) => {
+    if (result === undefined) {
+      return;
+    }
+    if (result.ok) {
+      setThreads(result.value);
+      setProblem(undefined);
+    } else {
+      setProblem(result.failure);
+    }
+  }, []);
   useEffect(() => {
-    let current = true;
-    void run(listThreads(page.ws, { path: page.path, state: "all" })).then((result) => {
-      if (!current) return;
-      if (result.ok) {
-        setThreads(result.value);
-        setProblem(undefined);
-      } else setProblem(result.failure);
-    });
+    const load = async () => showRead(await readThreads(page.ws, page.path));
+    void load();
     return () => {
-      current = false;
+      latestRead.current += 1;
     };
-  }, [page.ws, page.path, version]);
+  }, [readThreads, showRead, page.ws, page.path]);
+  const refresh = useCallback(() => {
+    const load = async () => showRead(await readThreads(page.ws, page.path));
+    void load();
+  }, [readThreads, showRead, page.ws, page.path]);
 
   useEffect(() => {
-    if (threads !== undefined) onThreads?.(threads);
+    if (threads !== undefined) {
+      onThreads?.(threads);
+    }
   }, [threads, onThreads]);
 
   // A comment being written on a passage is dropped once the passage is a draft's.
-  useEffect(() => {
-    if (unpublished === true) setDraft((current) => (current?._tag === "Passage" ? undefined : current));
-  }, [unpublished]);
+  if (unpublished === true && draft?._tag === "Passage") {
+    setDraft(undefined);
+  }
 
   // Someone, or an agent, may have answered while the reader was elsewhere.
   useEffect(() => {
@@ -420,9 +484,13 @@ export const Comments = ({
   }, [refresh]);
 
   useEffect(() => {
-    if (text === undefined) return undefined;
+    if (text === undefined) {
+      return undefined;
+    }
     const changed = () => {
-      if (article !== null) setSelected(selectedPassage(article, text, document.getSelection()));
+      if (article !== null) {
+        setSelected(selectedPassage(article, text, document.getSelection()));
+      }
     };
     document.addEventListener("selectionchange", changed);
     return () => document.removeEventListener("selectionchange", changed);
@@ -439,15 +507,21 @@ export const Comments = ({
 
   useEffect(() => {
     const root = article;
-    if (root === null || text === undefined || !canHighlight) return undefined;
+    if (root === null || text === undefined || !canHighlight) {
+      return undefined;
+    }
     const ranges = new Map<ThreadId, Range>();
     for (const { thread, located } of placed) {
-      if (located === undefined || thread.anchor === null || thread.state !== "open") continue;
+      if (located === undefined || thread.anchor === null || thread.state !== "open") {
+        continue;
+      }
       const range = passageOf(root, text, located, thread.anchor.exact);
-      if (range !== undefined) ranges.set(thread.id, range);
+      if (range !== undefined) {
+        ranges.set(thread.id, range);
+      }
     }
     passages.current = ranges;
-    const others = [...ranges].filter(([id]) => id !== active).map(([, range]) => range);
+    const others = [...ranges].flatMap(([id, range]) => (id === active ? [] : [range]));
     const current = active === undefined ? undefined : ranges.get(active);
     CSS.highlights.set("pecia-comment", new Highlight(...others));
     CSS.highlights.set("pecia-comment-active", new Highlight(...(current === undefined ? [] : [current])));
@@ -460,26 +534,34 @@ export const Comments = ({
   // A click on a highlighted passage opens its thread.
   useEffect(() => {
     const root = article;
-    if (root === null) return undefined;
+    if (root === null) {
+      return undefined;
+    }
     const clicked = (event: MouseEvent) => {
       const caret = document.caretPositionFromPoint(event.clientX, event.clientY);
-      if (caret === null) return;
-      for (const [id, range] of passages.current)
+      if (caret === null) {
+        return;
+      }
+      for (const [id, range] of passages.current) {
         if (range.isPointInRange(caret.offsetNode, caret.offset)) {
           setActive(id);
           setShow("open");
           document.getElementById(`thread-${id}`)?.scrollIntoView({ block: "nearest" });
           return;
         }
+      }
     };
     root.addEventListener("click", clicked);
     return () => root.removeEventListener("click", clicked);
-  }, [article, text]);
+  }, [article]);
 
   const mutate = async <A, E>(call: Effect.Effect<A, E, HttpClient.HttpClient>): Promise<boolean> => {
     const result = await run(call);
-    if (result.ok) refresh();
-    else setProblem(result.failure);
+    if (result.ok) {
+      refresh();
+    } else {
+      setProblem(result.failure);
+    }
     return result.ok;
   };
 

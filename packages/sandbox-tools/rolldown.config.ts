@@ -1,4 +1,5 @@
-import { type BuildOptions, defineConfig } from "rolldown";
+import { defineConfig } from "rolldown";
+import type { BuildOptions } from "rolldown";
 import { fileURLToPath } from "node:url";
 
 // Each tool becomes one self-contained Node script for the sandbox image. They
@@ -12,7 +13,7 @@ export const tools = {
   "wiki-comments": source("comments.ts"),
 };
 
-export const configs = (dir: string): BuildOptions[] =>
+export const configs = (dir: string): Array<BuildOptions> =>
   Object.entries(tools).map(([name, input]) => ({
     input,
     platform: "node",

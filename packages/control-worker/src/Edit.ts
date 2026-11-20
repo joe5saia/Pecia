@@ -1,11 +1,5 @@
-import {
-  ArtifactsUnavailable,
-  Conflict,
-  type FilePath,
-  maxPageBytes,
-  type PageChange,
-  PageRefused,
-} from "@pecia/wiki-api";
+import { ArtifactsUnavailable, Conflict, maxPageBytes, PageRefused } from "@pecia/wiki-api";
+import type { FilePath, PageChange } from "@pecia/wiki-api";
 import * as Effect from "effect/Effect";
 import type { NewEntry, NewTree } from "./Git.ts";
 import type { TreeEntry, TreeSha } from "./Repos.ts";
@@ -46,7 +40,7 @@ const hfsIgnored = /[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g;
  */
 const dotGit = /^(?:\.git|git~1)[. ]*(?::|$)/i;
 
-const isDotGit = (segment: string): boolean => dotGit.test(segment.replace(hfsIgnored, ""));
+const isDotGit = (segment: string): boolean => dotGit.test(segment.replaceAll(hfsIgnored, ""));
 
 /** A control character, which no page's name has, or a backslash, which Windows reads as a slash. */
 const unsafeCharacter = /[\p{Cc}\\]/u;
@@ -57,18 +51,28 @@ const maxNameBytes = 255;
 /** Why a page cannot be at `path`, if it cannot: a clone of main must check out on every system. */
 const placeRefused = (path: FilePath): PageRefused["reason"] | undefined => {
   // Half of a surrogate pair is written to git as another character, under which the page is never found again.
-  if (!path.isWellFormed() || unsafeCharacter.test(path)) return "invalid_path";
+  if (!path.isWellFormed() || unsafeCharacter.test(path)) {
+    return "invalid_path";
+  }
   const segments = segmentsOf(path);
-  if (segments.some((segment) => encoder.encode(segment).byteLength > maxNameBytes)) return "invalid_path";
-  if (segments.some((segment) => isDotGit(segment))) return "reserved_path";
+  if (segments.some((segment) => encoder.encode(segment).byteLength > maxNameBytes)) {
+    return "invalid_path";
+  }
+  if (segments.some((segment) => isDotGit(segment))) {
+    return "reserved_path";
+  }
   return undefined;
 };
 
 /** The bytes of a page, if the service commits it. */
 const contentOf = (change: PageChange): Effect.Effect<Uint8Array<ArrayBuffer>, PageRefused> => {
   const place = placeRefused(change.path);
-  if (place !== undefined) return Effect.fail(refused(change, place));
-  if (change.content.includes("\0") || !change.content.isWellFormed()) return Effect.fail(refused(change, "not_text"));
+  if (place !== undefined) {
+    return Effect.fail(refused(change, place));
+  }
+  if (change.content.includes("\0") || !change.content.isWellFormed()) {
+    return Effect.fail(refused(change, "not_text"));
+  }
   const bytes = encoder.encode(change.content);
   return bytes.byteLength > maxPageBytes ? Effect.fail(refused(change, "too_large")) : Effect.succeed(bytes);
 };
@@ -96,12 +100,18 @@ export const plan = (
   ): Effect.fn.Return<NewEntry, Conflict | PageRefused> {
     const content = yield* contentOf(change);
     if (current === undefined) {
-      if (change.expected !== null) return yield* changed(change, undefined);
+      if (change.expected !== null) {
+        return yield* changed(change, undefined);
+      }
       return { _tag: "File", name, executable: false, content };
     }
     // A directory, a symlink or a submodule is not a page, whatever the person read.
-    if (current.type !== "blob" && current.type !== "exec") return yield* refused(change, "not_a_file");
-    if (current.sha !== change.expected) return yield* changed(change, current.sha);
+    if (current.type !== "blob" && current.type !== "exec") {
+      return yield* refused(change, "not_a_file");
+    }
+    if (current.sha !== change.expected) {
+      return yield* changed(change, current.sha);
+    }
     return { _tag: "File", name, executable: current.type === "exec", content };
   });
 
@@ -114,14 +124,17 @@ export const plan = (
     if (current !== undefined && current.type !== "tree") {
       // A file is where the directory would be, so no page is below it.
       const [first] = below;
-      if (first === undefined) return yield* Effect.die(new Error("a directory with no change below it"));
+      if (first === undefined) {
+        return yield* Effect.die(new Error("a directory with no change below it"));
+      }
       return yield* first.change.expected === null
         ? refused(first.change, "not_a_file")
         : changed(first.change, undefined);
     }
     const existing = current === undefined ? [] : yield* readTree(current.sha);
-    if (existing === undefined)
+    if (existing === undefined) {
       return yield* new ArtifactsUnavailable({ message: `main's directory '${name}' could not be read` });
+    }
     return {
       _tag: "Directory",
       name,
@@ -146,10 +159,14 @@ export const plan = (
           .filter((item) => item.segments.length > 1)
           .map((item) => ({ change: item.change, segments: item.segments.slice(1) }));
         const [page] = here;
-        if (page === undefined) return directory(name, current, below);
+        if (page === undefined) {
+          return directory(name, current, below);
+        }
         // One edit writes a page and a page under it: the name cannot be both a file and a directory.
         const [under] = below;
-        if (under !== undefined) return Effect.fail(refused(under.change, "not_a_file"));
+        if (under !== undefined) {
+          return Effect.fail(refused(under.change, "not_a_file"));
+        }
         return file(name, current, page.change);
       });
       return [...kept, ...written];

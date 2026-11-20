@@ -500,6 +500,31 @@ button.primary {
   box-shadow: 0 0 0 1px var(--accent);
   cursor: default;
 }
+.thread {
+  position: relative;
+}
+.thread:focus {
+  outline: none;
+}
+/* The button that opens a closed thread covers the card; the thread's own controls sit above it. */
+.thread-select {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: none;
+  cursor: pointer;
+}
+.thread-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.thread .comment-actions,
+.thread .composer {
+  position: relative;
+  z-index: 1;
+}
 .thread.resolved {
   opacity: 0.85;
 }

@@ -19,7 +19,9 @@ export default () => {
   const entries = new Map<string, Entry>();
   const live = (key: string): Entry | undefined => {
     const entry = entries.get(key);
-    if (entry === undefined) return undefined;
+    if (entry === undefined) {
+      return undefined;
+    }
     if (entry.expiration !== undefined && entry.expiration * 1000 <= Date.now()) {
       entries.delete(key);
       return undefined;
@@ -27,7 +29,9 @@ export default () => {
     return entry;
   };
   const read = (entry: Entry | undefined, type: ReadType): unknown => {
-    if (entry === undefined) return null;
+    if (entry === undefined) {
+      return null;
+    }
     return typeOf(type) === "json" ? JSON.parse(entry.value) : entry.value;
   };
   return {

@@ -280,7 +280,7 @@ export const toolFailureOf = (
   write: boolean,
   reference: string | null,
 ): ToolFailure => {
-  if (error._tag === "ArtifactsUnavailable" || error._tag === "WorkspaceUnavailable")
+  if (error._tag === "ArtifactsUnavailable" || error._tag === "WorkspaceUnavailable") {
     return {
       code: "Unavailable",
       message: "pecia could not complete the call right now",
@@ -294,5 +294,6 @@ export const toolFailureOf = (
         : { action: "retry", instructions: "Wait a few seconds and call again." },
       reference,
     };
+  }
   return { code: error._tag, message: error.message, retryable: false, recovery: recoveries[error._tag], reference };
 };

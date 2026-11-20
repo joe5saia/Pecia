@@ -15,13 +15,17 @@ export const directoryOf = (path: string): string => path.slice(0, path.lastInde
 
 /** `href` from the page at `from`. `undefined` when it climbs out of the wiki. */
 export const resolveLink = (from: string, href: string): Target | undefined => {
-  if (hasScheme.test(href) || href.startsWith("//")) return { _tag: "External", href };
+  if (hasScheme.test(href) || href.startsWith("//")) {
+    return { _tag: "External", href };
+  }
   const hashAt = href.indexOf("#");
   const hash = hashAt === -1 ? "" : href.slice(hashAt + 1);
   const pathPart = (hashAt === -1 ? href : href.slice(0, hashAt)).split("?")[0] ?? "";
-  if (pathPart === "") return { _tag: "Anchor", hash };
+  if (pathPart === "") {
+    return { _tag: "Anchor", hash };
+  }
 
-  const segments: string[] = [];
+  const segments: Array<string> = [];
   const start = pathPart.startsWith("/") ? pathPart.slice(1) : `${directoryOf(from)}${pathPart}`;
   for (const raw of start.split("/")) {
     let segment = raw;
@@ -30,9 +34,13 @@ export const resolveLink = (from: string, href: string): Target | undefined => {
     } catch {
       // A malformed escape is kept as written, as a browser would.
     }
-    if (segment === "" || segment === ".") continue;
+    if (segment === "" || segment === ".") {
+      continue;
+    }
     if (segment === "..") {
-      if (segments.pop() === undefined) return undefined;
+      if (segments.pop() === undefined) {
+        return undefined;
+      }
       continue;
     }
     segments.push(segment);
@@ -54,7 +62,7 @@ export const homePage = (paths: ReadonlyArray<string>): string | undefined =>
 export interface Directory {
   readonly name: string;
   readonly path: string;
-  readonly directories: Directory[];
+  readonly directories: Array<Directory>;
   readonly files: Array<{ readonly name: string; readonly path: string }>;
 }
 

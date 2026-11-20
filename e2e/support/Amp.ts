@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
-import { exportJWK, generateKeyPair, type JWTPayload, SignJWT } from "jose";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import type { JWTPayload } from "jose";
 
 // A stand-in for Amp's workload identity (docs/mcp.md, "Layer 2"), which a
 // sandbox's `amp orb id-token` gets its tokens from. The keys are the

@@ -1,10 +1,7 @@
-import {
-  Client,
-  type OAuthClientProvider,
-  StreamableHTTPClientTransport,
-  UnauthorizedError,
-} from "@modelcontextprotocol/client";
+import { Client, StreamableHTTPClientTransport, UnauthorizedError } from "@modelcontextprotocol/client";
+import type { OAuthClientProvider } from "@modelcontextprotocol/client";
 import * as Effect from "effect/Effect";
+import type * as Schema from "effect/Schema";
 import { execFile } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -113,7 +110,9 @@ export const openConsent = Effect.fnUntraced(function* (url: URL, as: Readonly<R
             handle: decision.handle ?? handle,
             decision: decision.approve ? "approve" : "deny",
           });
-          if (decision.write === true) form.append("scope", "wiki:write");
+          if (decision.write === true) {
+            form.append("scope", "wiki:write");
+          }
           const cookie = [as["cookie"], decision.cookie ?? consentCookie].filter((part) => part).join("; ");
           const answered = await fetch(`${server.url}/authorize`, {
             method: "POST",
@@ -163,21 +162,26 @@ export const signIn = Effect.fnUntraced(function* (options: { readonly write: bo
         (error: unknown) => (error instanceof UnauthorizedError ? "unauthorized" : error),
       ),
   );
-  if (first !== "unauthorized") return yield* Effect.die(new Error(`expected a sign-in, got ${String(first)}`));
+  if (first !== "unauthorized") {
+    return yield* Effect.die(new Error(`expected a sign-in, got ${String(first)}`));
+  }
   const authorization = memory.authorization();
-  if (authorization === undefined) return yield* Effect.die(new Error("the client was not sent to sign in"));
+  if (authorization === undefined) {
+    return yield* Effect.die(new Error("the client was not sent to sign in"));
+  }
   const person = yield* server.access.person(options.email ?? "joe5saia@gmail.com");
   const consent = yield* openConsent(authorization, person);
   const approved = yield* consent.answer({ approve: true, write: options.write });
-  if (approved.location === null)
+  if (approved.location === null) {
     return yield* Effect.die(new Error(`consent answered ${approved.status}: ${approved.body}`));
+  }
   yield* Effect.promise(() => transport.finishAuth(new URL(approved.location ?? "").searchParams));
   const client = yield* connect(memory.provider, server.url);
   return { client, memory };
 });
 
 /** A tool call's result, with its structured content or its failure decoded. */
-export const call = (client: Client, name: string, args: Record<string, unknown> = {}) =>
+export const call = (client: Client, name: string, args: Schema.JsonObject = {}) =>
   Effect.promise(async () => {
     const result = await client.callTool({ name, arguments: args });
     const text = result.content.map((part) => ("text" in part ? part.text : "")).join("");
@@ -244,7 +248,9 @@ export const openMcpSandbox = Effect.fnUntraced(function* (setup: ReadonlyArray<
         new Promise<CommandResult>((resolve) => {
           execFile(command, [...args], { cwd: home, env, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
             let exitCode = 0;
-            if (error !== null) exitCode = typeof error.code === "number" ? error.code : 1;
+            if (error !== null) {
+              exitCode = typeof error.code === "number" ? error.code : 1;
+            }
             evidence(`mcp$ ${command} ${args.join(" ").slice(0, 200)} -> ${exitCode}\n${stderr}`);
             resolve({ exitCode, stdout, stderr });
           });
@@ -253,13 +259,17 @@ export const openMcpSandbox = Effect.fnUntraced(function* (setup: ReadonlyArray<
   // Before the setup there is no session-wide helper: a global one stays, and the checkout's must win over it.
   yield* exec("git", ["config", "--global", "credential.helper", "!echo password=from-global-helper; :"]);
   const ran = yield* exec("bash", ["-euo", "pipefail", "-c", setup.join("\n")]);
-  if (ran.exitCode !== 0) return yield* Effect.die(new Error(`the setup commands failed: ${ran.stderr}`));
+  if (ran.exitCode !== 0) {
+    return yield* Effect.die(new Error(`the setup commands failed: ${ran.stderr}`));
+  }
   const cloned = /git -C '([^']+)'/.exec(setup.join("\n"))?.[1] ?? "";
   const dir = join(home, cloned);
   const git = (...args: ReadonlyArray<string>) => exec("bash", ["-c", 'exec git -C "$0" "$@"', dir, ...args]);
   const must = Effect.fnUntraced(function* (...args: ReadonlyArray<string>) {
     const result = yield* git(...args);
-    if (result.exitCode !== 0) return yield* Effect.die(new Error(`git ${args.join(" ")} failed: ${result.stderr}`));
+    if (result.exitCode !== 0) {
+      return yield* Effect.die(new Error(`git ${args.join(" ")} failed: ${result.stderr}`));
+    }
     return result.stdout.trim();
   });
   const sandbox: McpSandbox = {

@@ -3,7 +3,8 @@ import { Thread, ThreadList } from "@pecia/wiki-api";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { Server, ServerLive } from "./support/Server.ts";
-import { api, createWorkspace, openSandbox, type Sandbox } from "./support/Wiki.ts";
+import { api, createWorkspace, openSandbox } from "./support/Wiki.ts";
+import type { Sandbox } from "./support/Wiki.ts";
 
 // Comment threads on pages (docs/comments.md): people comment from the
 // viewer's API under the email Access verified, agents with wiki-comments
@@ -23,7 +24,9 @@ const wikiWithPage = Effect.fnUntraced(function* (name: string, content: string 
   const agent = yield* openSandbox(name);
   yield* agent.commit(path, content);
   const landed = yield* agent.land;
-  if (landed.exitCode !== 0) return yield* Effect.die(new Error(`the page did not land: ${landed.error}`));
+  if (landed.exitCode !== 0) {
+    return yield* Effect.die(new Error(`the page did not land: ${landed.error}`));
+  }
   return agent;
 });
 
@@ -39,7 +42,9 @@ const ann = "ann@example.com";
 /** Start a thread as Joe and answer it decoded. */
 const startThread = Effect.fnUntraced(function* (workspace: string, request: unknown) {
   const created = yield* asPerson(joe, "POST", `/workspaces/${workspace}/threads`, request);
-  if (created.status !== 200) return yield* Effect.die(new Error(`creating a thread answered ${created.status}`));
+  if (created.status !== 200) {
+    return yield* Effect.die(new Error(`creating a thread answered ${created.status}`));
+  }
   return decodeThread(created.body);
 });
 

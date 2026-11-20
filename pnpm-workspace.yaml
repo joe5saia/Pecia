@@ -17,3 +17,5 @@ minimumReleaseAgeExclude:
   - oxlint
   - "@oxfmt/*"
   - "@oxlint/*"
+  # Cloudflare's lint preset (oxlint.config.ts); 0.1.0 was published on the day it was adopted.
+  - "@cloudflare/oxlint-config@0.1.0"

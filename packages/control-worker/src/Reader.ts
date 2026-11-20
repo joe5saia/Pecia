@@ -1,18 +1,17 @@
-import {
-  type ArtifactsUnavailable,
-  type FileEntry,
-  FilePath,
-  type HistoryResponse,
-  type ListWorkspacesResponse,
-  NotFound,
-  type Ref,
-  type TreeResponse,
-  WorkspaceName,
+import { FilePath, NotFound, WorkspaceName } from "@pecia/wiki-api";
+import type {
+  ArtifactsUnavailable,
+  FileEntry,
+  HistoryResponse,
+  ListWorkspacesResponse,
+  Ref,
+  TreeResponse,
 } from "@pecia/wiki-api";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { Repos, type TreeSha } from "./Repos.ts";
+import { Repos } from "./Repos.ts";
+import type { TreeSha } from "./Repos.ts";
 
 // Read-only access to the wikis (docs/viewer.md). Reads go straight to the
 // main repos: they need nothing a workspace's Durable Object serializes, so
@@ -61,8 +60,12 @@ export const make: Effect.Effect<Reader, never, Repos> = Effect.gen(function* ()
         entries,
         (entry): Effect.Effect<ReadonlyArray<FileEntry>, ArtifactsUnavailable> => {
           const path = FilePath.make(`${prefix}${entry.name}`);
-          if (entry.type === "tree") return walk(ws, entry.sha, `${path}/`, budget);
-          if (entry.type !== "blob" && entry.type !== "exec") return Effect.succeed([]);
+          if (entry.type === "tree") {
+            return walk(ws, entry.sha, `${path}/`, budget);
+          }
+          if (entry.type !== "blob" && entry.type !== "exec") {
+            return Effect.succeed([]);
+          }
           if (budget.remaining === 0) {
             budget.truncated = true;
             return Effect.succeed([]);
@@ -79,7 +82,9 @@ export const make: Effect.Effect<Reader, never, Repos> = Effect.gen(function* ()
   /** The commit `ref` names in the workspace's main repo. */
   const commitOf = Effect.fnUntraced(function* (ws: WorkspaceName, ref: Ref) {
     const [commit] = yield* repos.log(ws, { ref, limit: 1 });
-    if (commit !== undefined) return commit;
+    if (commit !== undefined) {
+      return commit;
+    }
     // `main` resolves in every workspace, since creating one commits to it.
     return yield* new NotFound(ref === "main" ? { resource: "workspace", id: ws } : { resource: "commit", id: ref });
   });
@@ -106,14 +111,18 @@ export const make: Effect.Effect<Reader, never, Repos> = Effect.gen(function* ()
     }),
     readFile: Effect.fn("Reader.readFile")(function* (ws: WorkspaceName, ref: Ref, path: FilePath) {
       const file = yield* repos.readFile(ws, ref, path);
-      if (file !== undefined) return file;
+      if (file !== undefined) {
+        return file;
+      }
       // Say which part is missing: a workspace with no main, a commit main lacks, or the file.
       yield* commitOf(ws, ref);
       return yield* new NotFound({ resource: "file", id: path });
     }),
     readHistory: Effect.fn("Reader.readHistory")(function* (ws: WorkspaceName, limit: number) {
       const commits = yield* repos.log(ws, { ref: "main", limit });
-      if (commits.length === 0) return yield* new NotFound({ resource: "workspace", id: ws });
+      if (commits.length === 0) {
+        return yield* new NotFound({ resource: "workspace", id: ws });
+      }
       return commits.map(({ sha, message, author, committedAt }) => ({ sha, message, author, committedAt }));
     }),
   };

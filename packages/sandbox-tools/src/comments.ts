@@ -1,14 +1,5 @@
-import {
-  type AnchorRequest,
-  type Author,
-  FilePath,
-  locate,
-  type Thread,
-  CommentId,
-  ThreadId,
-  type ThreadList,
-  unitIndex,
-} from "@pecia/wiki-api";
+import { FilePath, locate, CommentId, ThreadId, unitIndex } from "@pecia/wiki-api";
+import type { AnchorRequest, Author, Thread, ThreadList } from "@pecia/wiki-api";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Match from "effect/Match";
@@ -52,8 +43,12 @@ const decodePath = (text: string | undefined) =>
 
 /** The text of a comment: the argument, or stdin for `-`. */
 const bodyOf = Effect.fnUntraced(function* (argument: string | undefined) {
-  if (argument === undefined) return yield* usageError("the comment's text is missing");
-  if (argument !== "-") return argument;
+  if (argument === undefined) {
+    return yield* usageError("the comment's text is missing");
+  }
+  if (argument !== "-") {
+    return argument;
+  }
   const stdio = yield* Stdio.Stdio;
   return yield* Stream.mkString(Stream.decodeText(stdio.stdin));
 });
@@ -70,10 +65,16 @@ const lineOf = (text: string, offset: number): number =>
 
 /** Where a thread points in the checkout's copy of its page. */
 const placeOf = (thread: Thread, text: string | undefined): string => {
-  if (thread.anchor === null) return `${thread.path} (whole page)`;
-  if (text === undefined) return `${thread.path} (page not in the checkout)`;
+  if (thread.anchor === null) {
+    return `${thread.path} (whole page)`;
+  }
+  if (text === undefined) {
+    return `${thread.path} (page not in the checkout)`;
+  }
   const located = locate(thread.anchor, text);
-  if (located === undefined) return `${thread.path} (outdated: the passage is no longer in the page)`;
+  if (located === undefined) {
+    return `${thread.path} (outdated: the passage is no longer in the page)`;
+  }
   const first = lineOf(text, located.start);
   const last = lineOf(text, Math.max(located.start, located.end - 1));
   return `${thread.path}:${first === last ? first : `${first}-${last}`}${located.how === "exact" ? "" : ` (${located.how})`}`;
@@ -129,7 +130,9 @@ runTool(
       const threadId = yield* decodeThreadId(rest[0]);
       const threads = yield* client.listSessionThreads({ params: { id }, query: { state: "all" } });
       const thread = threads.find((candidate) => candidate.id === threadId);
-      if (thread === undefined) return yield* new ToolError({ message: `thread '${threadId}' does not exist` });
+      if (thread === undefined) {
+        return yield* new ToolError({ message: `thread '${threadId}' does not exist` });
+      }
       yield* printThreads(session.wikiDir, [thread]);
       return 0;
     });
@@ -157,7 +160,9 @@ runTool(
       const path = yield* decodePath(rest[0]);
       const quoteAt = rest.indexOf("--quote");
       const quote = quoteAt === -1 ? undefined : rest[quoteAt + 1];
-      if (quoteAt !== -1 && quote === undefined) return yield* usageError("--quote needs the text to quote");
+      if (quoteAt !== -1 && quote === undefined) {
+        return yield* usageError("--quote needs the text to quote");
+      }
       const positional = rest.filter((_, index) => quoteAt === -1 || (index !== quoteAt && index !== quoteAt + 1));
       const body = yield* bodyOf(positional[1]);
       // The quote is found in main as it is now: the page a person reads.

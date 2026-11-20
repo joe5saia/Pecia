@@ -91,7 +91,9 @@ layer(ServerLive("contract"), { excludeTestServices: true })("the running contra
         ),
       ];
       expect(times.length).toBeGreaterThan(3);
-      for (const time of times) expect(time).toMatch(timestamp);
+      for (const time of times) {
+        expect(time).toMatch(timestamp);
+      }
     }),
   );
 

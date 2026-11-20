@@ -39,10 +39,16 @@ const markerLine = /^(?:(<{7,}) your draft|(={7,}) main's version|(>{7,}) end of
 /** What `line` is to a conflict block, if it is a marker line of any size. */
 export const markerOf = (line: string): Marker | undefined => {
   const match = markerLine.exec(line);
-  if (match === null) return undefined;
+  if (match === null) {
+    return undefined;
+  }
   const [, mine, split, end] = match;
-  if (mine !== undefined) return { kind: "mine", size: mine.length };
-  if (split !== undefined) return { kind: "split", size: split.length };
+  if (mine !== undefined) {
+    return { kind: "mine", size: mine.length };
+  }
+  if (split !== undefined) {
+    return { kind: "split", size: split.length };
+  }
   return end === undefined ? undefined : { kind: "end", size: end.length };
 };
 

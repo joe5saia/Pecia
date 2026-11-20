@@ -3,7 +3,8 @@
 import type * as Provider from "@cloudflare/workers-oauth-provider";
 import type { OAuthHelpers, ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 import type * as cf from "@cloudflare/workers-types";
-import { type GitRemote, type PrincipalId, SessionId } from "@pecia/wiki-api";
+import { SessionId } from "@pecia/wiki-api";
+import type { GitRemote, PrincipalId } from "@pecia/wiki-api";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -12,10 +13,12 @@ import * as Match from "effect/Match";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
-import { createRemoteJWKSet, errors, type JWTPayload, jwtVerify, type JWTVerifyGetKey } from "jose";
+import { createRemoteJWKSet, errors, jwtVerify } from "jose";
+import type { JWTPayload, JWTVerifyGetKey } from "jose";
 import type { Caller } from "./Access.ts";
 import type { RemoteWorkspace } from "./Handlers.ts";
-import { type Principal, Principals, type WorkloadIssuer } from "./Principals.ts";
+import { Principals } from "./Principals.ts";
+import type { Principal, WorkloadIssuer } from "./Principals.ts";
 import { GrantId, TokenHash } from "./Repos.ts";
 import { randomHex, sha256Hex } from "./Secrets.ts";
 
@@ -144,7 +147,7 @@ const oauthError = (status: number, error: string, description: string, headers:
 // The consent page
 // ---------------------------------------------------------------------------
 
-const escape = (value: string) => value.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
+const escape = (value: string) => value.replaceAll(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
 
 // The viewer's look (packages/viewer/src/styles.css): its colors, light and
 // dark, its fonts, its header and its cards. Inline, as the CSP allows nothing else.
@@ -231,10 +234,12 @@ const tryConsent = Effect.fnUntraced(function* <A>(promise: () => Promise<A>) {
   return yield* Effect.tryPromise({
     try: () => promise(),
     catch: (cause) => {
-      if (cause instanceof library.AuthorizationError)
+      if (cause instanceof library.AuthorizationError) {
         return new ConsentRefused({ message: cause.description, redirectTo: cause.redirectTo });
-      if (cause instanceof library.CimdFetchError)
+      }
+      if (cause instanceof library.CimdFetchError) {
         return new ConsentRefused({ message: "This app could not be verified." });
+      }
       return new Unreachable({ message: "the consent step could not reach its storage" });
     },
   });
@@ -247,7 +252,9 @@ const tryConsent = Effect.fnUntraced(function* <A>(promise: () => Promise<A>) {
 export const authorize = Effect.fn("OAuth.authorize")(function* (request: Request, caller: Caller) {
   const principals = yield* Principals;
   const principal = caller._tag === "Person" ? principals.byEmail(caller.email) : undefined;
-  if (principal === undefined) return refusal(403, "Only a person pecia knows can authorize an app.");
+  if (principal === undefined) {
+    return refusal(403, "Only a person pecia knows can authorize an app.");
+  }
   const answer = request.method === "POST" ? decide(request, principal) : ask(request);
   return yield* Effect.catchTag(answer, "ConsentRefused", (refused) =>
     Effect.succeed(
@@ -261,7 +268,9 @@ export const authorize = Effect.fn("OAuth.authorize")(function* (request: Reques
 const ask = Effect.fnUntraced(function* (request: Request) {
   const { helpers } = yield* OAuth;
   const parsed = yield* tryConsent(() => helpers.parseAuthRequest(request));
-  if (parsed.scope.includes(scopes.git)) return refusal(400, "wiki:git is not granted here.");
+  if (parsed.scope.includes(scopes.git)) {
+    return refusal(400, "wiki:git is not granted here.");
+  }
   const details = yield* tryConsent(() => helpers.describeConsent(parsed));
   const consent = yield* tryConsent(() => helpers.beginConsent(parsed));
   const wantsWrite = parsed.scope.includes(scopes.write);
@@ -335,7 +344,9 @@ const decide = Effect.fnUntraced(function* (request: Request, principal: Princip
 const keySets = new Map<string, JWTVerifyGetKey>();
 const keysOf = (issuer: WorkloadIssuer) => {
   const known = keySets.get(issuer.issuer);
-  if (known !== undefined) return known;
+  if (known !== undefined) {
+    return known;
+  }
   const keys = createRemoteJWKSet(new URL(issuer.jwksUri), { cooldownDuration: 30_000 });
   keySets.set(issuer.issuer, keys);
   return keys;
@@ -372,16 +383,33 @@ const refused = (reason: Refusal, error: string, message: string) =>
 
 /** Why jose refused a token, for the log. */
 const reasonOf = (cause: errors.JOSEError): Refusal => {
-  if (cause instanceof errors.JWTExpired) return "expired";
-  if (cause instanceof errors.JWTClaimValidationFailed) return cause.claim === "aud" ? "audience" : "claims";
+  if (cause instanceof errors.JWTExpired) {
+    return "expired";
+  }
+  if (cause instanceof errors.JWTClaimValidationFailed) {
+    return cause.claim === "aud" ? "audience" : "claims";
+  }
   return "signature";
 };
 
 const keysUnreachable = (cause: errors.JOSEError): boolean =>
   cause instanceof errors.JWKSTimeout || cause instanceof errors.JWKSInvalid || cause.constructor === errors.JOSEError;
 
-const record = (fields: Record<string, unknown>) =>
+/** The fields of an `oauth.workload_exchange` event (docs/operations.md, "Monitor usage"). */
+type WorkloadExchange =
+  | { readonly result: "issued"; readonly issuer: string; readonly sessionId: string }
+  | { readonly result: "refused"; readonly reason: Refusal }
+  | { readonly result: "unavailable" };
+
+const record = (fields: WorkloadExchange) =>
   Effect.annotateLogs(Effect.logInfo("oauth.workload_exchange"), { event: "oauth.workload_exchange", ...fields });
+
+const notJwt = () => refused("signature", "invalid_request", "the subject token is not a JWT");
+
+/** The one claim read before the token is verified: who issued it. */
+const decodeClaimed = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ iss: Schema.optional(Schema.String) })),
+);
 
 /** The claims of an identity token from a trusted issuer, checked against that issuer's entry only. */
 const verifyIdentity = Effect.fnUntraced(function* (secret: Redacted.Redacted, origin: string) {
@@ -389,15 +417,15 @@ const verifyIdentity = Effect.fnUntraced(function* (secret: Redacted.Redacted, o
   // jose takes the token's text, and its claims are read before its issuer is known.
   const token = Redacted.value(secret);
   const [, body] = token.split(".");
-  const claimed: unknown = yield* Effect.try({
-    try: (): unknown =>
-      JSON.parse(new TextDecoder().decode(Uint8Array.fromBase64(body ?? "", { alphabet: "base64url" }))),
-    catch: () => refused("signature", "invalid_request", "the subject token is not a JWT"),
+  const text = yield* Effect.try({
+    try: () => new TextDecoder().decode(Uint8Array.fromBase64(body ?? "", { alphabet: "base64url" })),
+    catch: () => notJwt(),
   });
-  const iss = typeof claimed === "object" && claimed !== null && "iss" in claimed ? String(claimed.iss) : "";
-  const issuer = principals.issuer(iss);
-  if (issuer === undefined)
+  const { iss } = yield* Effect.mapError(decodeClaimed(text), () => notJwt());
+  const issuer = principals.issuer(iss ?? "");
+  if (issuer === undefined) {
     return yield* refused("issuer", "invalid_request", "the subject token's issuer is not trusted");
+  }
   const { payload } = yield* Effect.tryPromise({
     try: () =>
       jwtVerify(token, keysOf(issuer), {
@@ -419,11 +447,13 @@ const verifyIdentity = Effect.fnUntraced(function* (secret: Redacted.Redacted, o
   const missing = Object.entries(issuer.requiredClaims).some(([name, value]) => claims[name] !== value);
   const user = claims[issuer.userClaim];
   const subject = claims[issuer.subjectClaim];
-  if (missing || typeof user !== "string" || typeof subject !== "string")
+  if (missing || typeof user !== "string" || typeof subject !== "string") {
     return yield* refused("claims", "invalid_request", "the subject token lacks a required claim");
+  }
   const principal = principals.byWorkload(issuer.issuer, user);
-  if (principal === undefined)
+  if (principal === undefined) {
     return yield* refused("principal", "invalid_request", "the subject token names no principal");
+  }
   return { issuer: issuer.issuer, subject, principal };
 });
 
@@ -436,10 +466,12 @@ export const exchange = Effect.fn("OAuth.exchange")(function* (
   workspaceOf: (sessionId: SessionId) => RemoteWorkspace,
 ) {
   const oauth = yield* OAuth;
-  if (form.get("client_id") !== gitClientId)
+  if (form.get("client_id") !== gitClientId) {
     return oauthError(401, "invalid_client", `this grant accepts only the client '${gitClientId}'`);
-  if (form.get("scope") !== scopes.git)
+  }
+  if (form.get("scope") !== scopes.git) {
     return oauthError(400, "invalid_scope", `the scope must be exactly '${scopes.git}'`);
+  }
   const resource = form.get("resource") ?? "";
   const prefix = `${oauth.origin}/git/sessions/`;
   const sessionId = resource.startsWith(prefix)
@@ -447,15 +479,17 @@ export const exchange = Effect.fn("OAuth.exchange")(function* (
     : undefined;
   const attempt = Effect.gen(function* () {
     const identity = yield* verifyIdentity(Redacted.make(form.get("subject_token") ?? ""), oauth.origin);
-    if (sessionId === undefined || sessionId._tag === "None")
+    if (sessionId === undefined || sessionId._tag === "None") {
       return yield* refused("session", "invalid_target", "the resource is not a session's git endpoint");
+    }
     const id = sessionId.value;
     const workspace = workspaceOf(id);
     const token = Redacted.make(yield* randomHex(32));
     const expiresAt = (yield* Clock.currentTimeMillis) + gitTokenTtlSeconds * 1000;
     const binding = yield* workspace.bindingOf(id);
-    if (binding === undefined || !(yield* holdsGrant(binding.principal, binding.grantId)))
+    if (binding === undefined || !(yield* holdsGrant(binding.principal, binding.grantId))) {
       return yield* refused("grant", "invalid_target", "the session's grant has been revoked");
+    }
     yield* workspace.issueGitToken(
       id,
       { issuer: identity.issuer, subject: identity.subject, principal: identity.principal.id },
@@ -509,7 +543,9 @@ export const gitEndpoint = Effect.fn("OAuth.gitEndpoint")(function* (
   const principals = yield* Principals;
   const bearer = bearerOf(request.headers.get("authorization") ?? undefined);
   const invalid = json(401, { error: "invalid_token" }, { "www-authenticate": 'Bearer error="invalid_token"' });
-  if (bearer === undefined) return invalid;
+  if (bearer === undefined) {
+    return invalid;
+  }
   const answer = yield* workspace.gitCredential(sessionId, yield* tokenHashOf(bearer), remote).pipe(
     // The password crosses the Durable Object as text (packages/control-worker/AGENTS.md).
     Effect.map((credential) => ({
@@ -530,8 +566,9 @@ export const gitEndpoint = Effect.fn("OAuth.gitEndpoint")(function* (
       if (
         principals.byId(credential.principal) === undefined ||
         !(yield* holdsGrant(credential.principal, credential.grantId))
-      )
+      ) {
         return json(403, { error: "access_denied", error_description: "the session's grant has been revoked" });
+      }
       // Where the token leaves the program: git's credential answer.
       return json(200, {
         username: "x",

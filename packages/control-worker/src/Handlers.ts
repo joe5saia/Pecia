@@ -1,5 +1,4 @@
 import {
-  type Author,
   Conflict,
   Editor,
   EditorAuth,
@@ -11,16 +10,13 @@ import {
   ReaderAuth,
   ReaderEdits,
   ReaderName,
-  type Ref,
   SessionAuth,
-  type SessionId,
   SessionKey,
   Unauthorized,
   WikiApi,
   workspaceOfSession,
-  type WorkspaceName,
-  type WorkspaceUnavailable,
 } from "@pecia/wiki-api";
+import type { Author, Ref, SessionId, WorkspaceName, WorkspaceUnavailable } from "@pecia/wiki-api";
 import * as Http from "alchemy/Http";
 import * as ByteSize from "effect/ByteSize";
 import * as Cause from "effect/Cause";
@@ -40,7 +36,8 @@ import * as Layer from "effect/Layer";
 import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
-import { Access, type Caller } from "./Access.ts";
+import { Access } from "./Access.ts";
+import type { Caller } from "./Access.ts";
 import { Principals } from "./Principals.ts";
 import { Readers } from "./Reader.ts";
 import type { Workspace } from "./Workspace.ts";
@@ -106,7 +103,9 @@ const OrchestratorAuthLive = Layer.effect(
     access: (httpEffect, { credential }) =>
       Effect.gen(function* () {
         const caller = yield* access.verify(Redacted.value(credential));
-        if (caller._tag !== "Orchestrator") return yield* new Unauthorized();
+        if (caller._tag !== "Orchestrator") {
+          return yield* new Unauthorized();
+        }
         return yield* httpEffect;
       }),
   })),
@@ -127,7 +126,9 @@ const ReaderAuthLive = Layer.effect(
             Orchestrator: () => "orchestrator",
             Sandbox: () => undefined,
           });
-          if (name === undefined) return yield* new Unauthorized();
+          if (name === undefined) {
+            return yield* new Unauthorized();
+          }
           return yield* httpEffect.pipe(
             Effect.provideService(ReaderName, name),
             Effect.provideService(ReaderEdits, editorOf(caller, principals) !== undefined),
@@ -146,7 +147,9 @@ const EditorAuthLive = Layer.effect(
       access: (httpEffect, { credential }) =>
         Effect.gen(function* () {
           const editor = editorOf(yield* access.verify(Redacted.value(credential)), principals);
-          if (editor === undefined) return yield* new Unauthorized();
+          if (editor === undefined) {
+            return yield* new Unauthorized();
+          }
           return yield* httpEffect.pipe(
             Effect.provideService(Editor, editor),
             // An edit carries pages; every other request body is a few short fields.
@@ -165,7 +168,9 @@ const SessionAuthLive = Layer.effect(
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
         const caller = yield* access.verify(request.headers["cf-access-jwt-assertion"] ?? "");
-        if (caller._tag !== "Sandbox" || Redacted.value(credential) === "") return yield* new Unauthorized();
+        if (caller._tag !== "Sandbox" || Redacted.value(credential) === "") {
+          return yield* new Unauthorized();
+        }
         return yield* Effect.provideService(httpEffect, SessionKey, credential);
       }),
   })),
@@ -296,7 +301,9 @@ const EditorLive = HttpApiBuilder.group(WikiApi, "editor", (handlers) =>
         const request = yield* HttpServerRequest.HttpServerRequest;
         const origin = request.headers["origin"];
         const own = Option.getOrUndefined(HttpServerRequest.toURL(request))?.origin;
-        if (origin !== undefined && origin !== own) return yield* new ForbiddenOrigin({ origin });
+        if (origin !== undefined && origin !== own) {
+          return yield* new ForbiddenOrigin({ origin });
+        }
         const principal = yield* Editor;
         // An address made from the principal's `id`, not the Access email: git history is
         // permanent and every agent clones it, and an email can be reassigned. Its host is the

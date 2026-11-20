@@ -31,7 +31,7 @@ const decode = (segment: string): string => {
 
 export const parseRoute = (url: URL): Route => {
   const [first, ws, ...rest] = url.pathname.split("/").slice(1);
-  if (first === "w" && ws !== undefined && ws !== "")
+  if (first === "w" && ws !== undefined && ws !== "") {
     return {
       _tag: "File",
       ws: decode(ws),
@@ -39,7 +39,10 @@ export const parseRoute = (url: URL): Route => {
       at: url.searchParams.get("at") ?? undefined,
       edit: url.searchParams.get("edit") === "1",
     };
-  if (first === "history" && ws !== undefined && ws !== "") return { _tag: "History", ws: decode(ws) };
+  }
+  if (first === "history" && ws !== undefined && ws !== "") {
+    return { _tag: "History", ws: decode(ws) };
+  }
   return { _tag: "Workspaces" };
 };
 
@@ -58,10 +61,15 @@ export const editHref = (ws: string, path: string): string => `${fileHref(ws, pa
 
 /** Go to `href` in the viewer. `replace` leaves no entry to come back to, as for a redirect. */
 export const navigate = (href: string, options?: { readonly replace?: boolean }): void => {
-  if (options?.replace === true) globalThis.history.replaceState(null, "", href);
-  else globalThis.history.pushState(null, "", href);
+  if (options?.replace === true) {
+    globalThis.history.replaceState(null, "", href);
+  } else {
+    globalThis.history.pushState(null, "", href);
+  }
   globalThis.dispatchEvent(new PopStateEvent("popstate"));
-  if (!href.includes("#")) globalThis.scrollTo(0, 0);
+  if (!href.includes("#")) {
+    globalThis.scrollTo(0, 0);
+  }
 };
 
 export const useRoute = (): { readonly route: Route; readonly url: URL } => {
@@ -76,8 +84,16 @@ export const useRoute = (): { readonly route: Route; readonly url: URL } => {
 
 /** Follow an in-app link without reloading, unless the reader asked for a new tab. */
 export const onLinkClick = (href: string) => (event: React.MouseEvent) => {
-  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+  if (
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  ) {
     return;
+  }
   event.preventDefault();
   navigate(href);
 };

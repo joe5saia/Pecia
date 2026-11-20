@@ -1,21 +1,15 @@
-import {
-  type BlobSha,
-  type CommitSha,
-  IdempotencyKey,
-  locate,
-  maxPageBytes,
-  type ThreadList,
-  type TreeResponse,
-  unitIndex,
-  type WorkspaceName,
-} from "@pecia/wiki-api";
+import { IdempotencyKey, locate, maxPageBytes, unitIndex } from "@pecia/wiki-api";
+import type { BlobSha, CommitSha, ThreadList, TreeResponse, WorkspaceName } from "@pecia/wiki-api";
 import type { EditorView } from "@codemirror/view";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
-import { type FormEvent, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { type Failure, publishEdit, readText, readTree, run, useRead } from "./api.ts";
+import { useCallback, useDeferredValue, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import type { FormEvent } from "react";
+import { publishEdit, readText, readTree, run, useRead } from "./api.ts";
+import type { Failure } from "./api.ts";
 import { draftKey, loadDraft, removeDraft, saveDraft } from "./drafts.ts";
-import { fenced, Markdown, type OutlineEntry } from "./Markdown.tsx";
+import { fenced, Markdown } from "./Markdown.tsx";
+import type { OutlineEntry } from "./Markdown.tsx";
 import { conflictsIn, labelled, markerFloor, mergeThree } from "./merge.ts";
 import { openDiff, openSource, replaceText, setMarkerFloor, setPassages, showOffset } from "./source.ts";
 
@@ -89,18 +83,24 @@ const FailureNote = ({ failure }: { readonly failure: Failure }) =>
 export const Editor = (props: EditorProps) => {
   const { ws, path, tree } = props;
   // A draft this browser kept goes on from the version it started from, not from main as it is now.
-  const start = useMemo(() => {
+  // The tree is read again while the editor is open; what the editor started from stays.
+  const startOf = () => {
     const draft = loadDraft(ws, path);
     return draft === undefined
-      ? { commit: tree.commit.sha, hash: hashIn(tree, path), draft: undefined }
-      : { commit: draft.baseCommit, hash: draft.baseHash, draft: draft.text };
-    // The tree is read again while the editor is open; what the editor started from stays.
-  }, [ws, path]);
+      ? { ws, path, commit: tree.commit.sha, hash: hashIn(tree, path), draft: undefined }
+      : { ws, path, commit: draft.baseCommit, hash: draft.baseHash, draft: draft.text };
+  };
+  const [start, setStart] = useState(startOf);
+  if (start.ws !== ws || start.path !== path) {
+    setStart(startOf());
+  }
   const state = useRead(`edit:${ws}:${start.commit}:${start.hash ?? "new"}:${path}`, () =>
     start.hash === null ? Effect.succeed("") : readText(ws, start.commit, path),
   );
-  if (state._tag === "Loading") return <div className="loading">Loading…</div>;
-  if (state._tag === "Failed")
+  if (state._tag === "Loading") {
+    return <div className="loading">Loading…</div>;
+  }
+  if (state._tag === "Failed") {
     return (
       <div className="editor-failed">
         <FailureNote failure={state.failure} />
@@ -117,6 +117,7 @@ export const Editor = (props: EditorProps) => {
         )}
       </div>
     );
+  }
   return (
     <Session {...props} start={{ commit: start.commit, hash: start.hash, text: state.value }} draft={start.draft} />
   );
@@ -154,7 +155,8 @@ const Session = ({
   // The preview and the threads follow the typing without holding it up.
   const shown = useDeferredValue(text);
   const [main, setMain] = useState<Version>(() => ({ commit: tree.commit.sha, hash: hashIn(tree, path) }));
-  const [kept, setKept] = useState<Kept>("clean");
+  // The text and base the draft was last stored at, and whether the browser kept it.
+  const [stored, setStored] = useState<{ text: string; base: Base; saved: boolean } | undefined>();
   const [notice, setNotice] = useState<string | undefined>(
     draft === undefined ? undefined : "Restored your unpublished draft of this page.",
   );
@@ -183,39 +185,58 @@ const Session = ({
   const settleFirst = main.hash !== null && (conflicts > 0 || strays > 0);
   const page = useMemo(() => ({ ws, sha: base.commit, at: undefined, path }), [ws, base.commit, path]);
 
-  useEffect(() => {
-    if (host.current === null) return undefined;
-    const opened = openSource({ parent: host.current, text, onChange: (next) => setText(next) });
-    view.current = opened;
+  // The editor is made once; from then on it holds the text, and `setText` follows it.
+  const open = useEffectEvent((parent: HTMLDivElement) => {
+    const opened = openSource({ parent, text, onChange: (next) => setText(next) });
     // The offset is of main's page, which a restored draft no longer is.
-    if (draft === undefined && openAt !== undefined) showOffset(opened, openAt);
+    if (draft === undefined && openAt !== undefined) {
+      showOffset(opened, openAt);
+    }
     opened.focus();
+    return opened;
+  });
+  useEffect(() => {
+    if (host.current === null) {
+      return undefined;
+    }
+    const opened = open(host.current);
+    view.current = opened;
     return () => {
       opened.destroy();
       view.current = null;
     };
-    // The editor is made once; from then on it holds the text, and `setText` follows it.
   }, []);
   useEffect(() => view.current?.dispatch({ effects: setMarkerFloor.of(floor) }), [floor]);
 
   // The draft is stored a moment after the last change, and at once when the page is left.
-  const latest = useRef({ text, base, dirty });
-  latest.current = { text, base, dirty };
-  const store = useCallback((): boolean => {
-    const current = latest.current;
-    if (done.current || !current.dirty) return true;
-    return saveDraft(ws, path, { text: current.text, baseCommit: current.base.commit, baseHash: current.base.hash });
-  }, [ws, path]);
+  const store = useEffectEvent((): boolean => {
+    if (done.current || !dirty) {
+      return true;
+    }
+    return saveDraft(ws, path, { text, baseCommit: base.commit, baseHash: base.hash });
+  });
+  // A draft that went back to clean was removed; what was stored before says nothing now.
+  if (!dirty && stored !== undefined) {
+    setStored(undefined);
+  }
+  const keptNow = (): Kept => {
+    if (!dirty) {
+      return "clean";
+    }
+    if (stored === undefined || stored.text !== text || stored.base !== base) {
+      return "pending";
+    }
+    return stored.saved ? "saved" : "failed";
+  };
+  const kept = keptNow();
   useEffect(() => {
     if (!dirty) {
       removeDraft(ws, path);
-      setKept("clean");
       return undefined;
     }
-    setKept("pending");
-    const timer = setTimeout(() => setKept(store() ? "saved" : "failed"), 400);
+    const timer = setTimeout(() => setStored({ text, base, saved: store() }), 400);
     return () => clearTimeout(timer);
-  }, [text, base, dirty, ws, path, store]);
+  }, [text, base, dirty, ws, path]);
   useEffect(() => {
     const leaving = () => void store();
     globalThis.addEventListener("pagehide", leaving);
@@ -223,11 +244,13 @@ const Session = ({
       globalThis.removeEventListener("pagehide", leaving);
       leaving();
     };
-  }, [store]);
+  }, []);
   // The browser keeps one draft of a page. Another tab that edits the page writes over this one's.
   useEffect(() => {
     const written = (event: StorageEvent) => {
-      if (event.key !== draftKey(ws, path) || event.newValue === null || done.current) return;
+      if (event.key !== draftKey(ws, path) || event.newValue === null || done.current) {
+        return;
+      }
       setNotice(
         "This page is being edited in another tab of this browser too. The browser keeps one draft of a page: the one typed in last.",
       );
@@ -237,7 +260,9 @@ const Session = ({
   }, [ws, path]);
   // Only a draft the browser could not keep is lost by leaving, so only then does leaving ask.
   useEffect(() => {
-    if (kept !== "failed") return undefined;
+    if (kept !== "failed") {
+      return undefined;
+    }
     const ask = (event: BeforeUnloadEvent) => event.preventDefault();
     globalThis.addEventListener("beforeunload", ask);
     return () => globalThis.removeEventListener("beforeunload", ask);
@@ -254,9 +279,13 @@ const Session = ({
   // Where each open thread's passage is in the draft, highlighted in the source.
   useEffect(() => {
     const ranges = (threads ?? []).flatMap((thread) => {
-      if (thread.state !== "open" || thread.anchor === null) return [];
+      if (thread.state !== "open" || thread.anchor === null) {
+        return [];
+      }
       const located = locate(thread.anchor, shown);
-      if (located === undefined) return [];
+      if (located === undefined) {
+        return [];
+      }
       const from = unitIndex(shown, located.start);
       const to = unitIndex(shown, located.end);
       return from === undefined || to === undefined ? [] : [{ from, to }];
@@ -267,7 +296,9 @@ const Session = ({
   /** Main's version of the page now, or `undefined` if it could not be read. */
   const readMain = useCallback(async (): Promise<Version | undefined> => {
     const read = await run(readTree(ws, "main"));
-    if (!read.ok) return undefined;
+    if (!read.ok) {
+      return undefined;
+    }
     const now = { commit: read.value.commit.sha, hash: hashIn(read.value, path) };
     setMain(now);
     return now;
@@ -298,7 +329,9 @@ const Session = ({
     const merged = mergeThree(base.text, mine, theirs);
     setCrlf(usesCrlf(read.value));
     setBase({ commit: now.commit, hash: now.hash, text: theirs });
-    if (view.current !== null) replaceText(view.current, merged.text);
+    if (view.current !== null) {
+      replaceText(view.current, merged.text);
+    }
     setNotice(
       merged.conflicts === 0
         ? "This page changed on main. Its changes are merged into your draft: look it over, then publish."
@@ -311,7 +344,9 @@ const Session = ({
   const publish = async (message: string) => {
     const content = published(text);
     const of = JSON.stringify([base.hash, content, message]);
-    if (key.current?.of !== of) key.current = { of, key: IdempotencyKey.make(crypto.randomUUID()) };
+    if (key.current?.of !== of) {
+      key.current = { of, key: IdempotencyKey.make(crypto.randomUUID()) };
+    }
     setBusy(true);
     setProblem(undefined);
     const result = await run(
@@ -509,7 +544,9 @@ const PublishDialog = ({
     dialog.current?.showModal();
   }, []);
   useEffect(() => {
-    if (diff.current === null) return undefined;
+    if (diff.current === null) {
+      return undefined;
+    }
     const opened = openDiff({ parent: diff.current, original, text });
     return () => opened.destroy();
   }, [original, text]);

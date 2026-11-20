@@ -188,7 +188,9 @@ export default Cloudflare.Worker(
     const settings: Effect.Effect<Access.Settings> = Effect.gen(function* () {
       const secret = yield* sandboxClientSecret;
       // Cloudflare reveals a token's secret only when it creates the token; Alchemy keeps it from then on.
-      if (secret === undefined) return yield* Effect.die("the sandbox service token's secret is not in the state");
+      if (secret === undefined) {
+        return yield* Effect.die("the sandbox service token's secret is not in the state");
+      }
       return {
         issuer: accessTeam,
         audience: yield* audience,
@@ -234,8 +236,9 @@ export default Cloudflare.Worker(
         // A limiter that cannot answer lets the request through: the endpoints check their own credentials.
         (error) => Effect.as(Effect.logWarning("rate limit not checked", { error: error.message }), { success: true }),
       );
-      if (!limited.success)
+      if (!limited.success) {
         return HttpServerResponse.text("too many requests", { status: 429, headers: { "retry-after": "60" } });
+      }
       const oauth = yield* OAuth.make({
         origin: new URL(yield* selfUrl).origin,
         kv: yield* oauthKv.raw,
@@ -248,9 +251,13 @@ export default Cloudflare.Worker(
           Effect.provideService(Reader.Readers, reader),
           Effect.provideService(StageName, stage),
         );
-      if (path !== "/mcp") return yield* services(Effect.provide(route(request), [accessLayer, workspacesLayer]));
+      if (path !== "/mcp") {
+        return yield* services(Effect.provide(route(request), [accessLayer, workspacesLayer]));
+      }
       const admission = yield* services(admit(request));
-      if (admission._tag === "Refused") return admission.response;
+      if (admission._tag === "Refused") {
+        return admission.response;
+      }
       return yield* services(Effect.provideService(mcp, McpGrant, admission.grant));
     });
 
@@ -260,7 +267,9 @@ export default Cloudflare.Worker(
           // The binding's calls need the request they serve, so the reader is made for each one.
           const reader = yield* Effect.provideService(Reader.make, Repos, yield* ArtifactsRepos.make(artifacts));
           const path = new URL((yield* HttpServerRequest.HttpServerRequest).url, "http://pecia").pathname;
-          if (path === "/mcp" || isOAuthPath(path)) return yield* mcpAndOAuth(path, reader);
+          if (path === "/mcp" || isOAuthPath(path)) {
+            return yield* mcpAndOAuth(path, reader);
+          }
           return yield* api.pipe(
             Effect.provideService(Reader.Readers, reader),
             Effect.provideService(StageOrigin, new URL(yield* selfUrl).origin),

@@ -1,14 +1,14 @@
-import {
-  type CommentId,
-  type CreateThreadRequest,
-  type EditRequest,
-  type Ref,
-  type ReplyRequest,
-  type SetThreadStateRequest,
-  type ThreadFilter,
-  type ThreadId,
-  WikiApi,
-  type WorkspaceName,
+import { WikiApi } from "@pecia/wiki-api";
+import type {
+  CommentId,
+  CreateThreadRequest,
+  EditRequest,
+  Ref,
+  ReplyRequest,
+  SetThreadStateRequest,
+  ThreadFilter,
+  ThreadId,
+  WorkspaceName,
 } from "@pecia/wiki-api";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -18,7 +18,7 @@ import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 
 // The viewer's calls to the Control Worker, through a client derived from the
 // shared contract. Cloudflare Access signed the browser in before it loaded the
@@ -35,9 +35,12 @@ type Call<A, E> = Effect.Effect<A, E, HttpClient.HttpClient>;
 export type Failure = { readonly _tag: "LoggedOut" } | { readonly _tag: "Failed"; readonly message: string };
 
 const failureOf = (error: unknown): Failure => {
-  if (Predicate.isTagged(error, "Unauthorized")) return { _tag: "LoggedOut" };
-  if (Predicate.hasProperty(error, "message") && Predicate.isString(error.message))
+  if (Predicate.isTagged(error, "Unauthorized")) {
+    return { _tag: "LoggedOut" };
+  }
+  if (Predicate.hasProperty(error, "message") && Predicate.isString(error.message)) {
     return { _tag: "Failed", message: error.message };
+  }
   return { _tag: "Failed", message: String(error) };
 };
 
@@ -46,7 +49,9 @@ export const run = async <A, E>(
   call: Call<A, E>,
 ): Promise<{ ok: true; value: A } | { ok: false; failure: Failure; error: E | undefined }> => {
   const exit = await runtime.runPromiseExit(call);
-  if (Exit.isSuccess(exit)) return { ok: true, value: exit.value };
+  if (Exit.isSuccess(exit)) {
+    return { ok: true, value: exit.value };
+  }
   const error = Exit.findErrorOption(exit);
   // A defect or an interruption has no typed error; its cause says what happened.
   return {
@@ -64,20 +69,25 @@ export type ReadState<A> =
 /** The answer of `call`, read again when `key` changes. */
 export const useRead = <A, E>(key: string, call: () => Call<A, E>): ReadState<A> => {
   const [state, setState] = useState<{ key: string; read: ReadState<A> }>({ key, read: { _tag: "Loading" } });
+  // `call` is a new function on every render; `key` names what it reads.
+  const read = useEffectEvent(() => run(call()));
   useEffect(() => {
     let current = true;
-    setState({ key, read: { _tag: "Loading" } });
-    void run(call()).then((result) => {
-      if (!current) return;
+    // A new key reads as Loading until its answer, since `state.key` is still the old one.
+    const answer = async () => {
+      const result = await read();
+      if (!current) {
+        return;
+      }
       setState({
         key,
         read: result.ok ? { _tag: "Loaded", value: result.value } : { _tag: "Failed", failure: result.failure },
       });
-    });
+    };
+    void answer();
     return () => {
       current = false;
     };
-    // `call` is a new function on every render; `key` names what it reads.
   }, [key]);
   return state.key === key ? state.read : { _tag: "Loading" };
 };

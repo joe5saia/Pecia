@@ -9,7 +9,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Headers } from "./Access.ts";
-import { type LogEntry, root, Server } from "./Server.ts";
+import { root, Server } from "./Server.ts";
+import type { LogEntry } from "./Server.ts";
 
 // What the scenarios do through the product's public interfaces: call its
 // HTTP API as each kind of caller, and run sandboxes the way an orchestrator
@@ -71,9 +72,9 @@ export const eventually = <A, E, R>(
 /** The events the Worker logged for `workspace`, such as `{ event: "land", status: "landed", ... }`. */
 export const eventsOf = Effect.fnUntraced(function* (workspace: string) {
   const entries: ReadonlyArray<LogEntry> = yield* (yield* Server).logs;
-  return entries
-    .map((entry) => entry.annotations)
-    .filter((annotations) => typeof annotations["event"] === "string" && annotations["workspace"] === workspace);
+  return entries.flatMap(({ annotations }) =>
+    typeof annotations["event"] === "string" && annotations["workspace"] === workspace ? [annotations] : [],
+  );
 });
 
 /**
@@ -111,7 +112,9 @@ const decodeTokens = Schema.decodeUnknownSync(TokenResponse);
 export const createWorkspace = Effect.fnUntraced(function* (name: string) {
   const server = yield* Server;
   const created = yield* api("POST", "/workspaces", { body: { name } });
-  if (created.status !== 200) return yield* Effect.die(new Error(`creating '${name}' answered ${created.status}`));
+  if (created.status !== 200) {
+    return yield* Effect.die(new Error(`creating '${name}' answered ${created.status}`));
+  }
   return {
     name,
     head: server.artifacts.git(name, "rev-parse", "refs/heads/main"),
@@ -148,10 +151,11 @@ export const openSandbox = Effect.fnUntraced(function* (
 ): Effect.fn.Return<Sandbox, never, Server | Scope.Scope> {
   const server = yield* Server;
   const created = yield* api("POST", `/workspaces/${workspace}/sessions`, { body: request });
-  if (created.status !== 200)
+  if (created.status !== 200) {
     return yield* Effect.die(
       new Error(`creating a session answered ${created.status}: ${JSON.stringify(created.body)}`),
     );
+  }
   const session = decodeSession(created.body);
   const home = yield* Effect.acquireRelease(
     Effect.promise(() => mkdtemp(join(tmpdir(), "pecia-e2e-sandbox-"))),
@@ -185,7 +189,9 @@ export const openSandbox = Effect.fnUntraced(function* (
             (error, stdout, stderr) => {
               // A command that could not start, or was killed, has no exit code of its own.
               let exitCode = 0;
-              if (error !== null) exitCode = typeof error.code === "number" ? error.code : 1;
+              if (error !== null) {
+                exitCode = typeof error.code === "number" ? error.code : 1;
+              }
               evidence(`${session.sessionId}$ ${command} ${args.join(" ").slice(0, 200)} -> ${exitCode}\n${stderr}`);
               resolve({ exitCode, stdout, stderr });
             },
@@ -195,7 +201,9 @@ export const openSandbox = Effect.fnUntraced(function* (
   /** `git -C docs ...`, failing the scenario when git fails. */
   const git = Effect.fnUntraced(function* (...args: ReadonlyArray<string>) {
     const result = yield* exec("git", ["-C", docs, ...args]);
-    if (result.exitCode !== 0) return yield* Effect.die(new Error(`git ${args.join(" ")} failed: ${result.stderr}`));
+    if (result.exitCode !== 0) {
+      return yield* Effect.die(new Error(`git ${args.join(" ")} failed: ${result.stderr}`));
+    }
     return result.stdout.trim();
   });
   const write = (path: string, content: string) => Effect.promise(() => writeFile(join(docs, path), content));
@@ -210,7 +218,9 @@ export const openSandbox = Effect.fnUntraced(function* (
     FORK_REMOTE: session.forkRemote,
     MAIN_REMOTE: session.mainRemote,
   });
-  if (setup.exitCode !== 0) return yield* Effect.die(new Error(`setup.sh failed: ${setup.stderr}`));
+  if (setup.exitCode !== 0) {
+    return yield* Effect.die(new Error(`setup.sh failed: ${setup.stderr}`));
+  }
 
   const tool = Effect.fnUntraced(function* (name: string, ...args: ReadonlyArray<string>) {
     const result = yield* exec(name, args);

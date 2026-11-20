@@ -162,7 +162,9 @@ export const unitIndex = (text: string, offset: number): number | undefined => {
   let units = 0;
   let points = 0;
   for (const character of text) {
-    if (points === offset) return units;
+    if (points === offset) {
+      return units;
+    }
     units += character.length;
     points += 1;
   }
@@ -172,7 +174,9 @@ export const unitIndex = (text: string, offset: number): number | undefined => {
 /** How many code points of `text` come before UTF-16 index `index`. */
 export const codePointIndex = (text: string, index: number): number => {
   let points = 0;
-  for (let units = 0; units < index; points += 1) units += (text.codePointAt(units) ?? 0) > 0xffff ? 2 : 1;
+  for (let units = 0; units < index; points += 1) {
+    units += (text.codePointAt(units) ?? 0) > 0xff_ff ? 2 : 1;
+  }
   return points;
 };
 
@@ -186,7 +190,9 @@ const firstCodePoints = (text: string, length: number): string => Array.from(tex
 export const anchorAt = (text: string, commit: CommitSha, start: number, end: number): Anchor | undefined => {
   const from = unitIndex(text, start);
   const to = unitIndex(text, end);
-  if (from === undefined || to === undefined || to <= from) return undefined;
+  if (from === undefined || to === undefined || to <= from) {
+    return undefined;
+  }
   return {
     commit,
     start,
@@ -203,8 +209,12 @@ export const findQuote = (
   quote: string,
 ): { readonly start: number; readonly end: number } | "not_found" | "ambiguous" => {
   const first = text.indexOf(quote);
-  if (first === -1) return "not_found";
-  if (text.indexOf(quote, first + 1) !== -1) return "ambiguous";
+  if (first === -1) {
+    return "not_found";
+  }
+  if (text.indexOf(quote, first + 1) !== -1) {
+    return "ambiguous";
+  }
   const start = codePointIndex(text, first);
   return { start, end: start + Array.from(quote).length };
 };
@@ -224,7 +234,9 @@ export interface Located {
 
 /** How closely `text` holds `pattern` somewhere, from 0 to 1. */
 const closeness = (text: string, pattern: string): number => {
-  if (pattern.length === 0) return 1;
+  if (pattern.length === 0) {
+    return 1;
+  }
   const [best] = search(text, pattern, pattern.length);
   return best === undefined ? 0 : 1 - best.errors / pattern.length;
 };
@@ -242,15 +254,18 @@ export const locate = (
   text: string,
 ): Located | undefined => {
   const { exact, prefix, suffix } = anchor;
-  if (exact.length === 0) return undefined;
+  if (exact.length === 0) {
+    return undefined;
+  }
   const at = unitIndex(text, anchor.start);
   if (
     at !== undefined &&
     text.startsWith(exact, at) &&
     text.slice(0, at).endsWith(prefix) &&
     text.startsWith(suffix, at + exact.length)
-  )
+  ) {
     return { start: anchor.start, end: anchor.end, how: "exact" };
+  }
 
   const maxErrors = Math.floor(exact.length / 4);
   const matches = search(text, exact, maxErrors);
@@ -266,7 +281,9 @@ export const locate = (
     (winner, candidate) => (winner === undefined || candidate.score > winner.score ? candidate : winner),
     undefined,
   );
-  if (best === undefined) return undefined;
+  if (best === undefined) {
+    return undefined;
+  }
   return {
     start: codePointIndex(text, best.match.start),
     end: codePointIndex(text, best.match.end),

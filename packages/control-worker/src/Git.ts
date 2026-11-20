@@ -1,4 +1,5 @@
-import { CommitSha, ForkTooLarge, type RemoteUrl, tokenSecret } from "@pecia/wiki-api";
+import { CommitSha, ForkTooLarge, tokenSecret } from "@pecia/wiki-api";
+import type { RemoteUrl } from "@pecia/wiki-api";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Match from "effect/Match";
@@ -31,8 +32,12 @@ class PushRejected extends Data.TaggedError("PushRejected")<{ readonly ref: stri
 class RefNotFound extends Data.TaggedError("RefNotFound")<{ readonly ref: string }> {}
 
 const describe = (cause: unknown): string => {
-  if (typeof cause === "string") return cause;
-  if (typeof cause === "object" && cause !== null && "message" in cause) return String(cause.message);
+  if (typeof cause === "string") {
+    return cause;
+  }
+  if (typeof cause === "object" && cause !== null && "message" in cause) {
+    return String(cause.message);
+  }
   return JSON.stringify(cause) ?? "unknown error";
 };
 
@@ -134,7 +139,9 @@ const tooLarge = (limits: LandLimits, limit: keyof LandLimits) => new ForkTooLar
 const limitedFs = (limits: LandLimits, onFits: (fetched: Fetched) => void): MemoryFs =>
   new MemoryFs({
     admit: (path, data) => {
-      if (!path.endsWith(".pack")) return;
+      if (!path.endsWith(".pack")) {
+        return;
+      }
       Match.valueTags(Pack.measure(data, limits), {
         Fits: ({ objects, inflatedBytes }) => onFits({ packBytes: data.byteLength, objects, inflatedBytes }),
         Exceeds: ({ limit }) => {
@@ -176,16 +183,18 @@ const packPath = ".git/objects/pack/pack-fork.pack";
  * What isomorphic-git has parsed of the repo's packs. Without one it parses a pack's index again on
  * every call, which for a land of many commits is more CPU time than a Durable Object gets.
  */
-type Cache = object;
+type Cache = NonNullable<Parameters<typeof git.readCommit>[0]["cache"]>;
 
 /** The parents of a commit in the repo, or none if the repo does not have the commit. */
 const parentsOf = async (fs: MemoryFs, cache: Cache, oid: string): Promise<ReadonlyArray<string>> => {
   try {
     const { commit } = await git.readCommit({ fs, dir, oid, cache });
     return commit.parent;
-  } catch (cause) {
-    if (cause instanceof git.Errors.NotFoundError) return [];
-    throw cause;
+  } catch (error) {
+    if (error instanceof git.Errors.NotFoundError) {
+      return [];
+    }
+    throw error;
   }
 };
 
@@ -201,9 +210,13 @@ const descendsFrom = async (fs: MemoryFs, cache: Cache, head: string, ancestor: 
   const queue = [head];
   for (let oid = queue.pop(); oid !== undefined; oid = queue.pop()) {
     const parents = await parentsOf(fs, cache, oid);
-    if (parents.includes(ancestor)) return true;
+    if (parents.includes(ancestor)) {
+      return true;
+    }
     for (const parent of parents) {
-      if (seen.has(parent)) continue;
+      if (seen.has(parent)) {
+        continue;
+      }
       seen.add(parent);
       queue.push(parent);
     }
@@ -239,18 +252,26 @@ export const land = Effect.fn("Git.land")(function* (options: {
     return yield* new GitError({ operation: "fetch fork", cause: "the fork has no main branch" });
   }
   const head = CommitSha.make(forkHead);
-  if (options.expectedForkHead !== undefined && head !== options.expectedForkHead) return { _tag: "ForkMoved", head };
-  if (head === mainHead) return { _tag: "NothingToLand" };
+  if (options.expectedForkHead !== undefined && head !== options.expectedForkHead) {
+    return { _tag: "ForkMoved", head };
+  }
+  if (head === mainHead) {
+    return { _tag: "NothingToLand" };
+  }
 
   const fetched = yield* smart(
     SmartHttp.fetchPack(endpoint(fork), { want: head, have: mainHead, maxBytes: limits.transferBytes }),
   );
   // A fork without main's head has not merged it. Its whole history is not downloaded to find that out.
-  if (fetched._tag === "NoCommonCommit") return { _tag: "Behind", fetched: undefined };
-  if (fetched._tag === "TooLarge") return yield* tooLarge(limits, "transferBytes");
+  if (fetched._tag === "NoCommonCommit") {
+    return { _tag: "Behind", fetched: undefined };
+  }
+  if (fetched._tag === "TooLarge") {
+    return yield* tooLarge(limits, "transferBytes");
+  }
   const { pack } = fetched;
 
-  const packs: Fetched[] = [];
+  const packs: Array<Fetched> = [];
   const fs = limitedFs(limits, (admitted) => void packs.push(admitted));
   const cache: Cache = {};
   yield* Effect.tryPromise({
@@ -270,14 +291,18 @@ export const land = Effect.fn("Git.land")(function* (options: {
   // Not the binding's `log`: it follows first parents only, and after
   // `git merge upstream/main` the old main head is usually a second parent.
   const descends = yield* attempt("read fork commits", () => descendsFrom(fs, cache, head, mainHead));
-  if (!descends) return behind;
+  if (!descends) {
+    return behind;
+  }
 
   // The pack goes to main as the fork sent it, deltas and all, and main moves only if it is still at `mainHead`.
   const pushed = yield* smart(
     SmartHttp.pushPack(endpoint(main), { ref: "refs/heads/main", from: mainHead, to: head, pack }),
   );
   // Main moved between the caller's look and the push.
-  if (pushed._tag === "Rejected") return behind;
+  if (pushed._tag === "Rejected") {
+    return behind;
+  }
 
   // A failed note doesn't undo the land.
   yield* Effect.catch(addNote(fs, cache, main, head, options.note), (error) =>
@@ -364,12 +389,18 @@ const unreadable = async (
 ): Promise<string | undefined> => {
   if (from !== undefined) {
     const oid = await git.writeTree({ fs, dir, tree: from.entries.map((entry) => keptEntry(entry)) });
-    if (oid !== from.sha) return path;
+    if (oid !== from.sha) {
+      return path;
+    }
   }
   for (const entry of tree) {
-    if (entry._tag !== "Directory") continue;
+    if (entry._tag !== "Directory") {
+      continue;
+    }
     const found = await unreadable(fs, entry.entries, entry.from, path === "" ? entry.name : `${path}/${entry.name}`);
-    if (found !== undefined) return found;
+    if (found !== undefined) {
+      return found;
+    }
   }
   return undefined;
 };
@@ -420,10 +451,14 @@ export const buildCommit = Effect.fn("Git.buildCommit")(function* (options: {
   const fs = new MemoryFs();
   yield* attempt("init", () => git.init({ fs, dir, defaultBranch: "main" }));
   const lossy = yield* attempt("check trees", () => unreadable(fs, options.tree, root, ""));
-  if (lossy !== undefined) return { _tag: "Unreadable", directory: lossy };
+  if (lossy !== undefined) {
+    return { _tag: "Unreadable", directory: lossy };
+  }
   const written: Array<string> = [];
   const tree = yield* attempt("write tree", () => writeNewTree(fs, options.tree, written));
-  if (tree === root.sha) return { _tag: "Unchanged" };
+  if (tree === root.sha) {
+    return { _tag: "Unchanged" };
+  }
   const signed = (who: Signature) => ({ ...who, timestamp: at, timezoneOffset: 0 });
   const commit = yield* attempt("write commit", () =>
     git.writeCommit({
@@ -441,7 +476,9 @@ export const buildCommit = Effect.fn("Git.buildCommit")(function* (options: {
   const pack = yield* attempt("pack commit", async () => {
     // A file written twice, in two places, is one object.
     const packed = await git.packObjects({ fs, dir, oids: [...new Set([commit, ...written])], write: false });
-    if (packed.packfile === undefined) throw new Error("no pack was built");
+    if (packed.packfile === undefined) {
+      throw new Error("no pack was built");
+    }
     return packed.packfile;
   });
   return { _tag: "Built", sha: CommitSha.make(commit), pack };
@@ -507,10 +544,14 @@ const addNote = Effect.fnUntraced(function* (
   const pack = yield* attempt("pack note", async () => {
     const { tree } = await git.readTree({ fs, dir, oid: commit, cache });
     const added = tree.find((entry) => entry.path === sha);
-    if (added === undefined) throw new Error(`the notes have no entry for ${sha}`);
+    if (added === undefined) {
+      throw new Error(`the notes have no entry for ${sha}`);
+    }
     const { commit: written } = await git.readCommit({ fs, dir, oid: commit, cache });
     const packed = await git.packObjects({ fs, dir, oids: [commit, written.tree, added.oid], write: false, cache });
-    if (packed.packfile === undefined) throw new Error("no pack was built");
+    if (packed.packfile === undefined) {
+      throw new Error("no pack was built");
+    }
     return packed.packfile;
   });
   const pushed = yield* smart(

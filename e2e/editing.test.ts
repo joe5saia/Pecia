@@ -3,7 +3,8 @@ import { EditResponse, maxPageBytes, ThreadList, TreeResponse } from "@pecia/wik
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
-import { type EdgeRequest, Server, ServerLive } from "./support/Server.ts";
+import { Server, ServerLive } from "./support/Server.ts";
+import type { EdgeRequest } from "./support/Server.ts";
 import { api, createWorkspace, eventsOf, eventually, openSandbox } from "./support/Wiki.ts";
 
 // A person's edit of a page, as the viewer publishes it (docs/editing.md):
@@ -43,7 +44,7 @@ const publish = (
   });
 
 /** The `page.edit` events among `events`, in the order the Worker logged them. */
-const pageEdits = (events: ReadonlyArray<Record<string, unknown>>) =>
+const pageEdits = (events: ReadonlyArray<Schema.JsonObject>) =>
   events.filter((event) => event["event"] === "page.edit");
 
 /** The publish calls for `workspace` among the requests the edge received; `status` is undefined until one is answered. */
@@ -90,7 +91,9 @@ layer(ServerLive("editing"), { excludeTestServices: true })("editing", (it) => {
         );
         expect(published.status).toBe(200);
         const answer = decodeEdit(published.body);
-        if (answer.status !== "published") throw new Error(`the edit was ${answer.status}`);
+        if (answer.status !== "published") {
+          throw new Error(`the edit was ${answer.status}`);
+        }
 
         expect(yield* wiki.head).toBe(answer.sha);
         expect(yield* wiki.git("rev-parse", `${answer.sha}^`)).toBe(before);
@@ -264,7 +267,9 @@ layer(ServerLive("editing"), { excludeTestServices: true })("editing", (it) => {
         const landed = yield* Fiber.join(landing);
         expect(landed.exitCode).toBe(0);
         const edit = decodeEdit((yield* Fiber.join(publishing)).body);
-        if (edit.status !== "published") throw new Error(`the edit was ${edit.status}`);
+        if (edit.status !== "published") {
+          throw new Error(`the edit was ${edit.status}`);
+        }
         expect(yield* wiki.head).toBe(edit.sha);
         expect(yield* wiki.git("rev-parse", `${edit.sha}^`)).toBe(landed.output.replace("landed ", ""));
         expect(yield* wiki.show("c.md")).toBe("c, by the agent");
@@ -287,7 +292,9 @@ layer(ServerLive("editing"), { excludeTestServices: true })("editing", (it) => {
         expect(both.map((answer) => answer.status).toSorted((one, other) => one - other)).toEqual([200, 409]);
         const won = both.find((answer) => answer.status === 200);
         const winner = decodeEdit(won?.body);
-        if (winner.status !== "published") throw new Error(`the edit was ${winner.status}`);
+        if (winner.status !== "published") {
+          throw new Error(`the edit was ${winner.status}`);
+        }
         expect(yield* wiki.head).toBe(winner.sha);
         expect(yield* wiki.git("rev-parse", `${winner.sha}^`)).toBe(edit.sha);
         expect(both.find((answer) => answer.status === 409)?.body).toMatchObject({
@@ -313,7 +320,9 @@ layer(ServerLive("editing"), { excludeTestServices: true })("editing", (it) => {
           (yield* publish("both", "page.md", pages.get("page.md") ?? "", "one, says the person\n\ntwo\n\nthree\n"))
             .body,
         );
-        if (edit.status !== "published") throw new Error(`the edit was ${edit.status}`);
+        if (edit.status !== "published") {
+          throw new Error(`the edit was ${edit.status}`);
+        }
 
         expect(yield* agent.land).toMatchObject({ exitCode: 2, output: "behind" });
         const merge = yield* agent.mergeUpstream;
@@ -331,7 +340,9 @@ layer(ServerLive("editing"), { excludeTestServices: true })("editing", (it) => {
       const edit = decodeEdit(
         (yield* publish("caught-up", "README.md", pages.get("README.md") ?? "", "# Edited\n")).body,
       );
-      if (edit.status !== "published") throw new Error(`the edit was ${edit.status}`);
+      if (edit.status !== "published") {
+        throw new Error(`the edit was ${edit.status}`);
+      }
       // The agent takes the person's commit and pushes it to its fork: a fast-forward, with no commit of its own.
       expect(yield* agent.mergeUpstream).toBe(edit.sha);
       expect(yield* agent.land).toMatchObject({ exitCode: 0, output: "nothing to land" });
@@ -412,7 +423,7 @@ layer(ServerLive("editing"), { excludeTestServices: true })("editing", (it) => {
           ["half\ud83d.md", "invalid_path"],
           ["nul\u0000.md", "invalid_path"],
           ["tab\tbed.md", "invalid_path"],
-          ["back\\slash.md", "invalid_path"],
+          [String.raw`back\slash.md`, "invalid_path"],
           [`dir/${"é".repeat(127)}.md`, "invalid_path"],
         ] as const;
         const answers = yield* Effect.forEach(places, ([path]) => publish("limits", path, null, "x\n"));
@@ -495,7 +506,7 @@ layer(ServerLive("editing"), { excludeTestServices: true })("editing", (it) => {
         // Git takes any bytes as a name. Artifacts hands a name over as text, so these come back changed.
         const made = yield* agent.exec("bash", [
           "-c",
-          "mkdir -p docs/d && printf 'x\\n' > docs/d/$'caf\\xe9.md' && printf 'page\\n' > docs/d/page.md && printf '#!/bin/sh\\n' > docs/run.sh && chmod +x docs/run.sh",
+          String.raw`mkdir -p docs/d && printf 'x\n' > docs/d/$'caf\xe9.md' && printf 'page\n' > docs/d/page.md && printf '#!/bin/sh\n' > docs/run.sh && chmod +x docs/run.sh`,
         ]);
         expect(made.exitCode).toBe(0);
         yield* agent.git("add", "--all");

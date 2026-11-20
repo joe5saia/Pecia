@@ -30,8 +30,12 @@ export default (env: Env) => {
       body: JSON.stringify({ operation, repo, args }),
     });
     const answer: unknown = await response.json();
-    if (isFailure(answer)) throw Object.assign(new Error(answer.error.message), { code: answer.error.code });
-    if (!isAnswer(answer)) throw new Error(`the fake Artifacts answered ${response.status}`);
+    if (isFailure(answer)) {
+      throw Object.assign(new Error(answer.error.message), { code: answer.error.code });
+    }
+    if (!isAnswer(answer)) {
+      throw new Error(`the fake Artifacts answered ${response.status}`);
+    }
     return answer.ok;
   };
 

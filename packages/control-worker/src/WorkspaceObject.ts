@@ -7,7 +7,8 @@ import * as Effect from "effect/Effect";
 import * as ArtifactsRepos from "./ArtifactsRepos.ts";
 import * as Logs from "./Logs.ts";
 import { Repos } from "./Repos.ts";
-import { Sql, type SqlValue } from "./Sql.ts";
+import { Sql } from "./Sql.ts";
+import type { SqlValue } from "./Sql.ts";
 import * as Workspace from "./Workspace.ts";
 
 // The workspace Durable Object (docs/mvp.md, "Workspace Durable Object"): one
@@ -23,7 +24,9 @@ export const Wikis = Effect.flatMap(Stage, (stage) =>
 const duration = Effect.fnUntraced(function* (name: string, fallback: Duration.Duration) {
   const value = yield* Effect.orDie(Config.Duration(name).pipe(Config.withDefault(fallback)));
   // A limit of zero would end every session, delete a fork mid-push or retry a sweep without a pause.
-  if (!Duration.isPositive(value)) return yield* Effect.die(new Error(`${name} must be longer than zero`));
+  if (!Duration.isPositive(value)) {
+    return yield* Effect.die(new Error(`${name} must be longer than zero`));
+  }
   return value;
 });
 
@@ -54,7 +57,7 @@ export const WorkspaceObjectLive = WorkspaceObject.make(
 
       const workspace = yield* Workspace.make.pipe(
         Effect.provideService(Sql, {
-          exec: (query: string, ...bindings: readonly SqlValue[]) =>
+          exec: (query: string, ...bindings: ReadonlyArray<SqlValue>) =>
             storage.sql.exec(query, ...bindings).pipe(
               Effect.flatMap((cursor) => cursor.toArray()),
               Effect.provide(context),

@@ -1,11 +1,14 @@
 import { markdown } from "@codemirror/lang-markdown";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { unifiedMergeView } from "@codemirror/merge";
-import { EditorState, type Extension, StateEffect, StateField } from "@codemirror/state";
-import { Decoration, type DecorationSet, EditorView, WidgetType } from "@codemirror/view";
+import { EditorState, StateEffect, StateField } from "@codemirror/state";
+import type { Extension } from "@codemirror/state";
+import { Decoration, EditorView, WidgetType } from "@codemirror/view";
+import type { DecorationSet } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
-import { type ConflictBlock, conflictsIn, markerOf } from "./merge.ts";
+import { conflictsIn, markerOf } from "./merge.ts";
+import type { ConflictBlock } from "./merge.ts";
 
 // The editor's text area: CodeMirror on a page's markdown source
 // (docs/editing.md, "The editor"). It is loaded with Editor.tsx, only when
@@ -63,8 +66,14 @@ const passages = StateField.define<DecorationSet>({
   create: () => Decoration.none,
   update: (value, transaction) => {
     let replaced: ReadonlyArray<{ readonly from: number; readonly to: number }> | undefined;
-    for (const effect of transaction.effects) if (effect.is(setPassages)) replaced = effect.value;
-    if (replaced === undefined) return value.map(transaction.changes);
+    for (const effect of transaction.effects) {
+      if (effect.is(setPassages)) {
+        replaced = effect.value;
+      }
+    }
+    if (replaced === undefined) {
+      return value.map(transaction.changes);
+    }
     // The ranges were found in text a moment older than the document, which may have got shorter since.
     const length = transaction.newDoc.length;
     return Decoration.set(
@@ -135,7 +144,11 @@ const markerFloorField = StateField.define<number>({
   create: () => 0,
   update: (value, transaction) => {
     let floor = value;
-    for (const effect of transaction.effects) if (effect.is(setMarkerFloor)) floor = effect.value;
+    for (const effect of transaction.effects) {
+      if (effect.is(setMarkerFloor)) {
+        floor = effect.value;
+      }
+    }
     return floor;
   },
 });
@@ -151,7 +164,9 @@ const conflictDecorations = (state: EditorState): DecorationSet => {
       const line = state.doc.line(first + index);
       const found = markerOf(line.text);
       const splits = side === mineLine && found?.kind === "split" && found.size === size;
-      if (splits) side = mainLine;
+      if (splits) {
+        side = mainLine;
+      }
       return (splits || index === 0 || index === last - first ? markerLine : side).range(line.from);
     });
     return [Decoration.widget({ widget: new ConflictBar(block), block: true, side: -1 }).range(block.from), ...lines];
@@ -182,7 +197,9 @@ const conflictMarkers: NonNullable<NonNullable<Parameters<typeof markdown>[0]>["
       name: "ConflictMarker",
       before: "Blockquote",
       parse: (cx, line) => {
-        if (line.pos > 0 || markerOf(line.text) === undefined) return false;
+        if (line.pos > 0 || markerOf(line.text) === undefined) {
+          return false;
+        }
         cx.addElement(cx.elt("ConflictMarker", cx.lineStart, cx.lineStart + line.text.length));
         cx.nextLine();
         return true;
@@ -217,7 +234,9 @@ export const openSource = (options: {
         conflicts,
         EditorView.contentAttributes.of({ "aria-label": "Page source" }),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) options.onChange(update.state.doc.toString());
+          if (update.docChanged) {
+            options.onChange(update.state.doc.toString());
+          }
         }),
       ],
     }),

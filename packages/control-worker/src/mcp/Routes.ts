@@ -50,7 +50,8 @@ export const route = Effect.fn("Mcp.route")(
     const path = url.pathname;
 
     if (path === "/.well-known/oauth-protected-resource/mcp")
-      // RFC 9728 §3: its `resource` is exactly the URL the client connects to.
+    // RFC 9728 §3: its `resource` is exactly the URL the client connects to.
+    {
       return json(200, {
         resource: oauth.resource,
         authorization_servers: [oauth.origin],
@@ -58,29 +59,36 @@ export const route = Effect.fn("Mcp.route")(
         bearer_methods_supported: ["header"],
         resource_name: "pecia",
       });
+    }
 
-    if (path === "/tools/pecia-git-credential")
+    if (path === "/tools/pecia-git-credential") {
       return HttpServerResponse.text(gitCredentialScript, {
         contentType: "text/x-shellscript; charset=utf-8",
         headers: { "cache-control": "no-cache", "x-content-type-options": "nosniff" },
       });
+    }
 
     if (path === "/authorize") {
       const access = yield* Access;
       const caller = yield* Effect.option(access.verify(request.headers["cf-access-jwt-assertion"] ?? ""));
-      if (Option.isNone(caller)) return json(401, { error: "the Access sign-in is missing or wrong" });
+      if (Option.isNone(caller)) {
+        return json(401, { error: "the Access sign-in is missing or wrong" });
+      }
       return yield* authorize(web, caller.value);
     }
 
     if (path.startsWith("/git/sessions/")) {
       const sessionId = decodeSession(path.slice("/git/sessions/".length));
       const remote = decodeRemote(url.searchParams.get("remote"));
-      if (request.method !== "POST") return json(405, { error: "use POST" });
-      if (Option.isNone(sessionId) || Option.isNone(remote))
+      if (request.method !== "POST") {
+        return json(405, { error: "use POST" });
+      }
+      if (Option.isNone(sessionId) || Option.isNone(remote)) {
         return json(400, {
           error: "invalid_request",
           error_description: "expected /git/sessions/<id>?remote=fork|main",
         });
+      }
       const workspaces = yield* Workspaces;
       return yield* gitEndpoint(
         web,
