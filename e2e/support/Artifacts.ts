@@ -90,6 +90,8 @@ export interface Artifacts {
   readonly corrupt: (operation: BindingOperation, repo: string) => Effect.Effect<void>;
   /** Refuse every push to `repo` with 403, as Artifacts does for a token that cannot write. */
   readonly refusePushes: (repo: string) => Effect.Effect<void>;
+  /** Apply the next push to `repo` and answer it 502: the push went through and its answer is lost. */
+  readonly losePushAnswer: (repo: string) => Effect.Effect<void>;
   /**
    * Answer fetches from `repo` with deltas that name their base by object ID
    * (REF_DELTA), as a server that ignores the client's `ofs-delta` may.
@@ -165,6 +167,7 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
         /** The secrets of revoked tokens, which Artifacts still recognizes. */
         const revoked = new Set<string>();
         const refused = new Set<string>();
+        const unanswered = new Set<string>();
         const byId = new Set<string>();
         const calls: Array<{ readonly operation: string; readonly repo: string }> = [];
         const corrupted = new Set<string>();
@@ -236,6 +239,11 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
           const output: Buffer[] = [];
           backend.stdout.on("data", (chunk: Buffer) => output.push(chunk));
           backend.on("close", () => {
+            if (request.method === "POST" && needsWrite && unanswered.delete(repo ?? "")) {
+              evidence(`git push to ${repo ?? ""} applied, its answer lost`);
+              response.writeHead(502).end("Bad gateway");
+              return;
+            }
             // A CGI response: headers, a blank line, then the body.
             const raw = Buffer.concat(output);
             const split = raw.indexOf("\r\n\r\n");
@@ -479,6 +487,10 @@ export const startArtifacts = (evidence: (line: string) => void): Effect.Effect<
           refusePushes: (repo) =>
             Effect.sync(() => {
               refused.add(repo);
+            }),
+          losePushAnswer: (repo) =>
+            Effect.sync(() => {
+              unanswered.add(repo);
             }),
           calls: Effect.sync(() => [...calls]),
           refDeltas: (repo) =>

@@ -9,7 +9,7 @@ The MVP gives every coding-agent sandbox its own Cloudflare Artifacts repo, fork
 - **Storage:** Cloudflare Artifacts hosts every repo, on our own Cloudflare account. Sandboxes use a normal git clone; ArtifactFS (Cloudflare's lazy-mount filesystem driver) is not used.
 - **Isolation:** one forked repo per sandbox session, following Artifacts' guidance of one repo per agent or session.
 - **Merging:** done by the agent, in its sandbox, with `git merge`.
-- **Publishing:** a land call. The service accepts only fast-forwards and is the only writer to main.
+- **Publishing:** a land call. The service accepts only fast-forwards and is the only writer to main. (Since the MVP the service also commits a person's edit from the viewer on main itself: [editing.md](editing.md).)
 
 ## Background: Cloudflare Artifacts
 
@@ -43,7 +43,7 @@ Artifacts is Cloudflare's Git-compatible versioned storage. Repos are created, f
 
 - Agents without a persistent execution environment (see Phase 2).
 - Server-side merging, conflict tracking and undo.
-- Any web UI, human editor, live collaboration, search or per-path permissions. Humans read the wiki by cloning main with a read token. (A read-only viewer followed the MVP: [viewer.md](viewer.md).)
+- Any web UI, human editor, live collaboration, search or per-path permissions. Humans read the wiki by cloning main with a read token. (A viewer followed the MVP, [viewer.md](viewer.md), and then an editor in it, [editing.md](editing.md).)
 
 ## Architecture
 

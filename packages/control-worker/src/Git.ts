@@ -7,6 +7,7 @@ import * as git from "isomorphic-git";
 import http from "isomorphic-git/http/web";
 import { MemoryFs } from "./MemoryFs.ts";
 import * as Pack from "./Pack.ts";
+import type { TreeEntry, TreeSha } from "./Repos.ts";
 import * as SmartHttp from "./SmartHttp.ts";
 
 // The git operations the service runs itself: seeding a new wiki and landing
@@ -283,6 +284,182 @@ export const land = Effect.fn("Git.land")(function* (options: {
     Effect.logWarning("land: note not recorded", { sha: head, error: error.message }),
   );
   return { _tag: "Landed", sha: head, fetched: size };
+});
+
+/**
+ * A directory as an edit leaves it (docs/editing.md, "Building the commit"):
+ * each entry kept as main has it, by its hash, or written anew. Only what is
+ * written anew is made and pushed, so an edit never holds the wiki.
+ */
+export type NewTree = ReadonlyArray<NewEntry>;
+
+export type NewEntry =
+  | { readonly _tag: "Kept"; readonly entry: TreeEntry }
+  | {
+      readonly _tag: "File";
+      readonly name: string;
+      readonly executable: boolean;
+      readonly content: Uint8Array<ArrayBuffer>;
+    }
+  /** `from` is the directory as main has it, or `undefined` for one the edit makes. */
+  | {
+      readonly _tag: "Directory";
+      readonly name: string;
+      readonly entries: NewTree;
+      readonly from: ReadTree | undefined;
+    };
+
+/** A directory of main as the service read it: its hash and its entries. */
+export interface ReadTree {
+  readonly sha: TreeSha;
+  readonly entries: ReadonlyArray<TreeEntry>;
+}
+
+/** Who a commit names. */
+export interface Signature {
+  readonly name: string;
+  readonly email: string;
+}
+
+/** The commit of an edit, before it is pushed. */
+export type BuiltCommit =
+  /** `pack` holds the new files, their directories and the commit. */
+  | { readonly _tag: "Built"; readonly sha: CommitSha; readonly pack: Uint8Array<ArrayBuffer> }
+  /** The new tree is the tree `parent` already has. There is nothing to commit. */
+  | { readonly _tag: "Unchanged" }
+  /**
+   * The directory at `directory` (`""` for the root) does not write back to the hash main has for it,
+   * so what was read of it is not all there is: a name that is not UTF-8, for one. Nothing was built.
+   */
+  | { readonly _tag: "Unreadable"; readonly directory: string };
+
+export type PushedCommit =
+  | { readonly _tag: "Committed" }
+  /** Main is not at `parent`: something other than this service moved it. */
+  | { readonly _tag: "Rejected"; readonly reason: string };
+
+/** A tree entry's mode, as git writes it, and the kind of object its hash names. */
+const gitEntry = (type: TreeEntry["type"]) =>
+  Match.value(type).pipe(
+    Match.when("tree", () => ({ mode: "040000", type: "tree" }) as const),
+    Match.when("blob", () => ({ mode: "100644", type: "blob" }) as const),
+    Match.when("exec", () => ({ mode: "100755", type: "blob" }) as const),
+    Match.when("symlink", () => ({ mode: "120000", type: "blob" }) as const),
+    Match.when("gitlink", () => ({ mode: "160000", type: "commit" }) as const),
+    Match.exhaustive,
+  );
+
+const keptEntry = (kept: TreeEntry) => ({ path: kept.name, oid: kept.sha, ...gitEntry(kept.type) });
+
+/**
+ * The first directory `tree` rewrites whose entries, written as they were read, do not give the
+ * hash main has for it; by its path. Such a directory would be committed changed in ways nobody
+ * asked for: a name that is not UTF-8 comes back from Artifacts as other text.
+ */
+const unreadable = async (
+  fs: MemoryFs,
+  tree: NewTree,
+  from: ReadTree | undefined,
+  path: string,
+): Promise<string | undefined> => {
+  if (from !== undefined) {
+    const oid = await git.writeTree({ fs, dir, tree: from.entries.map((entry) => keptEntry(entry)) });
+    if (oid !== from.sha) return path;
+  }
+  for (const entry of tree) {
+    if (entry._tag !== "Directory") continue;
+    const found = await unreadable(fs, entry.entries, entry.from, path === "" ? entry.name : `${path}/${entry.name}`);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+};
+
+/** Write the files and directories of `tree` that are new, and answer the tree's hash. `written` collects what was made. */
+const writeNewTree = async (fs: MemoryFs, tree: NewTree, written: Array<string>): Promise<string> => {
+  const entries = await Promise.all(
+    tree.map((entry) =>
+      Match.valueTags(entry, {
+        Kept: ({ entry: kept }) => Promise.resolve(keptEntry(kept)),
+        Directory: async ({ name, entries: below }) => {
+          const oid = await writeNewTree(fs, below, written);
+          return { path: name, oid, ...gitEntry("tree") };
+        },
+        File: async ({ name, executable, content }) => {
+          const oid = await git.writeBlob({ fs, dir, blob: content });
+          written.push(oid);
+          return { path: name, oid, ...gitEntry(executable ? "exec" : "blob") };
+        },
+      }),
+    ),
+  );
+  // isomorphic-git puts the entries in git's order itself.
+  const oid = await git.writeTree({ fs, dir, tree: entries });
+  written.push(oid);
+  return oid;
+};
+
+/**
+ * The commit of `tree` on top of `parent`, in memory (docs/editing.md,
+ * "Building the commit"). The commit's author is the person; its committer is
+ * the service, which is what tells a person's edit from an agent's land.
+ *
+ * The pack holds only the new files, their directories and the commit. They
+ * name everything else by hash, and main has those objects already.
+ */
+export const buildCommit = Effect.fn("Git.buildCommit")(function* (options: {
+  /** The commit `main` points at now, and its root directory. */
+  readonly parent: CommitSha;
+  readonly root: ReadTree;
+  readonly tree: NewTree;
+  readonly author: Signature;
+  readonly message: string;
+  /** When the commit is made, in seconds since the epoch. */
+  readonly at: number;
+}): Effect.fn.Return<BuiltCommit, GitError> {
+  const { parent, root, author, at } = options;
+  const fs = new MemoryFs();
+  yield* attempt("init", () => git.init({ fs, dir, defaultBranch: "main" }));
+  const lossy = yield* attempt("check trees", () => unreadable(fs, options.tree, root, ""));
+  if (lossy !== undefined) return { _tag: "Unreadable", directory: lossy };
+  const written: Array<string> = [];
+  const tree = yield* attempt("write tree", () => writeNewTree(fs, options.tree, written));
+  if (tree === root.sha) return { _tag: "Unchanged" };
+  const signed = (who: Signature) => ({ ...who, timestamp: at, timezoneOffset: 0 });
+  const commit = yield* attempt("write commit", () =>
+    git.writeCommit({
+      fs,
+      dir,
+      commit: {
+        tree,
+        parent: [parent],
+        message: options.message.endsWith("\n") ? options.message : `${options.message}\n`,
+        author: signed(author),
+        committer: signed(service),
+      },
+    }),
+  );
+  const pack = yield* attempt("pack commit", async () => {
+    // A file written twice, in two places, is one object.
+    const packed = await git.packObjects({ fs, dir, oids: [...new Set([commit, ...written])], write: false });
+    if (packed.packfile === undefined) throw new Error("no pack was built");
+    return packed.packfile;
+  });
+  return { _tag: "Built", sha: CommitSha.make(commit), pack };
+});
+
+/** Push a built commit and move `main` to it, if `main` is still at `parent`. */
+export const pushCommit = Effect.fn("Git.pushCommit")(function* (
+  main: Remote,
+  parent: CommitSha,
+  built: { readonly sha: CommitSha; readonly pack: Uint8Array<ArrayBuffer> },
+): Effect.fn.Return<PushedCommit, GitError> {
+  const pushed = yield* smart(
+    SmartHttp.pushPack(endpoint(main), { ref: "refs/heads/main", from: parent, to: built.sha, pack: built.pack }),
+  );
+  return Match.valueTags(pushed, {
+    Updated: (): PushedCommit => ({ _tag: "Committed" }),
+    Rejected: ({ reason }): PushedCommit => ({ _tag: "Rejected", reason }),
+  });
 });
 
 /** The old value of a ref that a push creates. */

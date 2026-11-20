@@ -13,7 +13,7 @@ import {
 import type * as Effect from "effect/Effect";
 import type * as HttpClient from "effect/http/HttpClient";
 import * as Match from "effect/Match";
-import { type FormEvent, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createThread,
   currentReader,
@@ -357,11 +357,21 @@ export const Comments = ({
   page,
   text,
   article,
+  unpublished,
+  onThreads,
 }: {
   readonly page: Page;
   /** The page's markdown source, or `undefined` for a file shown without it: it takes comments on the whole page only. */
   readonly text: string | undefined;
-  readonly article: RefObject<HTMLElement | null>;
+  /** The rendered page, or `null` while none is in the document. */
+  readonly article: HTMLElement | null;
+  /**
+   * Whether `text` is a draft in the editor and not the page at `page.sha`. An anchor is made
+   * from a file at a commit, so a passage of a draft takes no new comment and no re-pin.
+   */
+  readonly unpublished?: boolean | undefined;
+  /** The page's threads each time they are read, for the editor to show where their passages are. */
+  readonly onThreads?: ((threads: ThreadList) => void) | undefined;
 }) => {
   const [version, setVersion] = useState(0);
   const refresh = useCallback(() => setVersion((current) => current + 1), []);
@@ -394,6 +404,15 @@ export const Comments = ({
     };
   }, [page.ws, page.path, version]);
 
+  useEffect(() => {
+    if (threads !== undefined) onThreads?.(threads);
+  }, [threads, onThreads]);
+
+  // A comment being written on a passage is dropped once the passage is a draft's.
+  useEffect(() => {
+    if (unpublished === true) setDraft((current) => (current?._tag === "Passage" ? undefined : current));
+  }, [unpublished]);
+
   // Someone, or an agent, may have answered while the reader was elsewhere.
   useEffect(() => {
     globalThis.addEventListener("focus", refresh);
@@ -403,8 +422,7 @@ export const Comments = ({
   useEffect(() => {
     if (text === undefined) return undefined;
     const changed = () => {
-      const root = article.current;
-      if (root !== null) setSelected(selectedPassage(root, text, document.getSelection()));
+      if (article !== null) setSelected(selectedPassage(article, text, document.getSelection()));
     };
     document.addEventListener("selectionchange", changed);
     return () => document.removeEventListener("selectionchange", changed);
@@ -420,7 +438,7 @@ export const Comments = ({
   );
 
   useEffect(() => {
-    const root = article.current;
+    const root = article;
     if (root === null || text === undefined || !canHighlight) return undefined;
     const ranges = new Map<ThreadId, Range>();
     for (const { thread, located } of placed) {
@@ -441,7 +459,7 @@ export const Comments = ({
 
   // A click on a highlighted passage opens its thread.
   useEffect(() => {
-    const root = article.current;
+    const root = article;
     if (root === null) return undefined;
     const clicked = (event: MouseEvent) => {
       const caret = document.caretPositionFromPoint(event.clientX, event.clientY);
@@ -473,10 +491,11 @@ export const Comments = ({
 
   /** A reply to a thread whose passage moved also moves its anchor to where the passage is now. */
   const repin = (item: Placed): AnchorRequest | undefined =>
-    item.located === undefined || item.located.how === "exact"
+    unpublished === true || item.located === undefined || item.located.how === "exact"
       ? undefined
       : { _tag: "Range", ref: page.sha, start: item.located.start, end: item.located.end };
 
+  const offered = unpublished === true ? undefined : selected;
   const shown = placed.filter((item) => item.thread.state === show);
   const sorted = shown.toSorted((a, b) => order(a) - order(b));
   const count = (state: "open" | "resolved") => placed.filter((item) => item.thread.state === state).length;
@@ -509,13 +528,13 @@ export const Comments = ({
       )}
       {draft === undefined ? (
         <div className="new-comment">
-          {selected !== undefined && (
+          {offered !== undefined && (
             <button
               type="button"
               className="primary"
               // Keep the page's selection while the button is pressed.
               onMouseDown={(event) => event.preventDefault()}
-              onClick={() => setDraft(selected)}
+              onClick={() => setDraft(offered)}
             >
               Comment on selection
             </button>
@@ -523,7 +542,8 @@ export const Comments = ({
           <button type="button" onClick={() => setDraft({ _tag: "Page" })}>
             Comment on page
           </button>
-          {selected === undefined && text !== undefined && (
+          {unpublished === true && <p className="note">Publish your changes to comment on a passage.</p>}
+          {unpublished !== true && selected === undefined && text !== undefined && (
             <p className="note">Select text in the page to comment on it.</p>
           )}
         </div>

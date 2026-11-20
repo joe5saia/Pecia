@@ -49,6 +49,7 @@ layer(ServerLive("contract"), { excludeTestServices: true })("the running contra
         "PATCH /workspaces/{ws}/comments/{comment}": "200 400 401 403 404 500 503",
         "DELETE /workspaces/{ws}/comments/{comment}": "200 400 401 403 404 500 503",
         "GET /auth/me": "200 400 401 500",
+        "POST /workspaces/{ws}/edits": "200 400 401 403 404 409 422 500 502 503",
       });
     }),
   );

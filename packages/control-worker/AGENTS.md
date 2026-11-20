@@ -1,6 +1,6 @@
 # Control Worker
 
-The Worker, the workspace Durable Object and their Alchemy stack. Repo-wide rules are in the root `AGENTS.md`; the design is in `docs/mvp.md`, `docs/viewer.md` and `docs/mcp.md`.
+The Worker, the workspace Durable Object and their Alchemy stack. Repo-wide rules are in the root `AGENTS.md`; the design is in `docs/mvp.md`, `docs/viewer.md`, `docs/editing.md` and `docs/mcp.md`.
 
 ## Gotchas
 
@@ -25,7 +25,7 @@ The Worker, the workspace Durable Object and their Alchemy stack. Repo-wide rule
 - `@cloudflare/workers-oauth-provider` keeps its grants, tokens and CIMD cache in the `OAuthKV` namespace. Pecia's own MCP state is in each workspace's SQLite: `session_bindings` (a session's principal, grant and workload), `git_tokens` (the hash of each `wiki:git` token), `main_read_tokens` (the IDs of main's read tokens to revoke at end) and `idempotency_keys`.
 - Do not build a `Response` at module load: workerd refuses I/O objects outside a request, and the bundle then fails to start. Build each one inside the handler.
 - A raw `/mcp` call, as from curl, needs `_meta` with `io.modelcontextprotocol/protocolVersion` and `io.modelcontextprotocol/clientCapabilities` in its params, plus the `MCP-Method` and `MCP-Name` headers. The official client sends them.
-- `Conflict`, `NotYourSession` and `IdempotencyKeyReuse` come only from MCP calls. The HTTP API's handlers wrap the shared workspace methods in `overHttp`, which turns them into defects, so they are on no HTTP endpoint.
+- `Conflict`, `NotYourSession` and `IdempotencyKeyReuse` come from MCP calls, and the first and the last from a person's edit (`POST /workspaces/:ws/edits`) too. The HTTP API's other handlers wrap the shared workspace methods in `overHttp`, which turns them into defects, so they are on no other HTTP endpoint.
 - The Host and Origin checks in `admit` compare with the stage's own URL (`Cloudflare.URL` in `worker.ts`): its custom domain when it has one, else workers.dev. A stage with a custom domain does not serve MCP on its workers.dev URL.
 - A principal and a workload issuer are code (`principals`, `workloadIssuers` in `worker.ts`). Two principals with one email or workload is a defect at start.
 
@@ -53,6 +53,20 @@ The Worker, the workspace Durable Object and their Alchemy stack. Repo-wide rule
 - `MemoryFs` keeps the bytes it is given and does not copy them. Do not write to a buffer after handing it over.
 - Pass `cache` to every isomorphic-git call of a land. Without it each call parses the pack index again, which is more CPU time than a Durable Object gets.
 - isomorphic-git cannot say "I have this commit" for a commit it holds no objects of. That is why `SmartHttp.ts` speaks the fetch and push itself, and it is what keeps a land from downloading the whole wiki.
+
+### A person's edit (Edit.ts, Git.buildCommit, Git.pushCommit, Workspace.edit)
+
+- An edit has no session and no fork: `Workspace.edit` commits on main's head under `lock`. Anything else that moves main must hold `lock` too, or the push after the check can replace it.
+- `Edit.plan` reads only the directories on the way to the edit's pages. Keep it so: reading the whole tree makes every edit cost what the wiki weighs.
+- `Git.buildCommit` writes the commit in memory and `Git.pushCommit` pushes a pack of only the objects it wrote. They name main's other objects by hash, so the pack is valid only on top of `parent`: it is pushed with main's head as the expected old value, and a refusal is 502, not a retry.
+- The two are apart so that `Workspace.edit` can insert the `edits` row between them, with the idempotency key. A call that dies after the push (Artifacts' answer lost, the object restarted) leaves no `idempotency_keys` row, and the row in `edits` is the only way its retry finds the commit (`publishedBefore`). Insert after the push and the retry is a `Conflict` against the person's own edit.
+- `buildCommit` writes each directory it changes back from what `readTree` gave and compares the hash before it writes the new one (`unwritable_directory`). `readTree` answers names as text, so a name that is not UTF-8 would come back as another name and the edit would rename a file nobody touched. Artifacts refuses a push with such a name today, so only the fake shows the case (`e2e/editing.test.ts`). Do not drop the check for speed: it hashes, it does not call Artifacts.
+- The path rules in `Edit.ts` (`reserved_path`, `invalid_path`) are what `git fsck` and a checkout on a Mac or Windows refuse. A tree with such a name makes every clone of the wiki fail, so a rule taken out is checked against `git clone` with `transfer.fsckObjects`.
+- The commit's committer is `service` (`pecia`) and its author the principal. Agents are told to recognize a person's edit by that, so do not sign a land's or a workspace's first commit that way.
+- Every commit an edit makes goes in `edits`. `isLanded` reads it: without the row, a session whose fork was fast-forwarded to the edit ends `parked` and its fork is kept for good. A row whose push failed stays; no fork can have its commit.
+- `edits` gained the `key` and `input_hash` columns after its first deploy, and `CREATE TABLE IF NOT EXISTS` does not add a column. No stage that is kept has the old table (it was only on a preview); a later change to a table needs its own `ALTER TABLE` in `Sql.ts`.
+- The `Origin` check is in the handler and compares with the request's own origin (`HttpServerRequest.toURL`), not with the stage's URL as `admit` does for MCP: the viewer is served on every hostname of a stage, and a page publishes to the hostname it came from. `StageOrigin`, provided with each request in `worker.ts`, only gives the author address its host. It cannot be a requirement of `EditorAuth`: a middleware's requirements are fixed when the API's layer is built, before there is a request.
+- The body limit of 64 kB is raised to `maxEditBytes` in `EditorAuthLive`, for this endpoint only.
 
 ### Tests
 

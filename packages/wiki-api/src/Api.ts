@@ -20,16 +20,22 @@ import {
   ThreadId,
   ThreadList,
 } from "./Comments.ts";
+import { EditRequest, EditResponse } from "./Edits.ts";
 import {
   AnchorMismatch,
   ArtifactsUnavailable,
+  Conflict,
+  ForbiddenOrigin,
   ForkTooLarge,
+  IdempotencyKeyReuse,
   NotFound,
   NotYourComment,
+  PageRefused,
   SessionNotActive,
   Unauthorized,
   WorkspaceUnavailable,
 } from "./Errors.ts";
+import type { PrincipalId } from "./Mcp.ts";
 import {
   CreateSessionRequest,
   CreateSessionResponse,
@@ -94,8 +100,27 @@ export class SessionAuth extends HttpApiMiddleware.Service<SessionAuth, { provid
  */
 export class ReaderName extends Context.Service<ReaderName, string>()("pecia/ReaderName") {}
 
+/** Whether the reader may also publish edits: what `Editor` would admit. */
+export class ReaderEdits extends Context.Service<ReaderEdits, boolean>()("pecia/ReaderEdits") {}
+
 /** Reader endpoints: a person signed in through Access, or the orchestrator token. */
-export class ReaderAuth extends HttpApiMiddleware.Service<ReaderAuth, { provides: ReaderName }>()("pecia/ReaderAuth", {
+export class ReaderAuth extends HttpApiMiddleware.Service<ReaderAuth, { provides: ReaderName | ReaderEdits }>()(
+  "pecia/ReaderAuth",
+  {
+    error: Unauthorized,
+    security: { access: AccessAssertion },
+  },
+) {}
+
+/**
+ * Who publishes an edit (docs/editing.md, "Auth"): a principal, by the `id`
+ * the stack gives the person Access signed in, or `orchestrator` for a script
+ * with the orchestrator token. It is the name on the commit.
+ */
+export class Editor extends Context.Service<Editor, PrincipalId>()("pecia/Editor") {}
+
+/** The edit endpoint: a person who is a principal, or the orchestrator token. */
+export class EditorAuth extends HttpApiMiddleware.Service<EditorAuth, { provides: Editor }>()("pecia/EditorAuth", {
   error: Unauthorized,
   security: { access: AccessAssertion },
 }) {}
@@ -261,8 +286,29 @@ export class CommentsGroup extends HttpApiGroup.make("comments")
   )
   .middleware(ReaderAuth) {}
 
+/** Edits of a wiki's pages, published from the viewer (docs/editing.md). A commit is made under the `Editor`. */
+export class EditorGroup extends HttpApiGroup.make("editor")
+  .add(
+    HttpApiEndpoint.post("edit", "/workspaces/:ws/edits", {
+      params: WorkspaceParams,
+      payload: EditRequest,
+      success: EditResponse,
+      error: [
+        // A browser's call from a page of another site, which carries the person's Access cookie too.
+        ForbiddenOrigin,
+        NotFound,
+        Conflict,
+        PageRefused,
+        IdempotencyKeyReuse,
+        ArtifactsUnavailable,
+        WorkspaceUnavailable,
+      ],
+    }),
+  )
+  .middleware(EditorAuth) {}
+
 export class WikiApi extends HttpApi.make("WikiApi")
-  .add(OrchestratorGroup, SandboxGroup, ReaderGroup, CommentsGroup)
+  .add(OrchestratorGroup, SandboxGroup, ReaderGroup, CommentsGroup, EditorGroup)
   // A request that does not match its endpoint's schemas answers 400, and a
   // failure inside the service answers 500, both as RFC 9457 problems.
   .middleware(HttpApiMiddleware.ProblemDetails) {}

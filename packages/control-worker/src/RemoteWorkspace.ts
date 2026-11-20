@@ -56,6 +56,7 @@ export const overRpc = (stub: Stub): RemoteWorkspace => ({
   landAs: (sessionId, principal, expectedForkHead) => reached(stub.landAs(sessionId, principal, expectedForkHead)),
   mintTokens: (sessionId, sessionKey) => reached(stub.mintTokens(sessionId, sessionKey)),
   land: (sessionId, sessionKey) => reached(stub.land(sessionId, sessionKey)),
+  edit: (name, editor, request) => reached(stub.edit(name, editor, request)),
   sessionAuthor: (sessionId, sessionKey) => reached(stub.sessionAuthor(sessionId, sessionKey)),
   listThreads: (name, filter) => reached(stub.listThreads(name, filter)),
   createThread: (name, author, request, once) => reached(stub.createThread(name, author, request, once)),

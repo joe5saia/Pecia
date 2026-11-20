@@ -26,6 +26,9 @@ const access = new Map(
 const accessHeaders: Record<string, string> = {
   "cf-access-client-id": access.get("PECIA_ACCESS_CLIENT_ID") ?? "",
   "cf-access-client-secret": access.get("PECIA_ACCESS_CLIENT_SECRET") ?? "",
+  // The Worker publishes an edit only for a page of its own origin (docs/editing.md, "Auth"). The
+  // browser names the development server, so the proxy names the stage: the call is the proxy's own.
+  ...(api === undefined ? {} : { origin: new URL(api).origin }),
 };
 
 export default defineConfig({

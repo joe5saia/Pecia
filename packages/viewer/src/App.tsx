@@ -1,8 +1,27 @@
-import { type HistoryResponse, Ref, type TreeResponse, WorkspaceName } from "@pecia/wiki-api";
+import {
+  type CommitSha,
+  FilePath,
+  type HistoryResponse,
+  Ref,
+  type ThreadList,
+  type TreeResponse,
+  WorkspaceName,
+} from "@pecia/wiki-api";
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
-import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
+  type FormEvent,
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
+import {
+  currentReader,
   type Failure,
   fileUrl,
   listWorkspaces,
@@ -14,8 +33,8 @@ import {
 } from "./api.ts";
 import { Comments } from "./Comments.tsx";
 import { fenced, Markdown, type OutlineEntry, type Page } from "./Markdown.tsx";
-import { buildTree, type Directory, homePage, isImage, isMarkdown, titleOf } from "./paths.ts";
-import { fileHref, onLinkClick, type Route, useRoute } from "./router.ts";
+import { buildTree, type Directory, directoryOf, homePage, isImage, isMarkdown, titleOf } from "./paths.ts";
+import { editHref, fileHref, navigate, onLinkClick, type Route, useRoute } from "./router.ts";
 import { timeAgo } from "./time.ts";
 
 // The viewer's pages. Every read is of one commit: the tree names it, and the
@@ -23,6 +42,11 @@ import { timeAgo } from "./time.ts";
 
 const isWorkspaceName = Schema.is(WorkspaceName);
 const isRef = Schema.is(Ref);
+const isFilePath = Schema.is(FilePath);
+
+// The editor (docs/editing.md) comes with CodeMirror, so it is a chunk of its
+// own that only someone who opens it downloads.
+const Editor = lazy(async () => ({ default: (await import("./Editor.tsx")).Editor }));
 
 const Link = ({ href, className, children }: { href: string; className?: string; children: ReactNode }) => (
   <a href={href} className={className} onClick={onLinkClick(href)}>
@@ -158,13 +182,13 @@ const FileView = ({
   page,
   onHeadings,
   onSource,
-  articleRef,
+  onArticle,
 }: {
   page: Page;
   onHeadings: (headings: ReadonlyArray<OutlineEntry>) => void;
   /** The page's markdown source once it is read, for comments to anchor in; `undefined` for any other file. */
   onSource: (text: string | undefined) => void;
-  articleRef: RefObject<HTMLElement | null>;
+  onArticle: (article: HTMLElement | null) => void;
 }) => {
   const language = isMarkdown(page.path) ? "markdown" : languageOf(page.path);
   const state = useRead(`file:${page.ws}:${page.sha}:${page.path}`, () => readText(page.ws, page.sha, page.path));
@@ -189,10 +213,86 @@ const FileView = ({
           page={page}
           text={language === "markdown" ? text : fenced(text, language)}
           onHeadings={onHeadings}
-          articleRef={articleRef}
+          onArticle={onArticle}
         />
       )}
     </Loaded>
+  );
+};
+
+/** The language a file is edited and shown in, or `undefined` for a file that is not text. */
+const editableAs = (path: string): string | undefined => {
+  if (isMarkdown(path)) return "markdown";
+  return isImage(path) ? undefined : languageOf(path);
+};
+
+/** Where in the page's source the reader is: the start of the first rendered element under the header. */
+const readingAt = (article: HTMLElement | null): number | undefined => {
+  const elements = [...(article?.querySelectorAll<HTMLElement>("[data-src-start]") ?? [])];
+  const first = elements.find((element) => element.getBoundingClientRect().bottom > 60);
+  // The top of the page is where the editor opens anyway.
+  return first === undefined || first === elements[0] ? undefined : Number(first.dataset["srcStart"]);
+};
+
+/** Why a new page cannot be at `path`, or `undefined` if it can. */
+const newPageProblem = (path: string, paths: ReadonlyArray<string>): string | undefined => {
+  if (!isFilePath(path)) return "Write a path such as guide/setup.md, without empty, '.' or '..' parts.";
+  if (path.split("/").some((segment) => segment.toLowerCase() === ".git")) return "No page can be inside .git.";
+  if (paths.includes(path)) return "That page exists. Open it to edit it.";
+  if (paths.some((existing) => existing.startsWith(`${path}/`) || path.startsWith(`${existing}/`)))
+    return "A page and a folder cannot have the same name.";
+  if (editableAs(path) === undefined) return "Only text pages are written here, such as .md files.";
+  return undefined;
+};
+
+/** "New page" in the file tree: asks for the page's path, then opens the editor on it. */
+const NewPage = ({ ws, beside, paths }: { ws: WorkspaceName; beside: string; paths: ReadonlyArray<string> }) => {
+  const [path, setPath] = useState<string | undefined>();
+  const [problem, setProblem] = useState<string | undefined>();
+  if (path === undefined)
+    return (
+      <button type="button" className="new-page" onClick={() => setPath(directoryOf(beside))}>
+        New page
+      </button>
+    );
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const trimmed = path.trim();
+    // A name without an extension is a markdown page.
+    const named = trimmed === "" || (trimmed.split("/").at(-1) ?? "").includes(".") ? trimmed : `${trimmed}.md`;
+    const refused = newPageProblem(named, paths);
+    setProblem(refused);
+    if (refused !== undefined) return;
+    setPath(undefined);
+    navigate(editHref(ws, named));
+  };
+  return (
+    <form className="new-page" onSubmit={submit}>
+      <label>
+        Path of the new page
+        <input
+          type="text"
+          value={path}
+          autoFocus
+          spellCheck={false}
+          placeholder="guide/setup.md"
+          onChange={(event) => setPath(event.target.value)}
+        />
+      </label>
+      {problem !== undefined && (
+        <p className="note" role="alert">
+          {problem}
+        </p>
+      )}
+      <div className="actions">
+        <button type="button" className="quiet" onClick={() => setPath(undefined)}>
+          Cancel
+        </button>
+        <button type="submit" className="primary">
+          Create
+        </button>
+      </div>
+    </form>
   );
 };
 
@@ -311,18 +411,34 @@ const Resizer = ({
   );
 };
 
-const Wiki = ({ ws, path, at }: { ws: WorkspaceName; path: string; at: string | undefined }) => {
+const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: string | undefined; edit: boolean }) => {
   const ref = at !== undefined && isRef(at) ? at : "main";
-  const state = useRead(`tree:${ws}:${ref}`, () => readTree(ws, ref));
+  // The commit of the reader's own edit. Main is read at it from then on, so the page they
+  // published is the page they see, however soon a read of `main` answers the new commit.
+  const [published, setPublished] = useState<CommitSha | undefined>();
+  const read = ref === "main" ? (published ?? ref) : ref;
+  const state = useRead(`tree:${ws}:${read}`, () => readTree(ws, read));
+  const me = useRead("me", () => currentReader());
+  const mayEdit = ref === "main" && me._tag === "Loaded" && me.value.editor;
+  const [openAt, setOpenAt] = useState<number | undefined>();
+  const [threads, setThreads] = useState<ThreadList | undefined>();
+  const onThreads = useCallback((list: ThreadList) => setThreads(list), []);
+  const [unpublished, setUnpublished] = useState(false);
+  const onUnpublished = useCallback((value: boolean) => setUnpublished(value), []);
   const [outline, setOutline] = useState<ReadonlyArray<OutlineEntry>>([]);
   const [menuOpen, setMenuOpen] = useState(false);
   const onHeadings = useCallback((headings: ReadonlyArray<OutlineEntry>) => setOutline(headings), []);
   const [source, setSource] = useState<string | undefined>();
   const onSource = useCallback((text: string | undefined) => setSource(text), []);
-  const article = useRef<HTMLElement>(null);
+  // The rendered page or the editor's preview, whichever is in the document.
+  const [article, setArticle] = useState<HTMLElement | null>(null);
   const column = useRef<HTMLElement>(null);
   const [width, setWidth] = useState(storedWidth);
   useEffect(() => setMenuOpen(false), [path]);
+  useEffect(() => setThreads(undefined), [ws, path]);
+  useEffect(() => {
+    if (!edit) setUnpublished(false);
+  }, [edit]);
 
   return (
     <>
@@ -335,8 +451,15 @@ const Wiki = ({ ws, path, at }: { ws: WorkspaceName; path: string; at: string | 
           const paths = tree.files.map((file) => file.path);
           const current = path === "" ? (homePage(paths) ?? "") : path;
           const page: Page = { ws, sha: tree.commit.sha, at: ref === "main" ? undefined : ref, path: current };
+          const exists = paths.includes(current);
+          // A directory is not a page, and neither is a path through a page.
+          const isPage =
+            current !== "" &&
+            (exists || !paths.some((other) => other.startsWith(`${current}/`) || current.startsWith(`${other}/`)));
+          const language = isPage ? editableAs(current) : undefined;
+          const editing = edit && mayEdit && language !== undefined;
           return (
-            <div className={`wiki ${menuOpen ? "menu-open" : ""}`}>
+            <div className={`wiki ${menuOpen ? "menu-open" : ""} ${editing ? "editing" : ""}`}>
               <Title text={current === "" ? ws : titleOf(current)} />
               <nav className="sidebar" aria-label="Pages">
                 <div className="commit">
@@ -352,6 +475,7 @@ const Wiki = ({ ws, path, at }: { ws: WorkspaceName; path: string; at: string | 
                   )}
                   <Link href={`/history/${ws}`}>History</Link>
                 </div>
+                {mayEdit && <NewPage ws={ws} beside={current} paths={paths} />}
                 <FileTree directory={buildTree(paths)} page={page} />
                 {tree.truncated && <p className="note">This wiki has more files than the list shows.</p>}
               </nav>
@@ -360,14 +484,51 @@ const Wiki = ({ ws, path, at }: { ws: WorkspaceName; path: string; at: string | 
               </button>
               <main className="page">
                 {current === "" && <p>This wiki is empty.</p>}
-                {current !== "" &&
-                  (paths.includes(current) ? (
+                {editing && (
+                  <Suspense fallback={<div className="loading">Loading the editor…</div>}>
+                    <Editor
+                      key={current}
+                      ws={ws}
+                      path={current}
+                      tree={tree}
+                      language={language}
+                      threads={threads}
+                      openAt={openAt}
+                      onArticle={setArticle}
+                      onHeadings={onHeadings}
+                      onSource={onSource}
+                      onUnpublished={onUnpublished}
+                      onClose={(sha) => {
+                        if (sha !== undefined) setPublished(sha);
+                        setOpenAt(undefined);
+                        // A new page that was not published is nowhere to go back to.
+                        navigate(fileHref(ws, sha !== undefined || exists ? current : ""), { replace: true });
+                      }}
+                    />
+                  </Suspense>
+                )}
+                {!editing && mayEdit && exists && language !== undefined && (
+                  <div className="page-actions">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenAt(language === "markdown" ? readingAt(article) : undefined);
+                        navigate(editHref(ws, current));
+                      }}
+                    >
+                      Edit page
+                    </button>
+                  </div>
+                )}
+                {!editing &&
+                  current !== "" &&
+                  (exists ? (
                     <FileView
                       key={`${page.sha}:${current}`}
                       page={page}
                       onHeadings={onHeadings}
                       onSource={onSource}
-                      articleRef={article}
+                      onArticle={setArticle}
                     />
                   ) : (
                     <DirectoryView tree={tree} page={page} />
@@ -375,7 +536,7 @@ const Wiki = ({ ws, path, at }: { ws: WorkspaceName; path: string; at: string | 
               </main>
               <Resizer column={column} width={width} onWidth={setWidth} />
               <aside ref={column} className="outline" style={{ width }} aria-label="On this page and comments">
-                {outline.length > 1 && isMarkdown(current) && paths.includes(current) && (
+                {outline.length > 1 && isMarkdown(current) && (exists || editing) && (
                   <>
                     <h2>On this page</h2>
                     <ul>
@@ -387,12 +548,14 @@ const Wiki = ({ ws, path, at }: { ws: WorkspaceName; path: string; at: string | 
                     </ul>
                   </>
                 )}
-                {paths.includes(current) && (
+                {exists && (
                   <Comments
                     key={current}
                     page={page}
                     text={isMarkdown(current) ? source : undefined}
                     article={article}
+                    unpublished={editing && unpublished}
+                    onThreads={onThreads}
                   />
                 )}
               </aside>
@@ -464,7 +627,8 @@ const view = (route: Route): ReactNode =>
       ) : (
         <NotAWiki name={ws} />
       ),
-    File: ({ ws, path, at }) => (isWorkspaceName(ws) ? <Wiki ws={ws} path={path} at={at} /> : <NotAWiki name={ws} />),
+    File: ({ ws, path, at, edit }) =>
+      isWorkspaceName(ws) ? <Wiki ws={ws} path={path} at={at} edit={edit} /> : <NotAWiki name={ws} />,
   });
 
 export const App = () => view(useRoute().route);

@@ -91,8 +91,15 @@ layer(ServerLive("reader"), { excludeTestServices: true })("the reader", (it) =>
       expect((yield* api("GET", "/workspaces", { as: {} })).status).toBe(401);
       const person = yield* access.person("joe5saia@gmail.com");
       expect((yield* api("GET", "/workspaces", { as: person })).status).toBe(200);
-      expect((yield* api("GET", "/auth/me", { as: person })).body).toEqual({ name: "joe5saia@gmail.com" });
-      expect((yield* api("GET", "/auth/me")).body).toEqual({ name: "orchestrator" });
+      // A principal, and a script with the orchestrator token, may also publish edits (docs/editing.md, "Auth").
+      expect((yield* api("GET", "/auth/me", { as: person })).body).toEqual({
+        name: "joe5saia@gmail.com",
+        editor: true,
+      });
+      expect((yield* api("GET", "/auth/me")).body).toEqual({ name: "orchestrator", editor: true });
+      // Someone Access lets in who is not a principal reads, and does not edit.
+      const guest = yield* access.person("guest@example.com");
+      expect((yield* api("GET", "/auth/me", { as: guest })).body).toEqual({ name: "guest@example.com", editor: false });
 
       // An assertion signed by another key, or with no email, is no person.
       const forged = yield* access.assertion({ email: "joe5saia@gmail.com", sub: "x" }, { forged: true });

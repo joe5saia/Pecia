@@ -105,13 +105,14 @@ export class NotYourComment extends Schema.TaggedError<NotYourComment>()(
 
 /**
  * 409: what the caller read has changed since: a thread's revision, a page's
- * set of threads or a fork's head. Read it again and decide whether the change
- * still applies (docs/mcp.md, "Writes").
+ * set of threads, a fork's head or a page's content. Read it again and decide
+ * whether the change still applies (docs/mcp.md, "Writes"; docs/editing.md).
+ * For a page, `expected` and `actual` are its hashes, `none` where it does not exist.
  */
 export class Conflict extends Schema.TaggedError<Conflict>()(
   "Conflict",
   {
-    resource: Schema.Literals(["thread", "threads", "fork"]),
+    resource: Schema.Literals(["thread", "threads", "fork", "page"]),
     id: Schema.String,
     /** What the caller said it read, and what is there now. */
     expected: Schema.String,
@@ -120,7 +121,7 @@ export class Conflict extends Schema.TaggedError<Conflict>()(
   { httpApiStatus: 409 },
 ) {
   override get message(): string {
-    const what = { thread: "thread", threads: "the threads of", fork: "the fork of session" } as const;
+    const what = { thread: "thread", threads: "the threads of", fork: "the fork of session", page: "page" } as const;
     return `${what[this.resource]} '${this.id}' is at ${this.actual}, not ${this.expected}`;
   }
 }
@@ -137,6 +138,56 @@ export class NotYourSession extends Schema.TaggedError<NotYourSession>()(
 ) {
   override get message(): string {
     return `session '${this.sessionId}' was not started by you over MCP`;
+  }
+}
+
+/**
+ * 422: an edit writes a page the service does not commit: it is over the size
+ * limit, is not text, is where something other than a file is, has a path git
+ * or a file system would not take, or is in a directory the service cannot
+ * write back as it is. Repeating the call does not help (docs/editing.md).
+ */
+export class PageRefused extends Schema.TaggedError<PageRefused>()(
+  "PageRefused",
+  {
+    path: Schema.String,
+    reason: Schema.Literals([
+      "too_large",
+      "not_text",
+      "not_a_file",
+      "reserved_path",
+      "invalid_path",
+      "unwritable_directory",
+    ]),
+  },
+  { httpApiStatus: 422 },
+) {
+  override get message(): string {
+    const why = {
+      too_large: "is larger than a page may be",
+      not_text: "is not text",
+      not_a_file: "is not a file: a directory, a link or a file in its way is there",
+      reserved_path: "is inside .git, or a name some system reads as .git, where no page can be",
+      invalid_path:
+        "has a path that is not well-formed text, has a control character or a backslash, or has a name over 255 bytes",
+      unwritable_directory:
+        "is in a directory the service cannot write back as it is: one of its names is not UTF-8 text, or it is not as git writes one",
+    } as const satisfies Record<PageRefused["reason"], string>;
+    return `'${this.path}' ${why[this.reason]}`;
+  }
+}
+
+/**
+ * 403: a browser sent the call from a page of another site. The viewer's own
+ * pages are the only ones that publish edits (docs/editing.md, "Auth").
+ */
+export class ForbiddenOrigin extends Schema.TaggedError<ForbiddenOrigin>()(
+  "ForbiddenOrigin",
+  { origin: Schema.String },
+  { httpApiStatus: 403 },
+) {
+  override get message(): string {
+    return `a page of '${this.origin}' may not publish edits`;
   }
 }
 

@@ -1,6 +1,6 @@
 import type { CommitSha, WorkspaceName } from "@pecia/wiki-api";
 import * as Predicate from "effect/Predicate";
-import { type ComponentProps, type ReactNode, type RefObject, useEffect, useId, useRef, useState } from "react";
+import { type ComponentProps, type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import rehypeRaw from "rehype-raw";
@@ -266,16 +266,22 @@ export const Markdown = ({
   page,
   text,
   onHeadings,
-  articleRef,
+  onArticle,
 }: {
   readonly page: Page;
   readonly text: string;
   readonly onHeadings?: (headings: ReadonlyArray<OutlineEntry>) => void;
-  /** The rendered page, for comments to select in and highlight. */
-  readonly articleRef?: RefObject<HTMLElement | null>;
+  /** The rendered page each time it is put in the document or taken out, for comments to select in and highlight. */
+  readonly onArticle?: (article: HTMLElement | null) => void;
 }) => {
-  const ownArticle = useRef<HTMLElement>(null);
-  const article = articleRef ?? ownArticle;
+  const article = useRef<HTMLElement | null>(null);
+  const attach = useCallback(
+    (element: HTMLElement | null) => {
+      article.current = element;
+      onArticle?.(element);
+    },
+    [onArticle],
+  );
   const { frontMatter, body } = splitFrontMatter(text);
 
   useEffect(() => {
@@ -294,7 +300,7 @@ export const Markdown = ({
   }, [text, onHeadings]);
 
   return (
-    <article className="markdown" ref={article}>
+    <article className="markdown" ref={attach}>
       {frontMatter !== undefined && (
         <details className="front-matter">
           <summary>Front matter</summary>

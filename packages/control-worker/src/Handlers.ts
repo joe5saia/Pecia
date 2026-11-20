@@ -1,9 +1,15 @@
 import {
   type Author,
   Conflict,
+  Editor,
+  EditorAuth,
+  ForbiddenOrigin,
   IdempotencyKeyReuse,
+  maxEditBytes,
   OrchestratorAuth,
+  PrincipalId,
   ReaderAuth,
+  ReaderEdits,
   ReaderName,
   type Ref,
   SessionAuth,
@@ -32,8 +38,10 @@ import * as HttpApiError from "effect/http-api/HttpApiError";
 import * as HttpApiMiddleware from "effect/http-api/HttpApiMiddleware";
 import * as Layer from "effect/Layer";
 import * as Match from "effect/Match";
+import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
-import { Access } from "./Access.ts";
+import { Access, type Caller } from "./Access.ts";
+import { Principals } from "./Principals.ts";
 import { Readers } from "./Reader.ts";
 import type { Workspace } from "./Workspace.ts";
 
@@ -57,6 +65,27 @@ export class Workspaces extends Context.Service<
   Workspaces,
   { readonly get: (name: WorkspaceName) => RemoteWorkspace }
 >()("pecia/Workspaces") {}
+
+/**
+ * The stage's own origin, such as `https://pecia.joesaia.trade`: the hostname in the address of an edit's author.
+ * Like the reader, it is given with each request: on Cloudflare it is read from the Worker's bindings.
+ */
+export class StageOrigin extends Context.Service<StageOrigin, string>()("pecia/StageOrigin") {}
+
+/**
+ * The name `caller`'s edits go under, if it may edit (docs/editing.md, "Auth"):
+ * a person who is a principal, or the orchestrator token, which can already
+ * land anything through a session.
+ */
+const editorOf = (caller: Caller, principals: Principals["Service"]): PrincipalId | undefined =>
+  Match.valueTags(caller, {
+    Person: ({ email }) => principals.byEmail(email)?.id,
+    Orchestrator: () => orchestratorEditor,
+    Sandbox: () => undefined,
+  });
+
+/** No principal has this `id`: `Principals.make` refuses one that does. */
+export const orchestratorEditor = PrincipalId.make("orchestrator");
 
 /**
  * An HTTP call names no thread revision and no idempotency key, so neither
@@ -85,17 +114,47 @@ const OrchestratorAuthLive = Layer.effect(
 
 const ReaderAuthLive = Layer.effect(
   ReaderAuth,
-  Effect.map(Access, (access) => ({
-    access: (httpEffect, { credential }) =>
-      Effect.flatMap(access.verify(Redacted.value(credential)), (caller) =>
-        Match.valueTags(caller, {
-          Person: ({ email }) => Effect.provideService(httpEffect, ReaderName, email),
-          // A script with the orchestrator token reads, and comments as the orchestrator.
-          Orchestrator: () => Effect.provideService(httpEffect, ReaderName, "orchestrator"),
-          Sandbox: () => Effect.fail(new Unauthorized()),
+  Effect.gen(function* () {
+    const access = yield* Access;
+    const principals = yield* Principals;
+    return {
+      access: (httpEffect, { credential }) =>
+        Effect.gen(function* () {
+          const caller = yield* access.verify(Redacted.value(credential));
+          const name = Match.valueTags(caller, {
+            Person: ({ email }) => email,
+            // A script with the orchestrator token reads, and comments as the orchestrator.
+            Orchestrator: () => "orchestrator",
+            Sandbox: () => undefined,
+          });
+          if (name === undefined) return yield* new Unauthorized();
+          return yield* httpEffect.pipe(
+            Effect.provideService(ReaderName, name),
+            Effect.provideService(ReaderEdits, editorOf(caller, principals) !== undefined),
+          );
         }),
-      ),
-  })),
+    };
+  }),
+);
+
+const EditorAuthLive = Layer.effect(
+  EditorAuth,
+  Effect.gen(function* () {
+    const access = yield* Access;
+    const principals = yield* Principals;
+    return {
+      access: (httpEffect, { credential }) =>
+        Effect.gen(function* () {
+          const editor = editorOf(yield* access.verify(Redacted.value(credential)), principals);
+          if (editor === undefined) return yield* new Unauthorized();
+          return yield* httpEffect.pipe(
+            Effect.provideService(Editor, editor),
+            // An edit carries pages; every other request body is a few short fields.
+            Effect.provideService(HttpIncomingMessage.MaxBodySize, ByteSize.bytes(maxEditBytes)),
+          );
+        }),
+    };
+  }),
 );
 
 const SessionAuthLive = Layer.effect(
@@ -216,7 +275,36 @@ const CommentsLive = HttpApiBuilder.group(WikiApi, "comments", (handlers) =>
           overHttp(workspaces.get(params.ws).deleteComment(params.ws, author, params.comment)),
         ),
       )
-      .handle("currentReader", () => Effect.map(ReaderName, (name) => ({ name })));
+      .handle("currentReader", () =>
+        Effect.gen(function* () {
+          return { name: yield* ReaderName, editor: yield* ReaderEdits };
+        }),
+      );
+  }),
+);
+
+/** A person's edits, committed under the principal Access signed in. */
+const EditorLive = HttpApiBuilder.group(WikiApi, "editor", (handlers) =>
+  Effect.gen(function* () {
+    const workspaces = yield* Workspaces;
+    return handlers.handle("edit", ({ params, payload }) =>
+      Effect.gen(function* () {
+        // The browser sends the person's Access cookie with a call from any site. It also names
+        // the site, so a page of another one cannot publish as the person: only a page of the
+        // origin the call itself is sent to may, whichever of the stage's hostnames that is.
+        // A script sends no Origin.
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const origin = request.headers["origin"];
+        const own = Option.getOrUndefined(HttpServerRequest.toURL(request))?.origin;
+        if (origin !== undefined && origin !== own) return yield* new ForbiddenOrigin({ origin });
+        const principal = yield* Editor;
+        // An address made from the principal's `id`, not the Access email: git history is
+        // permanent and every agent clones it, and an email can be reassigned. Its host is the
+        // stage's own, whichever hostname the call came to.
+        const email = `${principal}@${new URL(yield* StageOrigin).hostname}`;
+        return yield* workspaces.get(params.ws).edit(params.ws, { principal, email }, payload);
+      }),
+    );
   }),
 );
 
@@ -299,7 +387,7 @@ class NoSuchEndpoint extends HttpApiError.Problem<NoSuchEndpoint>()("NoSuchEndpo
   title: "Not Found",
 }) {}
 
-/** Every request body of this API is a few short fields. A longer one answers 413. */
+/** Every request body of this API but an edit's is a few short fields. A longer one answers 413. */
 const maxBodySize = ByteSize.kilobytes(64);
 
 /**
@@ -336,11 +424,12 @@ const Failures = HttpRouter.middleware(
 
 /** The API as a router layer, for `HttpRouter.toHttpEffect` in the Worker and `toWebHandler` in tests. */
 export const ApiLive = HttpApiBuilder.layer(WikiApi).pipe(
-  Layer.provide([OrchestratorLive, SandboxLive, ReaderLive, CommentsLive]),
+  Layer.provide([OrchestratorLive, SandboxLive, ReaderLive, CommentsLive, EditorLive]),
   Layer.provide([
     OrchestratorAuthLive,
     SessionAuthLive,
     ReaderAuthLive,
+    EditorAuthLive,
     // A 400 says which part of the request was wrong.
     HttpApiMiddleware.layerProblemDetails({ includeDetails: true }),
   ]),

@@ -6,11 +6,19 @@ import { useEffect, useState } from "react";
 //
 // - `/`: the workspaces
 // - `/w/<workspace>/<path>?at=<sha>`: a file, at main or at a commit
+// - `/w/<workspace>/<path>?edit=1`: the editor on that page of main (docs/editing.md)
 // - `/history/<workspace>`: main's commits
 
 export type Route =
   | { readonly _tag: "Workspaces" }
-  | { readonly _tag: "File"; readonly ws: string; readonly path: string; readonly at: string | undefined }
+  | {
+      readonly _tag: "File";
+      readonly ws: string;
+      readonly path: string;
+      readonly at: string | undefined;
+      /** Whether the page is open in the editor. */
+      readonly edit: boolean;
+    }
   | { readonly _tag: "History"; readonly ws: string };
 
 const decode = (segment: string): string => {
@@ -29,6 +37,7 @@ export const parseRoute = (url: URL): Route => {
       ws: decode(ws),
       path: rest.map((segment) => decode(segment)).join("/"),
       at: url.searchParams.get("at") ?? undefined,
+      edit: url.searchParams.get("edit") === "1",
     };
   if (first === "history" && ws !== undefined && ws !== "") return { _tag: "History", ws: decode(ws) };
   return { _tag: "Workspaces" };
@@ -43,6 +52,9 @@ export const fileHref = (ws: string, path: string, at?: string, hash?: string): 
   const query = at === undefined ? "" : `?at=${at}`;
   return `/w/${ws}${encoded === "" ? "" : `/${encoded}`}${query}${hash === undefined || hash === "" ? "" : `#${hash}`}`;
 };
+
+/** The editor on a page of main. */
+export const editHref = (ws: string, path: string): string => `${fileHref(ws, path)}?edit=1`;
 
 /** Go to `href` in the viewer. `replace` leaves no entry to come back to, as for a redirect. */
 export const navigate = (href: string, options?: { readonly replace?: boolean }): void => {

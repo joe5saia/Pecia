@@ -1,12 +1,12 @@
 # Pecia
 
-Agent wiki on Cloudflare Artifacts. The design is in `docs/mvp.md`; comments on pages are in `docs/comments.md`; the MCP server, its OAuth sign-in and `pecia-git-credential` are in `docs/mcp.md`.
+Agent wiki on Cloudflare Artifacts. The design is in `docs/mvp.md`; comments on pages are in `docs/comments.md`; editing by people in the viewer is in `docs/editing.md`; the MCP server, its OAuth sign-in and `pecia-git-credential` are in `docs/mcp.md`.
 
 ## Layout
 
 - `packages/wiki-api`: the shared Effect Schema contract for the Control Worker API.
-- `packages/control-worker`: the Control Worker, the workspace Durable Object and its Alchemy stack (`alchemy.run.ts`). `src/Workspace.ts` holds the session and landing logic; `src/mcp/` and `src/OAuth.ts` hold the MCP server and its OAuth endpoints. `build.ts` bundles the Worker as a deploy does, for the scenarios.
-- `packages/viewer`: the read-only web UI (React and Vite), served as the Control Worker's static assets. Its design, sign-in and the way to add editing are in `docs/viewer.md`. `src/App.tsx` has every page as a component (`Workspaces` is the list of wikis, `Wiki` a wiki, `History` its commits), `src/styles.css` every style, with the fonts and colors as variables at its top. It is type-checked as its own project (`packages/viewer/tsconfig.json`), with the DOM's types; `task typecheck` covers it, and there is no viewer-only check.
+- `packages/control-worker`: the Control Worker, the workspace Durable Object and its Alchemy stack (`alchemy.run.ts`). `src/Workspace.ts` holds the session, landing and editing logic; `src/mcp/` and `src/OAuth.ts` hold the MCP server and its OAuth endpoints. `build.ts` bundles the Worker as a deploy does, for the scenarios.
+- `packages/viewer`: the web UI (React and Vite), served as the Control Worker's static assets. Its design and sign-in are in `docs/viewer.md`, its editor in `docs/editing.md`. `src/App.tsx` has every page as a component (`Workspaces` is the list of wikis, `Wiki` a wiki, `History` its commits), `src/Editor.tsx` the editor, which is loaded only when someone opens it, `src/styles.css` every style, with the fonts and colors as variables at its top. It is type-checked as its own project (`packages/viewer/tsconfig.json`), with the DOM's types; `task typecheck` covers it, and there is no viewer-only check.
 - `packages/sandbox-tools`: what runs in a sandbox: `wiki-credential`, `wiki-land`, `wiki-comments`, `setup.sh` and `agent-instructions.md`.
 - `.agents/skills/using-pecia-wiki`: the project skill that lets an Amp thread read and publish to a deployed wiki.
 - `packages/lint-rules`: the oxlint plugin `pecia`, which enforces the Effect style below. `.oxlintrc.json` loads it.
@@ -34,7 +34,7 @@ oxlint runs the `pecia` rules in JS and reserves about 6 GiB of address space fo
 
 ## Running the viewer
 
-`.amp/services.yaml` declares the one development server, `viewer` (`task dev:viewer`). In an Amp orb, `amp orb services ensure` starts it and prints its portal URL; `amp orb service logs viewer` has its output. It serves `packages/viewer` with hot reload and passes API calls to staging, so the pages show staging's wikis.
+`.amp/services.yaml` declares the one development server, `viewer` (`task dev:viewer`). In an Amp orb, `amp orb services ensure` starts it and prints its portal URL; `amp orb service logs viewer` has its output. It serves `packages/viewer` with hot reload and passes API calls to staging, so the pages show staging's wikis, and an edit or a comment made there changes them.
 
 Staging is behind Cloudflare Access, so the dev server's proxy sends staging's orchestrator token with each API call, from the file `task access:token` writes (`packages/viewer/vite.config.ts`). Run `task access:token` before starting the service; without the file every page says "Could not load this". The browser never signs in. In the orb, `agent-browser` can open either the portal URL or `http://localhost:<port>` with the port `ensure` prints; give a person only the portal URL. Each page reads from staging, so it shows "Loading…" for a few seconds: wait for the content before a screenshot.
 

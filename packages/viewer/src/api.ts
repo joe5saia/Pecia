@@ -1,6 +1,7 @@
 import {
   type CommentId,
   type CreateThreadRequest,
+  type EditRequest,
   type Ref,
   type ReplyRequest,
   type SetThreadStateRequest,
@@ -40,13 +41,19 @@ const failureOf = (error: unknown): Failure => {
   return { _tag: "Failed", message: String(error) };
 };
 
+/** `error` is the call's typed error, for a caller that acts on one of them; `failure` is what to show for any. */
 export const run = async <A, E>(
   call: Call<A, E>,
-): Promise<{ ok: true; value: A } | { ok: false; failure: Failure }> => {
+): Promise<{ ok: true; value: A } | { ok: false; failure: Failure; error: E | undefined }> => {
   const exit = await runtime.runPromiseExit(call);
   if (Exit.isSuccess(exit)) return { ok: true, value: exit.value };
+  const error = Exit.findErrorOption(exit);
   // A defect or an interruption has no typed error; its cause says what happened.
-  return { ok: false, failure: failureOf(Option.getOrElse(Exit.findErrorOption(exit), () => exit.cause)) };
+  return {
+    ok: false,
+    failure: failureOf(Option.getOrElse(error, () => exit.cause)),
+    error: Option.getOrUndefined(error),
+  };
 };
 
 export type ReadState<A> =
@@ -105,7 +112,11 @@ export const editComment = (ws: WorkspaceName, comment: CommentId, body: string)
 export const deleteComment = (ws: WorkspaceName, comment: CommentId) =>
   Effect.flatMap(client, (api) => api.comments.deleteComment({ params: { ws, comment } }));
 
-/** The name the logged-in reader's comments go under. */
+/** Publish a person's edit of pages: one commit on top of main (docs/editing.md). */
+export const publishEdit = (ws: WorkspaceName, request: EditRequest) =>
+  Effect.flatMap(client, (api) => api.editor.edit({ params: { ws }, payload: request }));
+
+/** The name the logged-in reader's comments go under, and whether they may edit pages. */
 export const currentReader = () => Effect.flatMap(client, (api) => api.comments.currentReader());
 
 export const setThreadState = (ws: WorkspaceName, thread: ThreadId, request: SetThreadStateRequest) =>

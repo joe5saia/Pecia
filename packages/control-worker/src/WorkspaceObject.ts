@@ -92,6 +92,7 @@ export const WorkspaceObjectLive = WorkspaceObject.make(
           Logs.structured(workspace.landAs(sessionId, principal, expectedForkHead)),
         mintTokens: (sessionId, sessionKey) => Logs.structured(workspace.mintTokens(sessionId, sessionKey)),
         land: (sessionId, sessionKey) => Logs.structured(workspace.land(sessionId, sessionKey)),
+        edit: (name, editor, request) => Logs.structured(workspace.edit(name, editor, request)),
         sweep: () => Logs.structured(workspace.sweep()),
         sessionAuthor: (sessionId, sessionKey) => Logs.structured(workspace.sessionAuthor(sessionId, sessionKey)),
         listThreads: (name, filter) => Logs.structured(workspace.listThreads(name, filter)),

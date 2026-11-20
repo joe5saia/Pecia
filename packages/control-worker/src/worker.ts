@@ -12,7 +12,7 @@ import { createRemoteJWKSet } from "jose";
 import { PrincipalId } from "@pecia/wiki-api";
 import * as Access from "./Access.ts";
 import * as ArtifactsRepos from "./ArtifactsRepos.ts";
-import { ApiLive, Workspaces } from "./Handlers.ts";
+import { ApiLive, StageOrigin, Workspaces } from "./Handlers.ts";
 import * as Logs from "./Logs.ts";
 import { McpGrant, McpLive, StageName, admit } from "./mcp/Server.ts";
 import { isOAuthPath, route } from "./mcp/Routes.ts";
@@ -221,6 +221,7 @@ export default Cloudflare.Worker(
         Layer.provide(
           Layer.succeed(Workspaces, { get: (name) => RemoteWorkspace.overRpc(workspaces.getByName(name)) }),
         ),
+        Layer.provide(Layer.succeed(Principals.Principals, knownPrincipals)),
       ),
     );
 
@@ -260,7 +261,10 @@ export default Cloudflare.Worker(
           const reader = yield* Effect.provideService(Reader.make, Repos, yield* ArtifactsRepos.make(artifacts));
           const path = new URL((yield* HttpServerRequest.HttpServerRequest).url, "http://pecia").pathname;
           if (path === "/mcp" || isOAuthPath(path)) return yield* mcpAndOAuth(path, reader);
-          return yield* Effect.provideService(api, Reader.Readers, reader);
+          return yield* api.pipe(
+            Effect.provideService(Reader.Readers, reader),
+            Effect.provideService(StageOrigin, new URL(yield* selfUrl).origin),
+          );
         }),
       ),
     };

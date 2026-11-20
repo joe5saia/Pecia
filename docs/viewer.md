@@ -1,6 +1,6 @@
 # The viewer
 
-A read-only web UI for people to browse a stage's wikis. It is served by the Control Worker, at the same URL as the API, so a stage has one Worker and one key.
+The web UI for people to read a stage's wikis, comment on their pages and edit them. It is served by the Control Worker, at the same URL as the API, so a stage has one Worker and one key.
 
 ## What it does
 
@@ -8,23 +8,24 @@ A read-only web UI for people to browse a stage's wikis. It is served by the Con
 - Renders markdown as GitHub does: tables, task lists, footnotes, strikethrough, autolinks, syntax-highlighted code, heading anchors, YAML front matter (folded away), raw HTML after GitHub's sanitizing rules, and Mermaid diagrams. Other text files are shown highlighted, images are shown, anything else is a download.
 - Follows links between pages relative to the page, as GitHub and a git checkout do. A link that climbs out of the wiki is shown as plain text.
 - Shows main's history and any commit of it: `?at=<sha>` reads the whole wiki at that commit.
-- Shows each page's comment threads beside it and takes new comments and replies ([comments.md](comments.md)). Comments are the one thing a reader writes; they are not in git.
+- Shows each page's comment threads beside it and takes new comments and replies ([comments.md](comments.md)). Comments are not in git.
+- Edits a page's source beside a preview and publishes it to main, for a person who is a principal ([editing.md](editing.md)).
 
 Every page and image is read at one commit: the tree names it, and everything shown with it is read at that hash. A wiki that lands while someone reads it does not mix two versions on one page.
 
 ## Signing in
 
-Every stage is behind Cloudflare Access ([operations.md](operations.md), "Access"). A browser that opens a stage is sent to sign in with Google before it gets the viewer's page, and only an allowed person gets back. Access then keeps the browser signed in for seven days with its own cookie, `CF_Authorization`, which goes with each of the viewer's calls. The viewer has no login page and the Worker keeps no login state: it checks the Access JWT of each call and takes the reader's email from it, which is the name their comments go under.
+Every stage is behind Cloudflare Access ([operations.md](operations.md), "Access"). A browser that opens a stage is sent to sign in with Google before it gets the viewer's page, and only an allowed person gets back. Access then keeps the browser signed in for seven days with its own cookie, `CF_Authorization`, which goes with each of the viewer's calls. The viewer has no login page and the Worker keeps no login state: it checks the Access JWT of each call and takes the reader's email from it, which is the name their comments go under. `GET /auth/me` answers that name and whether the reader may edit (`{ "name", "editor" }`).
 
 "Sign out" opens Access's `/cdn-cgi/access/logout`, which ends the sign-in to every application of the team. When a sign-in expires while a page is open, its next call fails and the page offers to sign in again, which reloads it through Access.
 
-A script reads with the stage's orchestrator token, as `CF-Access-Client-Id` and `CF-Access-Client-Secret`, and comments as `orchestrator`.
+A script reads with the stage's orchestrator token, as `CF-Access-Client-Id` and `CF-Access-Client-Secret`, and comments and edits as `orchestrator`.
 
 ### During development
 
-`task dev:viewer` serves the viewer and passes its API calls to a deployed Worker, by default staging. Its proxy adds staging's orchestrator token to each call, from the file `task access:token` writes (`vite.config.ts`), so the browser never signs in and never sees the token. Pages show "Could not load this" until that file exists; run `task access:token`, then restart the server. Comments written through it go under `orchestrator`.
+`task dev:viewer` serves the viewer and passes its API calls to a deployed Worker, by default staging. Its proxy adds staging's orchestrator token to each call, from the file `task access:token` writes (`vite.config.ts`), so the browser never signs in and never sees the token. Pages show "Could not load this" until that file exists; run `task access:token`, then restart the server. Comments and edits made through it go under `orchestrator`, and they change the stage's real wikis. The proxy sets each call's `Origin` to the stage's, which an edit is checked against.
 
-Whoever can open the dev server can read staging's wikis through it; an Amp portal is limited to the people who can view its thread unless someone makes it public.
+Whoever can open the dev server can read and edit staging's wikis through it; an Amp portal is limited to the people who can view its thread unless someone makes it public.
 
 ## API
 
@@ -43,17 +44,10 @@ Reads go to Artifacts from the Worker, not through the workspace's Durable Objec
 
 ## How it is built
 
-- `packages/viewer`: React and Vite. `src/api.ts` derives its client from `WikiApi`, like the sandbox tools, and is the only place the viewer runs effects. `src/Markdown.tsx` is the renderer; `src/paths.ts` resolves links.
+- `packages/viewer`: React and Vite. `src/api.ts` derives its client from `WikiApi`, like the sandbox tools, and is the only place the viewer runs effects. `src/Markdown.tsx` is the renderer; `src/paths.ts` resolves links. `src/Editor.tsx` is the editor, with CodeMirror, in a chunk that is loaded when someone first opens it.
 - `task build:viewer` writes `packages/viewer/dist`. Every Alchemy task builds it first and uploads it as the Worker's static assets. A request for a file there is answered by Cloudflare's asset layer; a navigation to any other path that is not the API's gets `index.html`.
 - `task dev:viewer` serves the viewer with hot reload and passes its API calls to a deployed Worker (`PECIA_VIEWER_API`, default staging), so the UI can be worked on without running the Worker.
 
-## Adding editing
+## Editing
 
-The viewer reads; writing stays with the service's one rule, that main only moves by a fast-forward the service makes. An editor fits that the way an agent does:
-
-1. Opening a page for editing creates a session for the browser (`POST /workspaces/:ws/sessions`, with `agent: "viewer"` and the person's name).
-2. Saving commits to the session's fork. A Worker endpoint would take the new file contents and push a commit with isomorphic-git, as a land already pushes packs; the browser never holds an Artifacts token.
-3. Publishing lands the fork. `behind` means someone else landed first: the editor shows both versions, the person resolves them, and the editor saves and lands again.
-4. Closing the editor ends the session.
-
-The renderer is already separate from where its text comes from, so a preview beside an editor such as CodeMirror can render the unsaved text with the same component. Editing needs a credential that names a person, which is the time to replace the shared key with Access.
+[editing.md](editing.md) has the editor, the publish call and what happens when a page changed on main. An edit does not go through a session: the service commits it on main, after checking that each page is still the version the person read.

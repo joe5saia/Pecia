@@ -405,7 +405,7 @@ code {
   background: var(--bg-soft);
   color: var(--fg);
 }
-.comments-panel button.primary {
+button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--bg);
@@ -633,6 +633,250 @@ code {
   .outline {
     padding: 0 18px 80px;
   }
+}
+
+/* The editor: a page's source beside its preview (Editor.tsx, source.ts) */
+
+/* Above the page's headings, which are positioned for their anchors and would take its clicks. */
+.page-actions {
+  float: right;
+  position: relative;
+  z-index: 1;
+  margin: 0 0 8px 16px;
+}
+.sidebar .new-page {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+.sidebar form.new-page {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.new-page label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-soft);
+}
+.new-page input,
+.publish input {
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.new-page input {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.new-page input:focus,
+.publish input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.new-page .note {
+  margin: 0;
+  color: var(--danger);
+}
+.new-page .actions,
+.publish .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* The editor fills the page column under the header; each pane scrolls by itself. */
+.wiki.editing .page {
+  padding: 0;
+}
+.editor {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 52px);
+  container-type: inline-size;
+}
+.editor-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft);
+  font-size: 13px;
+}
+.editor-status {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.editor-bar .note {
+  white-space: nowrap;
+}
+/* Write and Preview are tabs only where the two panes do not fit side by side. */
+.editor-bar .tabs {
+  display: none;
+  gap: 2px;
+}
+.editor-bar .tabs button {
+  padding: 2px 10px;
+  background: none;
+  border-color: transparent;
+  color: var(--fg-soft);
+}
+.editor-bar .tabs button.current {
+  border-color: var(--border);
+  background: var(--bg);
+  color: var(--fg);
+}
+.editor-banner {
+  margin: 0;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--accent-soft);
+  font-size: 13px;
+}
+.editor-banner.conflict {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+.editor .problem,
+.editor-failed .problem {
+  margin: 12px 16px;
+}
+.editor-failed {
+  padding: 12px 8px;
+}
+.editor-failed button {
+  margin-left: 16px;
+}
+.editor-panes {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.editor-source {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+}
+.editor-preview {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px 28px 64px;
+}
+@container (max-width: 760px) {
+  .editor-bar .tabs {
+    display: flex;
+  }
+  .editor-panes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .editor-source {
+    border-right: none;
+  }
+  .editor-panes.show-write .editor-preview,
+  .editor-panes.show-preview .editor-source {
+    display: none;
+  }
+}
+.cm-comment-passage {
+  background-color: rgb(227 179 65 / 0.3);
+}
+.cm-conflict-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg));
+  font: 12.5px/1.4 var(--sans);
+}
+.cm-conflict-bar span {
+  flex: 1;
+  min-width: 160px;
+}
+.cm-conflict-bar button {
+  padding: 1px 10px;
+  background: var(--bg);
+}
+.cm-conflict-marker {
+  color: var(--fg-soft);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.cm-conflict-mine {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.cm-conflict-main {
+  background: rgb(227 179 65 / 0.16);
+}
+
+dialog.publish {
+  width: min(820px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 12px 48px rgb(0 0 0 / 0.3);
+}
+dialog.publish::backdrop {
+  background: rgb(0 0 0 / 0.4);
+}
+.publish form {
+  display: grid;
+  gap: 12px;
+  padding: 20px;
+}
+.publish h2 {
+  margin: 0;
+  font-size: 17px;
+}
+.publish .note {
+  margin: 0;
+}
+.publish-diff {
+  max-height: 44vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.publish-lost {
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  font-size: 13px;
+}
+.publish-lost p,
+.publish-lost ul {
+  margin: 0;
+}
+.publish-lost ul {
+  padding-left: 20px;
+}
+.publish label {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--fg-soft);
+}
+.publish .problem {
+  margin: 0;
 }
 
 /* Markdown */

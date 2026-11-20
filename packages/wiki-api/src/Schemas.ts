@@ -207,5 +207,9 @@ export type TreeResponse = typeof TreeResponse.Type;
 export const HistoryResponse = Schema.Array(Commit);
 export type HistoryResponse = typeof HistoryResponse.Type;
 
-export const CurrentReader = Schema.Struct({ name: Schema.String });
+export const CurrentReader = Schema.Struct({
+  name: Schema.String,
+  /** Whether the reader may publish edits of pages (docs/editing.md, "Auth"). */
+  editor: Schema.Boolean,
+});
 export type CurrentReader = typeof CurrentReader.Type;

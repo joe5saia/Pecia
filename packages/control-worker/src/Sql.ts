@@ -54,6 +54,19 @@ export const schema: ReadonlyArray<string> = [
     landed_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS lands_to_sha ON lands (to_sha)`,
+  // The commits the service built for a person's edit (docs/editing.md), each recorded before it
+  // is pushed, with the idempotency key and input of its call: a push whose answer was lost is
+  // found here by the next call with that key. With `lands` and `base_sha` they are every commit
+  // main ever pointed at, and some that never reached it, which no fork can have.
+  `CREATE TABLE IF NOT EXISTS edits (
+    sha TEXT PRIMARY KEY,
+    from_sha TEXT NOT NULL,
+    principal TEXT NOT NULL,
+    key TEXT NOT NULL,
+    input_hash TEXT NOT NULL,
+    edited_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS edits_key ON edits (principal, key)`,
   // Comment threads on the wiki's pages (docs/comments.md). `anchor` is the
   // JSON of an `Anchor`, NULL for a comment on the whole page; `resolved_by`
   // and `comments.author` are the JSON of an `Author`.

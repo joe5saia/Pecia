@@ -27,7 +27,11 @@ import {
   type CreateSessionRequest,
   type SessionCreated,
   type CreateWorkspaceResponse,
+  type EditRequest,
+  EditResponse as EditResponseSchema,
+  type EditResponse,
   type EndSessionResponse,
+  PageRefused,
   ForkTooLarge,
   type LandResponse,
   type ListSessionsResponse,
@@ -63,6 +67,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
+import * as Edit from "./Edit.ts";
 import * as Git from "./Git.ts";
 import {
   ForkName,
@@ -74,6 +79,7 @@ import {
   TokenId,
   type TokenHash,
   type TokenScope,
+  type TreeSha,
 } from "./Repos.ts";
 import { randomHex, sameText, sha256Hex } from "./Secrets.ts";
 import { schema, Sql, type SqlValue } from "./Sql.ts";
@@ -94,6 +100,7 @@ export const WorkspaceErrors = [
   Conflict,
   NotYourSession,
   IdempotencyKeyReuse,
+  PageRefused,
 ] as const;
 
 /**
@@ -105,6 +112,12 @@ export interface Once {
   readonly tool: string;
   readonly key: IdempotencyKey;
   readonly inputHash: string;
+}
+
+/** Who publishes an edit: the name the commit goes under and the address beside it. */
+export interface PageEditor {
+  readonly principal: PrincipalId;
+  readonly email: string;
 }
 
 /** Who starts a session over MCP, and which executor may run its git. */
@@ -190,6 +203,16 @@ export interface Workspace {
     LandResponse,
     NotFound | SessionNotActive | NotYourSession | ForkTooLarge | Conflict | ArtifactsUnavailable
   >;
+  /**
+   * Commit a person's edit on top of main and move main to it (docs/editing.md).
+   * Each change names the version of its page the person read; a page that is
+   * no longer at it fails with `Conflict`, and nothing is committed.
+   */
+  readonly edit: (
+    name: WorkspaceName,
+    editor: PageEditor,
+    request: EditRequest,
+  ) => Effect.Effect<EditResponse, NotFound | Conflict | PageRefused | IdempotencyKeyReuse | ArtifactsUnavailable>;
   /**
    * End every session idle longer than the timeout, and delete or park every
    * closed fork whose settle period is over. The Durable Object's alarm calls it.
@@ -334,6 +357,7 @@ type BindingRow = typeof BindingRow.Type;
 const GitTokenRow = Schema.Struct({ session_id: SessionId, expires_at: Schema.Number });
 const TokenIdRow = Schema.Struct({ token_id: TokenId });
 const OnceRow = Schema.Struct({ input_hash: Schema.String, result: Schema.String });
+const EditRow = Schema.Struct({ sha: CommitSha, from_sha: CommitSha, input_hash: Schema.String });
 const RevisionRow = Schema.Struct({ thread_id: ThreadId, path: FilePath, revision: Schema.Number });
 
 /** How long an idempotency key keeps its answer. */
@@ -640,13 +664,21 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
 
   /**
    * Whether main has everything a fork with this head has. Main only ever
-   * points at its first commit or at a landed head, so a fork whose head is one
-   * of those has nothing unlanded. So does a fork that does not exist.
+   * points at its first commit, at a landed head or at the commit of a
+   * person's edit, so a fork whose head is one of those has nothing unlanded.
+   * So does a fork that does not exist.
    */
   const isLanded = (forkHead: CommitSha | undefined, base: WorkspaceRow): Effect.Effect<boolean> =>
     forkHead === undefined || forkHead === base.base_sha
       ? Effect.succeed(true)
-      : Effect.map(sql.exec("SELECT 1 FROM lands WHERE to_sha = ? LIMIT 1", forkHead), (rows) => rows.length > 0);
+      : Effect.map(
+          sql.exec(
+            "SELECT 1 FROM lands WHERE to_sha = ? UNION ALL SELECT 1 FROM edits WHERE sha = ? LIMIT 1",
+            forkHead,
+            forkHead,
+          ),
+          (rows) => rows.length > 0,
+        );
 
   /**
    * End an active session: cut the sandbox off, then park the fork if it has
@@ -931,6 +963,167 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
   const landAs: Workspace["landAs"] = Effect.fn("Workspace.landAs")(
     function* (sessionId: SessionId, principal: PrincipalId, expectedForkHead: CommitSha) {
       return yield* landFound(yield* authorizeAs(sessionId, principal), expectedForkHead);
+    },
+    (effect) => lock.withPermit(effect),
+  );
+
+  /**
+   * Whether main ever pointed at `sha`: it does now, or a land or an edit started from it. A commit
+   * of an edit reaches main only by the push that moves main to it.
+   */
+  const wasMain = (sha: CommitSha, mainHead: CommitSha): Effect.Effect<boolean> =>
+    sha === mainHead
+      ? Effect.succeed(true)
+      : Effect.map(
+          sql.exec(
+            "SELECT 1 FROM lands WHERE from_sha = ? UNION ALL SELECT 1 FROM edits WHERE from_sha = ? LIMIT 1",
+            sha,
+            sha,
+          ),
+          (rows) => rows.length > 0,
+        );
+
+  /**
+   * The commit an earlier call with `once`'s key pushed, if that call never kept its answer: the
+   * push went through and its answer was lost, or the object restarted after it.
+   */
+  const publishedBefore = Effect.fnUntraced(function* (once: Once, mainHead: CommitSha) {
+    const rows = yield* select(
+      EditRow,
+      "SELECT sha, from_sha, input_hash FROM edits WHERE principal = ? AND key = ? AND edited_at > ? ORDER BY edited_at",
+      once.principal,
+      once.key,
+      (yield* Clock.currentTimeMillis) - onceTtlMs,
+    );
+    const reached = yield* Effect.forEach(rows, (row) =>
+      Effect.map(wasMain(row.sha, mainHead), (published) => ({ row, published })),
+    );
+    return reached.find(({ published }) => published)?.row;
+  });
+
+  /** The commit of an edit on top of main's head, built and not yet pushed. */
+  const buildEdit = Effect.fnUntraced(function* (
+    base: WorkspaceRow,
+    editor: PageEditor,
+    request: EditRequest,
+    head: { readonly sha: CommitSha; readonly treeSha: TreeSha },
+  ): Effect.fn.Return<Git.BuiltCommit, Conflict | PageRefused | Git.GitError | ArtifactsUnavailable> {
+    const entries = yield* repos.readTree(base.name, head.treeSha);
+    if (entries === undefined) {
+      return yield* new ArtifactsUnavailable({ message: `main repo '${base.name}' could not be read` });
+    }
+    const tree = yield* Edit.plan(entries, request.changes, (sha) => repos.readTree(base.name, sha));
+    const [first] = request.changes;
+    return yield* Git.buildCommit({
+      parent: head.sha,
+      root: { sha: head.treeSha, entries },
+      tree,
+      author: { name: editor.principal, email: editor.email },
+      message:
+        request.message ??
+        (request.changes.length === 1 && first !== undefined
+          ? `${first.expected === null ? "Add" : "Edit"} ${first.path}`
+          : `Edit ${request.changes.length} pages`),
+      at: Math.floor((yield* Clock.currentTimeMillis) / 1000),
+    });
+  });
+
+  /** Push a built commit to main, with a token for main that lives only for the push. */
+  const pushEdit = Effect.fnUntraced(
+    function* (
+      base: WorkspaceRow,
+      parent: CommitSha,
+      built: { readonly sha: CommitSha; readonly pack: Uint8Array<ArrayBuffer> },
+    ): Effect.fn.Return<Git.PushedCommit, Git.GitError | ArtifactsUnavailable, Scope.Scope> {
+      const token = yield* scopedToken(base.name, "write");
+      return yield* Git.pushCommit({ url: base.main_remote, token: token.token }, parent, built);
+    },
+    (effect) => Effect.scoped(effect),
+  );
+
+  /** One edit, as it is made the first time its idempotency key gets an answer. Runs under `lock`. */
+  const editNow = Effect.fnUntraced(function* (
+    base: WorkspaceRow,
+    editor: PageEditor,
+    request: EditRequest,
+    once: Once,
+  ): Effect.fn.Return<EditResponse, Conflict | PageRefused | IdempotencyKeyReuse | ArtifactsUnavailable> {
+    const who = { workspace: base.name, principal: editor.principal, changes: request.changes.length };
+    const [head] = yield* repos.log(base.name, { ref: "main", limit: 1 });
+    if (head === undefined) {
+      return yield* new ArtifactsUnavailable({ message: `main repo '${base.name}' has no commits` });
+    }
+    const mainSha = head.sha;
+    // A call with this key may have published already and failed before it could say so.
+    const earlier = yield* publishedBefore(once, mainSha);
+    if (earlier !== undefined) {
+      if (earlier.input_hash !== once.inputHash) return yield* new IdempotencyKeyReuse({ key: once.key });
+      yield* record("page.edit", {
+        ...who,
+        status: "published",
+        mainSha: earlier.from_sha,
+        sha: earlier.sha,
+        recovered: true,
+      });
+      return { status: "published", sha: earlier.sha };
+    }
+    const refuse = (path: string, reason: PageRefused["reason"]) =>
+      record("page.edit", { ...who, status: "refused", path, reason });
+    const built = yield* buildEdit(base, editor, request, head).pipe(
+      Effect.catchTag("GitError", (error) => Effect.fail(unavailable(error))),
+      // How often a person's edit meets someone else's change of the same page, and how often one is refused.
+      Effect.tapErrorTag("Conflict", (error) => record("page.edit", { ...who, status: "conflict", path: error.id })),
+      Effect.tapErrorTag("PageRefused", (error) => refuse(error.path, error.reason)),
+    );
+    return yield* Match.valueTags(built, {
+      Unchanged: () =>
+        Effect.as(record("page.edit", { ...who, status: "unchanged", mainSha }), { status: "unchanged" } as const),
+      Unreadable: Effect.fnUntraced(function* ({ directory }) {
+        const within = request.changes.find((change) => directory === "" || change.path.startsWith(`${directory}/`));
+        const path = within?.path ?? directory;
+        yield* refuse(path, "unwritable_directory");
+        return yield* new PageRefused({ path, reason: "unwritable_directory" });
+      }),
+      Built: Effect.fnUntraced(function* ({ sha, pack }) {
+        // Recorded before the push: if the push goes through and this call does not live to say so,
+        // the row is how the commit is known to be an edit's (`isLanded`, `publishedBefore`).
+        yield* sql.exec(
+          "INSERT OR REPLACE INTO edits (sha, from_sha, principal, key, input_hash, edited_at) VALUES (?, ?, ?, ?, ?, ?)",
+          sha,
+          mainSha,
+          editor.principal,
+          once.key,
+          once.inputHash,
+          yield* Clock.currentTimeMillis,
+        );
+        const pushed = yield* Effect.catchTag(pushEdit(base, mainSha, { sha, pack }), "GitError", (error) =>
+          Effect.fail(unavailable(error)),
+        );
+        return yield* Match.valueTags(pushed, {
+          Committed: () =>
+            Effect.as(record("page.edit", { ...who, status: "published", mainSha, sha, packBytes: pack.byteLength }), {
+              status: "published",
+              sha,
+            } as const),
+          // Under `lock` nothing of this service moves main between the read and the push.
+          Rejected: ({ reason }) =>
+            Effect.fail(new ArtifactsUnavailable({ message: `main was moved by something else: ${reason}` })),
+        });
+      }),
+    });
+  });
+
+  const edit: Workspace["edit"] = Effect.fn("Workspace.edit")(
+    function* (name: WorkspaceName, editor: PageEditor, request: EditRequest) {
+      const base = yield* requireWorkspace(name);
+      const { idempotencyKey, ...input } = request;
+      const once = {
+        principal: editor.principal,
+        tool: "edit",
+        key: idempotencyKey,
+        inputHash: yield* sha256Hex(JSON.stringify(input)),
+      };
+      return yield* withOnce(once, EditResponseSchema, editNow(base, editor, request, once));
     },
     (effect) => lock.withPermit(effect),
   );
@@ -1464,6 +1657,7 @@ export const make: Effect.Effect<Workspace, never, Sql | Repos | WorkspaceConfig
     landAs,
     mintTokens,
     land,
+    edit,
     sweep,
     sessionAuthor,
     listThreads,

@@ -32,6 +32,8 @@ The service makes every anchor itself from the file at the commit, so an anchor 
 
 A reply to a thread found `moved` or `fuzzy` carries where the passage is now, and the service replaces the anchor with one made at that commit (re-pinning). A renamed page keeps its threads only if an agent runs `wiki-comments move`.
 
+A person's edit in the viewer ([editing.md](editing.md)) is one more version of the page: its threads are placed in it by `locate`, like after a land. The editor highlights each open thread's passage in the draft and says before publishing which threads the edit leaves outdated. A draft takes no new comment on a passage and no re-pin, since an anchor is made from a file at a commit.
+
 ## Who writes
 
 - A person writes through the reader endpoints, signed in through Cloudflare Access, under the email in the Access JWT the Worker verified ([operations.md](operations.md), "Access"). Nobody can choose the name their comments go under. A script with the stage's orchestrator token writes as `orchestrator`.

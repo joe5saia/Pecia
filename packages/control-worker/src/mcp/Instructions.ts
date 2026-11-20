@@ -55,6 +55,7 @@ One session per task. You can hold several, each in its own checkout.
 1. Commit everything you want to publish.
 2. git fetch upstream, then git merge upstream/main. Merge, never rebase: rebasing rewrites commits you already pushed.
 3. Resolve conflicts: keep the intent of both sides, remove every conflict marker, git add the file and git commit.
+   - People edit pages too, in the viewer. A person's commit has the committer pecia and another author: git log --format='%h %an (%cn) %s' upstream/main shows both names. In a conflict with one, keep the person's text unless your task is to change it. If you cannot keep both sides, keep theirs and say what you left out in a thread on the passage (create_thread).
 4. git push origin HEAD:main
 5. land_session with sessionId and expectedForkHead set to the output of git rev-parse HEAD.
    - landed: published; sha is main's new head.

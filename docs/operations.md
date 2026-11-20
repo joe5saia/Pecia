@@ -88,6 +88,10 @@ Ending a session revokes its fork's tokens and answers one of two states:
 - `parked`: the fork has unlanded commits. It is kept for a person or another agent to pick up.
 - `closed`: the fork has nothing unlanded. It is kept for ten more minutes, because a push that was already under way when the tokens were revoked may still finish. Then the alarm looks again: it deletes the fork (`deleted`), or parks it if such a push brought commits.
 
+## Edit a page
+
+A person who is a principal edits in the viewer: "Edit page" on a page, or "New page" in the file tree ([editing.md](editing.md)). A script publishes with the orchestrator token: `POST /workspaces/<ws>/edits` with `{ "idempotencyKey", "changes": [{ "_tag": "Write", "path", "expected", "content" }] }`, where `expected` is the page's `sha` in `GET /workspaces/<ws>/tree`, or `null` for a new page.
+
 ## Read a wiki
 
 Open the stage's URL in a browser and sign in with Google as an allowed person ("Access"). The sign-in lasts seven days. [viewer.md](viewer.md) has the reader endpoints, which scripts can call with the orchestrator token.
@@ -108,7 +112,11 @@ Open the stage's URL in a browser and sign in with Google as an allowed person (
 | 422 | `{ "_tag": "ForkTooLarge", "limit", "max" }` | `land` only: the fork's new commits are over a landing limit (see "Landing limits"). | No |
 | 403 | `{ "_tag": "NotYourComment", "commentId", "action" }` | A comment's edit or delete by someone other than its writer, or an edit by an agent ([comments.md](comments.md)). | No |
 | 422 | `{ "_tag": "AnchorMismatch", "path", "reason" }` | A comment's anchor does not fit its page: `not_text`, `out_of_range`, `quote_not_found` or `quote_ambiguous` ([comments.md](comments.md)). | No |
-| 413 | Empty | The request body is over 64 kB. | No |
+| 409 | `{ "_tag": "Conflict", "resource": "page", "id", "expected", "actual" }` | An edit only: the page at `id` is not the version the edit expected. `expected` and `actual` are its hashes, `none` where it does not exist. Nothing was committed ([editing.md](editing.md)). | No: read the page, merge, publish again |
+| 422 | `{ "_tag": "PageRefused", "path", "reason" }` | An edit only: a page the service does not commit: `too_large`, `not_text`, `not_a_file`, `reserved_path`, `invalid_path` or `unwritable_directory` ([editing.md](editing.md), "The publish call"; "Editing limits" below). | No |
+| 422 | `{ "_tag": "IdempotencyKeyReuse", "key" }` | An edit only: its `idempotencyKey` was used for an edit with other changes. | No |
+| 403 | `{ "_tag": "ForbiddenOrigin", "origin" }` | An edit only: a browser sent it from a page of another origin than the one the call went to. `origin` is the header as sent. | No |
+| 413 | Empty | The request body is over 64 kB, or over 1,088 KiB for an edit. | No |
 | 415 | Text | The request body is not `application/json`. | No |
 | 500 | Problem | A bug in the service. The cause is in Workers Logs under `request failed with a defect`. | No |
 | 502 | `{ "_tag": "ArtifactsUnavailable", "message" }` | A Cloudflare Artifacts call failed after the service's own retries. | Yes |
@@ -116,7 +124,7 @@ Open the stage's URL in a browser and sign in with Google as an allowed person (
 
 A problem is an RFC 9457 body, `{ "type": "about:blank", "status", "title", "detail" }`, served as `application/problem+json`.
 
-After a 502 or 503 the call may or may not have been applied. Repeating it does no harm: creating a workspace and asking for tokens repeat cleanly, a repeated land answers `nothing_to_land` if the first one landed, a repeated end answers 409 if the first one ended the session, and a repeated session create leaves an extra session for the idle timeout to end.
+After a 502 or 503 the call may or may not have been applied. Repeating it does no harm: creating a workspace and asking for tokens repeat cleanly, a repeated land answers `nothing_to_land` if the first one landed, a repeated end answers 409 if the first one ended the session, a repeated session create leaves an extra session for the idle timeout to end, and a repeated edit with the same `idempotencyKey` answers what the first one did: if the first one's push went through before it failed, the repeat answers `published` with that commit and commits nothing.
 
 `wiki-land`, `wiki-credential` and `wiki-comments` print the error's message to stderr and exit 1; neither retries.
 
@@ -145,6 +153,19 @@ On a deployed Worker (staging, November 2026):
 - A wiki grew to 27.5 MiB packed in five lands of 5.5 MiB each, and a one-line edit then landed.
 - The slowest lands were of many objects: 1,500 commits (6,252 objects) took 9 to 13 seconds and 9,055 small files took 8 seconds, each with under 2 seconds of CPU time. The next session's one-commit land in the 1,500-commit wiki fetched 1.5 kB and took 28 ms of CPU time.
 
+## Editing limits
+
+A person's edit ([editing.md](editing.md)) carries its pages in the request, and the service builds the commit in the Worker's memory.
+
+| Limit | Value | Over it |
+| --- | --- | --- |
+| One page's content, as UTF-8 (`maxPageBytes`) | 512 KiB | 422 `PageRefused`, `too_large` |
+| The request body (`maxEditBytes`): two pages of the most a page may be, and 64 KiB | 1,088 KiB | 413 |
+| Pages in one edit (`maxEditChanges`) | 20 | 400 |
+| The commit's message | 200 characters | 400 |
+
+They are in `packages/wiki-api/src/Edits.ts`. An edit reads only the directories on the way to its pages and pushes only its new objects, so its cost does not grow with the wiki. It waits for the workspace's lock like a land, so behind a slow land it takes as long as that land.
+
 ## Monitor usage
 
 There are three records of what happened, from the most to the least detailed.
@@ -159,6 +180,7 @@ There are three records of what happened, from the most to the least detailed.
 | `land` | Every `wiki-land` call that gets an answer | `workspace`, `sessionId`, `agent`, `model`, `status` (`landed`, `behind`, `nothing_to_land`), `mainSha`, `forkHead`; for `landed`, and for `behind` when the fork has main's head, also `packBytes`, `objects` and `inflatedBytes`: the size of the commits it fetched, which are those main lacked |
 | `land.refused` | A land is refused because the fork's new commits are over a landing limit | `workspace`, `sessionId`, `agent`, `model`, `limit`, `max`, `mainSha`, `forkHead` |
 | `session.ended` | A session is closed or times out | `workspace`, `sessionId`, `agent`, `model`, `state` (`closed`, `parked`), `reason` (`closed`, `idle`), `forkHead` |
+| `page.edit` | A person's edit is published, changes nothing, meets a conflict or is refused ([editing.md](editing.md)) | `workspace`, `principal`, `changes` (a count), `status` (`published`, `unchanged`, `conflict`, `refused`); `mainSha` for `published` and `unchanged`; `sha` and `packBytes` for `published`; `recovered: true`, without `packBytes`, for a `published` answered from an earlier call whose push went through and whose answer was lost; `path` for `conflict` and `refused`, and `reason` for `refused`. Never a page's text |
 | `thread.created` | A thread is created | `workspace`, `threadId`, `path`, `anchored`, `author` (`person`, `agent`), `sessionId` for an agent |
 | `thread.replied` | A reply is added | `workspace`, `threadId`, `repinned`, `author`, `sessionId` for an agent |
 | `thread.resolved`, `thread.reopened` | A thread changes state | `workspace`, `threadId`, `author`, `sessionId` for an agent |
@@ -172,7 +194,7 @@ There are three records of what happened, from the most to the least detailed.
 
 An entry can take up to ten minutes to show up in Workers Logs after the call that wrote it.
 
-The questions these answer: how many `land` calls come back `behind` (agents hitting conflicts), how many sessions end `parked` (work that never landed) and how many end with `reason: idle` (sandboxes that died or orchestrators that did not clean up).
+The questions these answer: how many `land` calls come back `behind` (agents hitting conflicts), how many `page.edit` are `conflict` (a person's edit meeting someone else's change of the same page), how many sessions end `parked` (work that never landed) and how many end with `reason: idle` (sandboxes that died or orchestrators that did not clean up).
 
 Compare `packBytes`, `objects` and `inflatedBytes` of `land` events with the landing limits to see how close sessions come to them; a `land.refused` means one got there. They are the size of one land, not of the wiki. A `session.settled` with `state: parked` means a push finished after its session had ended.
 
