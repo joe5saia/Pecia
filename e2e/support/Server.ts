@@ -412,28 +412,43 @@ const serveEdge = (options: {
       }
       const body = request.method === "GET" || request.method === "HEAD" ? undefined : await readBody(request);
       // Through node:http, not fetch, so the Worker sees the Host the client sent, as Cloudflare passes it on.
+      // A body waits for workerd's 100 Continue: the Worker can answer without reading it, such as a 413 for an
+      // upload over the limit, and workerd then closes the connection. Writing the body regardless races that
+      // close, and an EPIPE can tear the socket down before its reply is read, turning the Worker's answer into a 502.
       const answered = await new Promise<{ status: number; headers: IncomingMessage["headers"]; bytes: Buffer }>(
         (resolve, reject) => {
+          let sent = false;
           const out = httpRequest(
             `${options.worker()}${url.pathname}${url.search}`,
             {
               method: request.method ?? "GET",
               headers: {
                 ...Object.fromEntries(headers),
-                ...(body === undefined ? {} : { "content-length": String(body.byteLength) }),
+                ...(body === undefined ? {} : { "content-length": String(body.byteLength), expect: "100-continue" }),
               },
             },
             (reply) => {
               const chunks: Array<Buffer> = [];
               reply.on("data", (chunk: Buffer) => chunks.push(chunk));
-              reply.on("end", () =>
-                resolve({ status: reply.statusCode ?? 502, headers: reply.headers, bytes: Buffer.concat(chunks) }),
-              );
+              reply.on("end", () => {
+                resolve({ status: reply.statusCode ?? 502, headers: reply.headers, bytes: Buffer.concat(chunks) });
+                // Answered without asking for the body: the request is never finished, so close its connection.
+                if (!sent) {
+                  out.destroy();
+                }
+              });
               reply.on("error", reject);
             },
           );
           out.on("error", reject);
-          out.end(body);
+          if (body === undefined) {
+            out.end();
+          } else {
+            out.on("continue", () => {
+              sent = true;
+              out.end(body);
+            });
+          }
         },
       );
       const { bytes } = answered;
