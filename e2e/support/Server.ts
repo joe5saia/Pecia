@@ -114,7 +114,8 @@ const workerFirst = (path: string) =>
   path.startsWith("/oauth/") ||
   path === "/authorize" ||
   path.startsWith("/git/") ||
-  path.startsWith("/tools/");
+  path.startsWith("/tools/") ||
+  path === "/setup";
 
 const contentTypes: Readonly<Record<string, string>> = {
   ".html": "text/html; charset=utf-8",

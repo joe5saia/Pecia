@@ -51,7 +51,7 @@ const workloadIssuers: ReadonlyArray<Principals.WorkloadIssuer> = [
   },
 ];
 
-/** The paths that bypass Access: the MCP endpoint and what a client or the helper reaches without a browser. */
+/** The paths that bypass Access: the MCP endpoint, what a client or the helper reaches without a browser, and the setup page an agent is sent. */
 export const bypassedPaths = [
   "/mcp",
   "/.well-known/oauth-protected-resource/mcp",
@@ -59,6 +59,7 @@ export const bypassedPaths = [
   "/oauth/token",
   "/git/*",
   "/tools/pecia-git-credential",
+  "/setup",
 ] as const;
 
 /**
@@ -165,6 +166,7 @@ export default Cloudflare.Worker(
         "/authorize",
         "/git/*",
         "/tools/*",
+        "/setup",
       ],
     },
   })),

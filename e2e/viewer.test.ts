@@ -118,6 +118,32 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
     }),
   );
 
+  it.effect("a person follows Set up an agent to a page that an agent reads without signing in", () =>
+    Effect.gen(function* () {
+      const server = yield* Server;
+      const page = yield* signedIn(ada);
+      yield* step(() => page.goto(`${server.url}/`));
+      yield* step(() => page.getByRole("link", { name: "Set up an agent" }).click());
+      yield* step(() => page.waitForURL(`${server.url}/setup`));
+      // The browser shows the Markdown as text, with the stage's own MCP URL in it.
+      expect(yield* step(() => page.locator("body").innerText())).toContain(
+        `This install's MCP server is ${server.url}/mcp.`,
+      );
+
+      // The agent the person sends the URL to has no Access sign-in.
+      const answer = yield* Effect.promise(async () => {
+        const response = await fetch(`${server.url}/setup`);
+        return { status: response.status, type: response.headers.get("content-type"), text: await response.text() };
+      });
+      expect(answer.status).toBe(200);
+      expect(answer.type).toBe("text/plain; charset=utf-8");
+      expect(answer.text).toContain(`claude mcp add --transport http pecia ${server.url}/mcp`);
+      expect(answer.text).toContain(`url = "${server.url}/mcp"`);
+      expect(answer.text).not.toContain("<URL>");
+      expect(answer.text).toContain("skill://pecia-wiki/SKILL.md");
+    }),
+  );
+
   it.effect("a wiki without a README opens on its first page, and history pins a page to a commit", () =>
     Effect.gen(function* () {
       const server = yield* Server;

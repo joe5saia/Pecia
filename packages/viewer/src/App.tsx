@@ -68,6 +68,10 @@ const Header = ({ children }: { children?: ReactNode }) => (
       pecia
     </Link>
     <div className="crumbs">{children}</div>
+    {/* The Worker's setup page, open past Access: a person sends its URL to an agent (docs/mcp.md). */}
+    <a className="quiet" href="/setup">
+      Set up an agent
+    </a>
     {/* Access's own route: it ends the sign-in to every application of the team. */}
     <a className="quiet" href="/cdn-cgi/access/logout">
       Sign out

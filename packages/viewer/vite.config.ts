@@ -41,7 +41,7 @@ export default defineConfig({
       ? {}
       : {
           proxy: Object.fromEntries(
-            ["/workspaces", "/auth"].map((path) => [
+            ["/workspaces", "/auth", "/setup"].map((path) => [
               path,
               { target: api, changeOrigin: true, secure: true, headers: accessHeaders },
             ]),

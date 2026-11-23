@@ -17,6 +17,7 @@ import {
   Unreachable,
 } from "../OAuth.ts";
 import { gitCredentialScript } from "./GitCredential.ts";
+import { setupPage } from "./Instructions.ts";
 
 // The OAuth and git endpoints beside /mcp (docs/mcp.md, "Components"). Each
 // path is the same on every stage. All but /authorize bypass Cloudflare Access.
@@ -28,7 +29,8 @@ export const isOAuthPath = (path: string): boolean =>
   path === "/oauth/token" ||
   path === "/authorize" ||
   path.startsWith("/git/sessions/") ||
-  path === "/tools/pecia-git-credential";
+  path === "/tools/pecia-git-credential" ||
+  path === "/setup";
 
 const json = (status: number, body: unknown) =>
   HttpServerResponse.fromWeb(
@@ -64,6 +66,15 @@ export const route = Effect.fn("Mcp.route")(
     if (path === "/tools/pecia-git-credential") {
       return HttpServerResponse.text(gitCredentialScript, {
         contentType: "text/x-shellscript; charset=utf-8",
+        headers: { "cache-control": "no-cache", "x-content-type-options": "nosniff" },
+      });
+    }
+
+    // The setup page a person sends an agent (docs/mcp.md, "Setting up a client"). Markdown served as
+    // plain text, so a browser shows it and any agent's fetch reads it as it is.
+    if (path === "/setup") {
+      return HttpServerResponse.text(setupPage(oauth.origin), {
+        contentType: "text/plain; charset=utf-8",
         headers: { "cache-control": "no-cache", "x-content-type-options": "nosniff" },
       });
     }
