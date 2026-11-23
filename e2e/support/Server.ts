@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
+import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { accessTeam, makeAccess } from "./Access.ts";
 import type { Access } from "./Access.ts";
@@ -94,6 +95,11 @@ export class Server extends Context.Service<
     readonly logs: Effect.Effect<ReadonlyArray<LogEntry>>;
     /** Every run of the Worker and its Durable Objects so far, with its log entries. */
     readonly invocations: Effect.Effect<ReadonlyArray<Invocation>>;
+    /**
+     * The WebSockets the edge passed on. `drop` closes every one, as a deploy or a laptop's sleep
+     * does; while `refuse` is on the edge answers a new one 503.
+     */
+    readonly sockets: { readonly drop: Effect.Effect<void>; readonly refuse: (on: boolean) => Effect.Effect<void> };
     /** Every request the edge has received so far, in the order they arrived. */
     readonly requests: Effect.Effect<ReadonlyArray<EdgeRequest>>;
     /** The directory of the Durable Objects' SQLite storage. */
@@ -373,8 +379,9 @@ const serveEdge = (options: {
   readonly worker: () => string;
   readonly log: (line: string) => void;
   readonly requests: Array<{ method: string; path: string; status: number | undefined }>;
-}) =>
-  createServer((request: IncomingMessage, response: ServerResponse) => {
+  readonly sockets: { readonly open: Set<Duplex>; refused: boolean };
+}) => {
+  const edge = createServer((request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? "/", "http://localhost");
     const received: { method: string; path: string; status: number | undefined } = {
       method: request.method ?? "GET",
@@ -389,7 +396,14 @@ const serveEdge = (options: {
           headers.set(name, Array.isArray(value) ? value.join(", ") : value);
         }
       }
-      await options.access.edge(headers);
+      if ((await options.access.edge(headers)) === "expired") {
+        // Access sends a page load to sign in again, and answers 401 a call that says it is not one.
+        const ajax = headers.get("x-requested-with") === "XMLHttpRequest";
+        received.status = ajax ? 401 : 302;
+        response.writeHead(received.status, ajax ? {} : { location: `${accessTeam}/cdn-cgi/access/login` }).end();
+        options.log(`edge ${request.method ?? ""} ${url.pathname} -> ${received.status} sign-in expired`);
+        return;
+      }
       // Cloudflare's asset layer answers GET and HEAD; anything else goes to the Worker.
       // (Its html_handling redirects, such as /index.html to /, are not reproduced: the viewer links to neither.)
       if (!workerFirst(url.pathname) && (request.method === "GET" || request.method === "HEAD")) {
@@ -470,6 +484,76 @@ const serveEdge = (options: {
       response.writeHead(502).end(String(error));
     });
   });
+  // A WebSocket goes through Access like any request, then straight to the Worker, which may refuse it.
+  edge.on("upgrade", (request: IncomingMessage, client: Duplex, head: Buffer) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
+    const received: { method: string; path: string; status: number | undefined } = {
+      method: request.method ?? "GET",
+      path: url.pathname,
+      status: undefined,
+    };
+    options.requests.push(received);
+    if (options.sockets.refused) {
+      received.status = 503;
+      options.log(`edge upgrade ${url.pathname} -> 503 refused`);
+      client.end("HTTP/1.1 503 Service Unavailable\r\nconnection: close\r\n\r\n");
+      return;
+    }
+    const pass = async () => {
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(request.headers)) {
+        if (value !== undefined) {
+          headers.set(name, Array.isArray(value) ? value.join(", ") : value);
+        }
+      }
+      if ((await options.access.edge(headers)) === "expired") {
+        received.status = 302;
+        options.log(`edge upgrade ${url.pathname} -> 302 sign-in expired`);
+        client.end(`HTTP/1.1 302 Found\r\nlocation: ${accessTeam}/cdn-cgi/access/login\r\nconnection: close\r\n\r\n`);
+        return;
+      }
+      const out = httpRequest(`${options.worker()}${url.pathname}${url.search}`, {
+        method: request.method ?? "GET",
+        headers: Object.fromEntries(headers),
+      });
+      out.on("upgrade", (reply: IncomingMessage, server: Duplex, serverHead: Buffer) => {
+        received.status = reply.statusCode ?? 101;
+        options.log(`edge upgrade ${url.pathname} -> ${received.status}`);
+        const lines = [`HTTP/1.1 ${received.status} ${reply.statusMessage ?? ""}`];
+        for (let index = 0; index < reply.rawHeaders.length; index += 2) {
+          lines.push(`${reply.rawHeaders[index] ?? ""}: ${reply.rawHeaders[index + 1] ?? ""}`);
+        }
+        client.write(`${lines.join("\r\n")}\r\n\r\n`);
+        if (serverHead.length > 0) {
+          client.write(serverHead);
+        }
+        if (head.length > 0) {
+          server.write(head);
+        }
+        server.pipe(client).pipe(server);
+        options.sockets.open.add(client);
+        client.on("close", () => options.sockets.open.delete(client));
+        server.on("error", () => client.destroy());
+        client.on("error", () => server.destroy());
+        server.on("close", () => client.destroy());
+        client.on("close", () => server.destroy());
+      });
+      out.on("response", (reply: IncomingMessage) => {
+        received.status = reply.statusCode ?? 502;
+        options.log(`edge upgrade ${url.pathname} -> ${received.status}`);
+        client.end(`HTTP/1.1 ${received.status} ${reply.statusMessage ?? ""}\r\nconnection: close\r\n\r\n`);
+        reply.resume();
+      });
+      out.on("error", (error: Error) => {
+        options.log(`edge upgrade failed: ${String(error)}`);
+        client.destroy();
+      });
+      out.end();
+    };
+    void pass();
+  });
+  return edge;
+};
 
 /** Starts the product on loopback for the scenarios of the file `name`, and stops it after them. */
 export const ServerLive = (name: string, settings: Partial<Settings> = {}) =>
@@ -491,7 +575,8 @@ export const ServerLive = (name: string, settings: Partial<Settings> = {}) =>
       // The edge listens first: its URL is the stage's origin, which the Worker is bound with.
       const requests: Array<{ method: string; path: string; status: number | undefined }> = [];
       let workerOrigin = "";
-      const edge = serveEdge({ access, worker: () => workerOrigin, log: log("requests.log"), requests });
+      const sockets = { open: new Set<Duplex>(), refused: false };
+      const edge = serveEdge({ access, worker: () => workerOrigin, log: log("requests.log"), requests, sockets });
       const edgePort = yield* Effect.acquireRelease(
         Effect.promise(() => listen(edge)),
         () => Effect.promise(() => close(edge)),
@@ -570,6 +655,17 @@ export const ServerLive = (name: string, settings: Partial<Settings> = {}) =>
         ),
         invocations: Effect.sync(() => [...invocations]),
         requests: Effect.sync(() => requests.map((request) => ({ ...request }))),
+        sockets: {
+          drop: Effect.sync(() => {
+            for (const socket of sockets.open) {
+              socket.destroy();
+            }
+          }),
+          refuse: (on) =>
+            Effect.sync(() => {
+              sockets.refused = on;
+            }),
+        },
         storage,
         evidence,
       };

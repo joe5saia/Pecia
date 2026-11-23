@@ -43,7 +43,8 @@ export default defineConfig({
           proxy: Object.fromEntries(
             ["/workspaces", "/auth", "/setup"].map((path) => [
               path,
-              { target: api, changeOrigin: true, secure: true, headers: accessHeaders },
+              // `ws`: a wiki's page keeps a WebSocket of its changes (docs/viewer.md, "Live updates").
+              { target: api, changeOrigin: true, secure: true, ws: true, headers: accessHeaders },
             ]),
           ),
         }),

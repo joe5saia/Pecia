@@ -27,6 +27,23 @@ A script reads with the stage's orchestrator token, as `CF-Access-Client-Id` and
 
 Whoever can open the dev server can read and edit staging's wikis through it; an Amp portal is limited to the people who can view its thread unless someone makes it public.
 
+## Live updates
+
+A wiki's pages and its history show what changes without being reloaded. Each keeps a WebSocket, `GET /workspaces/:ws/events`, to the wiki's Durable Object, which every write already goes through: a land, a person's edit, upload, rename, delete or restore, and every comment, from the viewer, the API or MCP. After each, whether it succeeded or not, the object sends each socket `{"kind":"main"}` or `{"kind":"comments"}`, never what changed, and the viewer reads again what it shows. The socket is hibernatable: the viewer pings it every 30 seconds and the object answers with an auto-response without waking, so an open tab costs one request per connection and nothing while the wiki is quiet.
+
+A socket does not survive a laptop's sleep, a network change or a deploy, and it misses what happened while it was down. So the viewer reads again whenever the reader comes back to the tab (`visibilitychange`, `pageshow`, `focus`), the browser is back online, or a socket opens again after it closed. It connects again with a growing pause of up to 30 seconds, and not at all while the tab is hidden: coming back connects.
+
+What the reader sees:
+
+- The file tree, the commit line, history and the list of wikis update in place.
+- The open page updates in place when the reader is at the top of it and idle. When they have scrolled, are selecting text or are typing a comment, it stays as it was under "This page was updated on main" and a "Show latest" button, until they press it or leave the page. A page deleted or moved on main stays in view with a notice. The Rename, Delete and Restore dialogs act on the version shown when the person opened them, so main having changed it since is refused, not deleted unseen.
+- The comment threads are read again in place. A reply being typed stays, and so does its thread while a change resolves, reopens or moves it. A person's edit tells the sockets about comments too, since it can rename, re-pin and resolve threads.
+- The editor never merges by itself: it shows its own "This page changed on main" banner (editing.md).
+- A page read at a commit (`?at=`) never changes.
+- A read again that fails leaves what is shown as it is.
+
+Access checks a socket only when it opens. The Worker passes the reader's Access expiry to the object with the socket; the object closes a socket past it (code 4001) when it next has something to send, and the viewer opens it again once that time has passed, through Access. Whether Access refused is checked with a call to `/auth/me` that says it is not a page load (`X-Requested-With: XMLHttpRequest`), which Access answers 401 instead of a redirect to sign in. When Access refuses, the page says the sign-in has expired and the page no longer updates, and keeps what it shows.
+
 ## API
 
 | Endpoint | Response |
@@ -35,6 +52,7 @@ Whoever can open the dev server can read and edit staging's wikis through it; an
 | `GET /workspaces/:ws/tree?ref=` | `{ "workspace", "commit", "files": [{ "path", "sha" }], "truncated" }` |
 | `GET /workspaces/:ws/file?ref=&path=` | The file's bytes, with a content type from its name |
 | `GET /workspaces/:ws/history?limit=` | Main's commits, newest first, along first parents |
+| `GET /workspaces/:ws/events` | A WebSocket that says when main moved or a comment changed ("Live updates"); 401 without a person's or the orchestrator's sign-in |
 
 `ref` is `main` (the default) or a full commit hash. A read of a hash is cached by the browser for good; a read of `main` is checked again each time. A file is served with `Content-Security-Policy: sandbox`, so an SVG or HTML file an agent wrote cannot run script when opened on its own.
 

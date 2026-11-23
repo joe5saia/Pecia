@@ -59,6 +59,8 @@ export interface EditorProps {
   readonly language: string;
   /** The page's comment threads, once the comments column has read them. */
   readonly threads: ThreadList | undefined;
+  /** Goes up each time main may have moved (live.ts): the editor then checks whether its page changed. */
+  readonly live: number;
   /** Where in the page's source the person was reading, to open the editor there. */
   readonly openAt: number | undefined;
   /** The preview, for the comments column to highlight passages in. */
@@ -131,6 +133,7 @@ const Session = ({
   tree,
   language,
   threads,
+  live,
   openAt,
   onArticle,
   onHeadings,
@@ -287,22 +290,33 @@ const Session = ({
     view.current?.dispatch({ effects: setPassages.of(ranges) });
   }, [threads, shown]);
 
+  // Reads of main overlap when changes come quickly: only the answer of the latest read so far is kept.
+  const mainReads = useRef({ started: 0, kept: 0 });
   /** Main's version of the page now, or `undefined` if it could not be read. */
   const readMain = useCallback(async (): Promise<Version | undefined> => {
+    mainReads.current.started += 1;
+    const number = mainReads.current.started;
     const read = await run(readTree(ws, "main"));
     if (!read.ok) {
       return undefined;
     }
     const now = { commit: read.value.commit.sha, hash: hashIn(read.value, path) };
-    setMain(now);
+    if (number > mainReads.current.kept) {
+      mainReads.current.kept = number;
+      setMain(now);
+    }
     return now;
   }, [ws, path]);
-  // An agent may have landed a change of the page while the person was elsewhere.
+  // An agent may have landed a change of the page, now or while the person was elsewhere. Never merged unasked.
   useEffect(() => {
-    const focused = () => void readMain();
-    globalThis.addEventListener("focus", focused);
-    return () => globalThis.removeEventListener("focus", focused);
-  }, [readMain]);
+    if (live === 0) {
+      return;
+    }
+    const check = async () => {
+      await readMain();
+    };
+    void check();
+  }, [live, readMain]);
 
   /** Bring main's version `now` into the draft: a three-way merge from the version the draft started from. */
   const mergeMain = async (now: Version) => {

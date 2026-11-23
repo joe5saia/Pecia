@@ -1,13 +1,15 @@
 import { Ref, WorkspaceName } from "@pecia/wiki-api";
-import type { CommitSha, HistoryResponse, ThreadList, TreeResponse } from "@pecia/wiki-api";
+import type { BlobSha, CommitSha, HistoryResponse, ThreadList, TreeResponse } from "@pecia/wiki-api";
+import * as Effect from "effect/Effect";
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode, RefObject } from "react";
-import { currentReader, fileUrl, listWorkspaces, readHistory, readText, readTree, useRead } from "./api.ts";
+import { currentReader, fileUrl, listWorkspaces, readHistory, readText, readWiki, useRead } from "./api.ts";
 import type { Failure, ReadState } from "./api.ts";
 import { DeleteDialog, placeProblem, RenameDialog, RestoreDialog, UploadFile } from "./Changes.tsx";
 import { Comments } from "./Comments.tsx";
+import { useLive } from "./live.ts";
 import { fenced, Markdown } from "./Markdown.tsx";
 import type { OutlineEntry, Page } from "./Markdown.tsx";
 import { buildTree, directoryOf, homePage, isImage, isMarkdown, titleOf } from "./paths.ts";
@@ -40,6 +42,13 @@ const LoggedOut = () => (
   <div className="problem" role="alert">
     <strong>Your sign-in has expired.</strong> <a href={globalThis.location.href}>Sign in again</a>
   </div>
+);
+
+/** Shown beside what a page last read once its Access sign-in has expired: it no longer updates. */
+const NoUpdates = () => (
+  <p className="note live-note" role="status">
+    Your sign-in has expired, so this no longer updates. <a href={globalThis.location.href}>Sign in again</a>
+  </p>
 );
 
 const Problem = ({ failure }: { failure: Failure }) =>
@@ -80,7 +89,9 @@ const Header = ({ children }: { children?: ReactNode }) => (
 );
 
 const Workspaces = () => {
-  const state = useRead("workspaces", () => listWorkspaces());
+  // No wiki to listen to: the list is read again when the reader comes back to the tab.
+  const live = useLive(undefined);
+  const state = useRead("workspaces", () => listWorkspaces(), { refresh: String(live.main) });
   return (
     <>
       <Header />
@@ -140,6 +151,9 @@ const FileTree = ({
   </ul>
 );
 
+/** A page's markdown source, and the commit it was read at: `undefined` for the editor's draft. */
+type Source = { readonly sha: CommitSha | undefined; readonly text: string };
+
 /** Files read as text and shown with highlighting, by extension. */
 const textLanguages: Readonly<Record<string, string>> = {
   txt: "text",
@@ -168,24 +182,34 @@ const languageOf = (path: string): string | undefined => {
 
 const FileView = ({
   page,
+  hash,
   onHeadings,
   onSource,
   onArticle,
 }: {
   page: Page;
+  /** The file's hash at `page.sha`: a commit that leaves it as it was does not read it again. */
+  hash: string | undefined;
   onHeadings: (headings: ReadonlyArray<OutlineEntry>) => void;
-  /** The page's markdown source once it is read, for comments to anchor in; `undefined` for any other file. */
-  onSource: (text: string | undefined) => void;
+  /** The page's markdown source and the commit it was read at, for comments to anchor in; `undefined` for any other file. */
+  onSource: (source: Source | undefined) => void;
   onArticle: (article: HTMLElement | null) => void;
 }) => {
   const language = isMarkdown(page.path) ? "markdown" : languageOf(page.path);
-  const state = useRead(`file:${page.ws}:${page.sha}:${page.path}`, () => readText(page.ws, page.sha, page.path));
+  // A new version is read in place: the one shown stays until it arrives (docs/viewer.md, "Live updates").
+  const state = useRead(
+    `file:${page.ws}:${hash ?? page.sha}:${page.path}`,
+    // The text goes with the commit it was read at: what is shown, linked and anchored all name it.
+    () => Effect.map(readText(page.ws, page.sha, page.path), (text): Source => ({ sha: page.sha, text })),
+    { keep: true },
+  );
   const loaded = state._tag === "Loaded" ? state.value : undefined;
   useEffect(() => onSource(language === "markdown" ? loaded : undefined), [loaded, language, onSource]);
+  const read = { ...page, sha: loaded?.sha ?? page.sha };
   if (isImage(page.path)) {
     return (
       <figure className="image-file">
-        <img src={fileUrl(page.ws, page.sha, page.path)} alt={page.path} />
+        <img src={fileUrl(read.ws, read.sha, read.path)} alt={read.path} />
       </figure>
     );
   }
@@ -198,9 +222,9 @@ const FileView = ({
   }
   return (
     <Loaded state={state}>
-      {(text) => (
+      {({ text }) => (
         <Markdown
-          page={page}
+          page={read}
           text={language === "markdown" ? text : fenced(text, language)}
           onHeadings={onHeadings}
           onArticle={onArticle}
@@ -417,19 +441,84 @@ const Resizer = ({
   );
 };
 
+/** The page a path shows in a tree: the wiki's home page for its top. */
+const currentIn = (tree: TreeResponse, path: string): string =>
+  path === "" ? (homePage(tree.files.map((file) => file.path)) ?? "") : path;
+
+const hashIn = (tree: TreeResponse, path: string): string | undefined =>
+  tree.files.find((file) => file.path === path)?.sha;
+
+/** Whether the reader is in the middle of something a new version of the page would move under them. */
+const readerIsBusy = (): boolean => {
+  const selection = document.getSelection();
+  const focused = document.activeElement;
+  return (
+    globalThis.scrollY > 120 ||
+    focused instanceof HTMLTextAreaElement ||
+    focused instanceof HTMLInputElement ||
+    (selection !== null && !selection.isCollapsed)
+  );
+};
+
+/**
+ * The tree to keep showing `shown` at when main moved from `before` to `after`, or `undefined` to
+ * show what `after` has at the URL, `next`: a deleted page stays, and so does a changed one, or
+ * another home page, while the reader is busy.
+ */
+const holdFor = (before: TreeResponse, after: TreeResponse, shown: string, next: string) => {
+  const was = hashIn(before, shown);
+  const now = hashIn(after, shown);
+  if (was === undefined || (was === now && shown === next)) {
+    return undefined;
+  }
+  return now === undefined || readerIsBusy() ? { path: shown, tree: before } : undefined;
+};
+
 const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: string | undefined; edit: boolean }) => {
   const ref = at !== undefined && isRef(at) ? at : "main";
   // The commit of the reader's own edit. Main is read at it from then on, so the page they
   // published is the page they see, however soon a read of `main` answers the new commit.
   const [published, setPublished] = useState<CommitSha | undefined>();
-  const read = ref === "main" ? (published ?? ref) : ref;
-  const state = useRead(`tree:${ws}:${read}`, () => readTree(ws, read));
+  const live = useLive(ws);
+  // Main is read again in place whenever it may have moved; a commit never changes. The reader's own
+  // change is read anew, not in place, so the tree never shows a page they just deleted or renamed.
+  const state = useRead(`tree:${ws}:${ref}:${published ?? ""}`, () => readWiki(ws, ref, published), {
+    refresh: ref === "main" ? String(live.main) : "",
+  });
+  // The tree the open page is held at while it shows a version main has moved past (holdFor).
+  const [held, setHeld] = useState<{ readonly path: string; readonly tree: TreeResponse } | undefined>();
+  // The last tree read, to compare the next one with.
+  const [seen, setSeen] = useState<{ readonly ref: string; readonly tree: TreeResponse } | undefined>();
+  const latest = state._tag === "Loaded" ? state.value : undefined;
+  if (latest !== undefined && latest !== seen?.tree) {
+    setSeen({ ref, tree: latest });
+    const last = seen?.ref === ref ? seen.tree : undefined;
+    const next = currentIn(latest, path);
+    // The reader's own change is theirs to see at once.
+    const own = published !== undefined && latest.commit.sha === published;
+    if (last === undefined || ref !== "main" || edit || own) {
+      setHeld(undefined);
+    } else if (held === undefined) {
+      // Compared with the page on screen: at the top of the wiki, the home page main had.
+      setHeld(holdFor(last, latest, currentIn(last, path), next));
+    } else if (held.path === next && hashIn(latest, next) === hashIn(held.tree, next)) {
+      // Main has the held version again. Otherwise a hold stays until the reader asks for the latest or leaves.
+      setHeld(undefined);
+    }
+  }
   const me = useRead("me", () => currentReader());
   const isEditor = me._tag === "Loaded" && me.value.editor;
   const mayEdit = ref === "main" && isEditor;
   // The change of a file the person is asked to confirm, and the file it is of.
+  // Its hash and commit are the version shown when the person asked, which is what they confirm.
   const [changing, setChanging] = useState<
-    { readonly what: "rename" | "delete" | "restore"; readonly path: string } | undefined
+    | {
+        readonly what: "rename" | "delete" | "restore";
+        readonly path: string;
+        readonly hash: BlobSha;
+        readonly commit: CommitSha;
+      }
+    | undefined
   >();
   /** A change was committed: main is read at its commit, and the person is taken to where the file is now. */
   const committed = (sha: CommitSha | undefined, to: string, options?: { readonly replace?: boolean }) => {
@@ -449,8 +538,12 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
   const [menuOpenOn, setMenuOpenOn] = useState<string | undefined>();
   const menuOpen = menuOpenOn === path;
   const onHeadings = useCallback((headings: ReadonlyArray<OutlineEntry>) => setOutline(headings), []);
-  const [source, setSource] = useState<string | undefined>();
-  const onSource = useCallback((text: string | undefined) => setSource(text), []);
+  const [source, setSource] = useState<Source | undefined>();
+  const onSource = useCallback((read: Source | undefined) => setSource(read), []);
+  const onDraftSource = useCallback(
+    (text: string | undefined) => setSource(text === undefined ? undefined : { sha: undefined, text }),
+    [],
+  );
   // The rendered page or the editor's preview, whichever is in the document.
   const [article, setArticle] = useState<HTMLElement | null>(null);
   const column = useRef<HTMLElement>(null);
@@ -460,6 +553,7 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
   if (threadsOf !== `${ws}/${path}`) {
     setThreadsOf(`${ws}/${path}`);
     setThreads(undefined);
+    setHeld(undefined);
   }
   if (!edit && unpublished) {
     setUnpublished(false);
@@ -474,17 +568,22 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
       <Loaded state={state}>
         {(tree) => {
           const paths = tree.files.map((file) => file.path);
-          const current = path === "" ? (homePage(paths) ?? "") : path;
-          const page: Page = { ws, sha: tree.commit.sha, at: ref === "main" ? undefined : ref, path: current };
-          const exists = paths.includes(current);
+          const current = held !== undefined && path === "" ? held.path : currentIn(tree, path);
+          // The page is shown at the tree it is held at, the sidebar at the latest one.
+          const shown = held?.path === current ? held.tree : tree;
+          const page: Page = { ws, sha: shown.commit.sha, at: ref === "main" ? undefined : ref, path: current };
+          const deleted = shown !== tree && !paths.includes(current);
+          const exists = deleted || paths.includes(current);
           // A directory is not a page, and neither is a path through a page.
           const isPage =
             current !== "" &&
             (exists || !paths.some((other) => other.startsWith(`${current}/`) || current.startsWith(`${other}/`)));
           const language = isPage ? editableAs(current) : undefined;
           // The file's hash at the commit being read: the version a change of it says the person saw.
-          const hash = tree.files.find((file) => file.path === current)?.sha;
-          const change = changing?.path === current ? changing.what : undefined;
+          const hash = shown.files.find((file) => file.path === current)?.sha;
+          const change = changing?.path === current ? changing : undefined;
+          const ask = (what: "rename" | "delete" | "restore") =>
+            hash === undefined ? undefined : setChanging({ what, path: current, hash, commit: shown.commit.sha });
           const editing = edit && mayEdit && language !== undefined;
           return (
             <div className={`wiki ${menuOpen ? "menu-open" : ""} ${editing ? "editing" : ""}`}>
@@ -503,6 +602,7 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
                   )}
                   <Link href={`/history/${ws}`}>History</Link>
                 </div>
+                {live.signedOut && <NoUpdates />}
                 {mayEdit && <NewPage ws={ws} beside={current} paths={paths} />}
                 {mayEdit && (
                   <UploadFile ws={ws} beside={current} tree={tree} onDone={(sha, to) => committed(sha, to)} />
@@ -524,10 +624,11 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
                       tree={tree}
                       language={language}
                       threads={threads}
+                      live={live.main}
                       openAt={openAt}
                       onArticle={setArticle}
                       onHeadings={onHeadings}
-                      onSource={onSource}
+                      onSource={onDraftSource}
                       onUnpublished={onUnpublished}
                       onClose={(sha) => {
                         if (sha !== undefined) {
@@ -540,7 +641,25 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
                     />
                   </Suspense>
                 )}
-                {!editing && isEditor && exists && (
+                {!editing && shown !== tree && (
+                  <p className="page-banner" role="status">
+                    {deleted ? (
+                      <>
+                        This page was deleted or moved on main. <Link href={fileHref(ws, "")}>Open the wiki</Link>
+                      </>
+                    ) : (
+                      <>
+                        {hashIn(tree, current) === hash
+                          ? "The wiki's home page changed on main."
+                          : "This page was updated on main."}{" "}
+                        <button type="button" className="primary" onClick={() => setHeld(undefined)}>
+                          Show latest
+                        </button>
+                      </>
+                    )}
+                  </p>
+                )}
+                {!editing && isEditor && exists && !deleted && (
                   <div className="page-actions">
                     {ref === "main" ? (
                       <>
@@ -555,47 +674,47 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
                             Edit page
                           </button>
                         )}
-                        <button type="button" onClick={() => setChanging({ what: "rename", path: current })}>
+                        <button type="button" onClick={() => ask("rename")}>
                           Rename page
                         </button>
-                        <button type="button" onClick={() => setChanging({ what: "delete", path: current })}>
+                        <button type="button" onClick={() => ask("delete")}>
                           Delete page
                         </button>
                       </>
                     ) : (
-                      <button type="button" onClick={() => setChanging({ what: "restore", path: current })}>
+                      <button type="button" onClick={() => ask("restore")}>
                         Restore this version
                       </button>
                     )}
                   </div>
                 )}
-                {change === "rename" && hash !== undefined && (
+                {change?.what === "rename" && (
                   <RenameDialog
                     ws={ws}
                     path={current}
-                    hash={hash}
+                    hash={change.hash}
                     paths={paths}
                     threads={threads}
                     onCancel={() => setChanging(undefined)}
                     onDone={(sha, to) => committed(sha, to, { replace: true })}
                   />
                 )}
-                {change === "delete" && hash !== undefined && (
+                {change?.what === "delete" && (
                   <DeleteDialog
                     ws={ws}
                     path={current}
-                    hash={hash}
+                    hash={change.hash}
                     threads={threads}
                     onCancel={() => setChanging(undefined)}
                     onDone={(sha) => committed(sha, "", { replace: true })}
                   />
                 )}
-                {change === "restore" && hash !== undefined && (
+                {change?.what === "restore" && (
                   <RestoreDialog
                     ws={ws}
                     path={current}
-                    commit={tree.commit.sha}
-                    hash={hash}
+                    commit={change.commit}
+                    hash={change.hash}
                     onCancel={() => setChanging(undefined)}
                     onDone={(sha) => committed(sha, current)}
                   />
@@ -604,8 +723,9 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
                   current !== "" &&
                   (exists ? (
                     <FileView
-                      key={`${page.sha}:${current}`}
+                      key={current}
                       page={page}
+                      hash={hash}
                       onHeadings={onHeadings}
                       onSource={onSource}
                       onArticle={setArticle}
@@ -632,10 +752,12 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
                   <Comments
                     // Read anew after the reader's own publish, which may have resolved or re-pinned threads.
                     key={`${current}:${published ?? ""}`}
-                    page={page}
-                    text={isMarkdown(current) ? source : undefined}
+                    // At the commit its text was read at, which a new comment's passage counts in.
+                    page={{ ...page, sha: source?.sha ?? page.sha }}
+                    text={isMarkdown(current) ? source?.text : undefined}
                     article={article}
                     unpublished={editing && unpublished}
+                    live={live.comments}
                     onThreads={onThreads}
                   />
                 )}
@@ -649,7 +771,8 @@ const Wiki = ({ ws, path, at, edit }: { ws: WorkspaceName; path: string; at: str
 };
 
 const History = ({ ws }: { ws: WorkspaceName }) => {
-  const state = useRead(`history:${ws}`, () => readHistory(ws));
+  const live = useLive(ws);
+  const state = useRead(`history:${ws}`, () => readHistory(ws), { refresh: String(live.main) });
   return (
     <>
       <Header>
@@ -659,6 +782,7 @@ const History = ({ ws }: { ws: WorkspaceName }) => {
       <main className="history">
         <h1>History of main</h1>
         <p className="note">Newest first, following first parents: each entry is a land or a commit it brought.</p>
+        {live.signedOut && <NoUpdates />}
         <Loaded state={state}>
           {(commits: HistoryResponse) => (
             <ol>

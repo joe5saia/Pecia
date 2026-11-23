@@ -1,5 +1,6 @@
 import { WikiApi } from "@pecia/wiki-api";
 import type {
+  CommitSha,
   CommentId,
   CreateThreadRequest,
   EditRequest,
@@ -19,7 +20,7 @@ import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
-import { useEffect, useEffectEvent, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 // The viewer's calls to the Control Worker, through a client derived from the
 // shared contract. Cloudflare Access signed the browser in before it loaded the
@@ -67,36 +68,121 @@ export type ReadState<A> =
   | { readonly _tag: "Loaded"; readonly value: A }
   | { readonly _tag: "Failed"; readonly failure: Failure };
 
-/** The answer of `call`, read again when `key` changes. */
-export const useRead = <A, E>(key: string, call: () => Call<A, E>): ReadState<A> => {
+/**
+ * The answer of `call`, read again when `key` changes. When `refresh` changes it is read again in
+ * the background (docs/viewer.md, "Live updates"): what is shown stays until the new answer
+ * arrives, and stays if that read fails.
+ */
+export const useRead = <A, E>(
+  key: string,
+  call: () => Call<A, E>,
+  options: {
+    readonly refresh?: string;
+    /** Whether a new key keeps showing the last answer until its own arrives, as a page does when it changes. */
+    readonly keep?: boolean;
+  } = {},
+): ReadState<A> => {
+  const refresh = options.refresh ?? "";
   const [state, setState] = useState<{ key: string; read: ReadState<A> }>({ key, read: { _tag: "Loading" } });
   // `call` is a new function on every render; `key` names what it reads.
   const read = useEffectEvent(() => run(call()));
-  useEffect(() => {
-    let current = true;
-    // A new key reads as Loading until its answer, since `state.key` is still the old one.
+  // Every read, first or again, has a number. An answer is shown only if no later read's answer has
+  // been, so an older answer never replaces a newer one, and a refresh that fails hides nothing.
+  const started = useRef(0);
+  const shown = useRef(0);
+  /** Read, and show the answer if it is the newest yet: a failure only if `failures` says so. */
+  const readAndShow = useEffectEvent((of: string, isCurrent: () => boolean, failures: boolean) => {
+    started.current += 1;
+    const number = started.current;
     const answer = async () => {
       const result = await read();
-      if (!current) {
+      if (!isCurrent() || number <= shown.current || (!result.ok && !failures)) {
         return;
       }
+      shown.current = number;
       setState({
-        key,
+        key: of,
         read: result.ok ? { _tag: "Loaded", value: result.value } : { _tag: "Failed", failure: result.failure },
       });
     };
     void answer();
+  });
+  useEffect(() => {
+    let current = true;
+    // A new key reads as Loading until its answer, since `state.key` is still the old one.
+    readAndShow(key, () => current, true);
     return () => {
       current = false;
     };
   }, [key]);
-  return state.key === key ? state.read : { _tag: "Loading" };
+  const refreshed = useRef(refresh);
+  useEffect(() => {
+    if (refreshed.current === refresh) {
+      return undefined;
+    }
+    refreshed.current = refresh;
+    let current = true;
+    // A failed refresh keeps what is shown; the live connection tells whether the sign-in expired.
+    readAndShow(key, () => current, false);
+    return () => {
+      current = false;
+    };
+  }, [key, refresh]);
+  if (state.key === key) {
+    return state.read;
+  }
+  if (options.keep === true && state.read._tag === "Loaded") {
+    return state.read;
+  }
+  return { _tag: "Loading" };
+};
+
+/**
+ * Whether the reader is still signed in: `false` when Access or the Worker refuses, `undefined`
+ * when nothing answered. Access answers a call it refuses with a redirect to its sign-in, which a
+ * browser's fetch cannot follow across sites, or with 401 when the call says it is not a page load
+ * (`X-Requested-With`), so the answer's status is read as it is.
+ * https://developers.cloudflare.com/cloudflare-one/access-controls/access-settings/session-management/#ajax
+ */
+export const isSignedIn = async (): Promise<boolean | undefined> => {
+  try {
+    const response = await fetch("/auth/me", {
+      headers: { "x-requested-with": "XMLHttpRequest" },
+      redirect: "manual",
+    });
+    if (response.ok) {
+      return true;
+    }
+    return response.type === "opaqueredirect" || response.status === 401 || response.status === 403 ? false : undefined;
+  } catch {
+    // Offline, or the network changed: nothing says the sign-in expired.
+    return undefined;
+  }
 };
 
 export const listWorkspaces = () => Effect.flatMap(client, (api) => api.reader.listWorkspaces());
 
 export const readTree = (ws: WorkspaceName, ref: Ref) =>
   Effect.flatMap(client, (api) => api.reader.readTree({ params: { ws }, query: { ref } }));
+
+/**
+ * The files at `ref`. For main, the files of `pinned` while a read of main does not yet answer a
+ * commit that has it: `pinned` is the commit of the reader's own change, which they see at once.
+ */
+export const readWiki = Effect.fnUntraced(function* (ws: WorkspaceName, ref: Ref, pinned: CommitSha | undefined) {
+  const tree = yield* readTree(ws, ref);
+  if (ref !== "main") {
+    return tree;
+  }
+  if (pinned === undefined || tree.commit.sha === pinned) {
+    return tree;
+  }
+  // A read of main can answer a commit from before the reader's own for a moment. Main is shown again
+  // once it is at least as new as theirs: every commit after theirs is made on top of it. The pinned
+  // tree is a read of a hash, which the browser keeps.
+  const own = yield* readTree(ws, pinned);
+  return tree.commit.committedAt >= own.commit.committedAt ? tree : own;
+});
 
 export const readText = (ws: WorkspaceName, ref: Ref, path: string) =>
   Effect.flatMap(client, (api) =>

@@ -532,14 +532,22 @@ layer(ServerLive("viewer"), { excludeTestServices: true })("the viewer", (it) =>
           yield* step(() => page.keyboard.type(text));
         });
 
-        // The person changes the first line while an agent lands a change of the last.
+        // The person changes the first line while an agent lands a change of the last. The viewer's
+        // connection is down meanwhile (docs/viewer.md, "Live updates"), so publishing is what finds it.
         yield* write("one, says the person\n\ntwo\n\nthree\n");
-        yield* agent.commit("page.md", "one\n\ntwo\n\nthree, says the agent\n");
-        expect((yield* agent.land).exitCode).toBe(0);
-        yield* step(() => publish.click());
-        yield* step(() => confirm.click());
-        // Nothing was published: the draft now has the agent's line too, for the person to look over.
-        yield* step(() => page.getByText("Its changes are merged into your draft").waitFor());
+        yield* Effect.ensuring(
+          Effect.gen(function* () {
+            yield* server.sockets.refuse(true);
+            yield* server.sockets.drop;
+            yield* agent.commit("page.md", "one\n\ntwo\n\nthree, says the agent\n");
+            expect((yield* agent.land).exitCode).toBe(0);
+            yield* step(() => publish.click());
+            yield* step(() => confirm.click());
+            // Nothing was published: the draft now has the agent's line too, for the person to look over.
+            yield* step(() => page.getByText("Its changes are merged into your draft").waitFor());
+          }),
+          server.sockets.refuse(false),
+        );
         expect(yield* wiki.show("page.md")).toBe("one\n\ntwo\n\nthree, says the agent");
         yield* step(() => page.locator(".editor-preview").getByText("three, says the agent").waitFor());
         yield* step(() => publish.click());

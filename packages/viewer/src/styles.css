@@ -1209,3 +1209,24 @@ button.danger {
   border: 1px solid var(--border);
   border-radius: 8px;
 }
+
+/* Live updates (live.ts): the open page held at a version main has moved past, and a sign-in that stopped them */
+
+/* Sticky under the header: the reader it is for has scrolled down the page. */
+.page-banner {
+  position: sticky;
+  top: 60px;
+  z-index: 5;
+  margin: 0 0 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  font-size: 13px;
+}
+.page-banner button {
+  margin-left: 8px;
+}
+.sidebar .live-note {
+  margin: 0 0 12px;
+}

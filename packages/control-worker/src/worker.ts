@@ -3,12 +3,15 @@ import * as Output from "alchemy/Output";
 import { Stage } from "alchemy/Stage";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
+import * as Headers from "effect/http/Headers";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { createRemoteJWKSet } from "jose";
+import * as Schema from "effect/Schema";
+import { WorkspaceName } from "@pecia/wiki-api";
+import { createRemoteJWKSet, decodeJwt } from "jose";
 import * as Access from "./Access.ts";
 import * as ArtifactsRepos from "./ArtifactsRepos.ts";
 import { ApiLive, StageOrigin, Workspaces } from "./Handlers.ts";
@@ -20,7 +23,7 @@ import * as Principals from "./Principals.ts";
 import * as Reader from "./Reader.ts";
 import { Repos } from "./Repos.ts";
 import * as RemoteWorkspace from "./RemoteWorkspace.ts";
-import { Wikis, WorkspaceObject, WorkspaceObjectLive } from "./WorkspaceObject.ts";
+import { expiresAtHeader, Wikis, WorkspaceObject, WorkspaceObjectLive } from "./WorkspaceObject.ts";
 import { runtime } from "./Runtime.ts";
 
 // Control Worker: session API, token minting and landing (docs/mvp.md), and
@@ -36,6 +39,11 @@ import { runtime } from "./Runtime.ts";
 
 /** The account's Access team, which issues and signs every stage's assertions, as `https://<team>.cloudflareaccess.com`. */
 const AccessTeam = Config.map(Config.String("PECIA_ACCESS_TEAM"), (host) => `https://${host}`);
+
+/** A reader's WebSocket of a wiki's changes (docs/viewer.md, "Live updates"). */
+const eventsPath = /^\/workspaces\/([^/]+)\/events$/;
+
+const isWorkspaceName = Schema.is(WorkspaceName);
 
 /** The identity token issuers the token exchange trusts (docs/mcp.md, "Trust table"). */
 const workloadIssuers: ReadonlyArray<Principals.WorkloadIssuer> = [
@@ -266,6 +274,41 @@ export default Cloudflare.Worker(
       return yield* services(Effect.provideService(mcp, McpGrant, admission.grant));
     });
 
+    /**
+     * A reader's socket, once Access and the Worker let it through, goes to the wiki's object with
+     * the time its sign-in expires: Access checks a socket only when it opens, so the object closes
+     * it once that time has passed.
+     */
+    const events = Effect.fnUntraced(function* (name: string) {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      if (!isWorkspaceName(name)) {
+        return HttpServerResponse.text("No such wiki", { status: 404 });
+      }
+      if (request.headers["upgrade"]?.toLowerCase() !== "websocket") {
+        return HttpServerResponse.text("Expected a WebSocket upgrade", { status: 426 });
+      }
+      // A browser sends the Access cookie with a socket opened from any site, and names the site.
+      const origin = request.headers["origin"];
+      if (origin !== undefined && origin !== Option.getOrUndefined(HttpServerRequest.toURL(request))?.origin) {
+        return HttpServerResponse.text("Forbidden origin", { status: 403 });
+      }
+      const assertion = request.headers["cf-access-jwt-assertion"] ?? "";
+      const caller = yield* Effect.option(Effect.flatMap(Access.Access, (access) => access.verify(assertion)));
+      if (Option.isNone(caller) || caller.value._tag === "Sandbox") {
+        return HttpServerResponse.text("Unauthorized", { status: 401, headers: { "www-authenticate": "Bearer" } });
+      }
+      // `verify` checked the signature and required `exp`, so the claims can be read as they are.
+      const expiresAt = (decodeJwt(assertion).exp ?? 0) * 1000;
+      const forwarded = request.modify({ headers: Headers.set(request.headers, expiresAtHeader, String(expiresAt)) });
+      return yield* Effect.catch(workspaces.getByName(name).fetch(forwarded), (error) =>
+        // The reader's viewer tries again later, and catches up when it does.
+        Effect.as(
+          Effect.logWarning("reader socket not passed on", { error: error.message }),
+          HttpServerResponse.text("The wiki is unavailable", { status: 503 }),
+        ),
+      );
+    });
+
     return {
       fetch: Logs.structured(
         Effect.gen(function* () {
@@ -274,6 +317,10 @@ export default Cloudflare.Worker(
           const path = new URL((yield* HttpServerRequest.HttpServerRequest).url, "http://pecia").pathname;
           if (path === "/mcp" || isOAuthPath(path)) {
             return yield* mcpAndOAuth(path, reader);
+          }
+          const socketOf = eventsPath.exec(path)?.[1];
+          if (socketOf !== undefined) {
+            return yield* Effect.provide(events(socketOf), accessLayer);
           }
           return yield* api.pipe(
             Effect.provideService(Reader.Readers, reader),

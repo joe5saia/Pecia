@@ -29,6 +29,12 @@ The Worker, the workspace Durable Object and their Alchemy stack. Repo-wide rule
 - The Host and Origin checks in `admit` compare with the stage's own URL (`Cloudflare.URL` in `worker.ts`): its custom domain when it has one, else workers.dev. A stage with a custom domain does not serve MCP on its workers.dev URL.
 - The principals are the install's, from `PECIA_PRINCIPALS` in the deploy's environment, bound to the Worker at deploy; the workload issuers are code (`workloadIssuers` in `worker.ts`). Two principals with one email or workload is a defect at start. The Access team (`PECIA_ACCESS_TEAM`) and login method (`PECIA_IDP_TYPE`, `PECIA_IDP_NAME`) come from the deploy's environment the same way; the scenarios bind their own in `e2e/support/Server.ts`.
 
+### Readers' sockets (WorkspaceObject.ts, worker.ts)
+
+- `/workspaces/:ws/events` is answered in `worker.ts` before the HTTP API: it is a WebSocket, which the API's client contract cannot describe. The Worker checks the Access assertion and the Origin itself, then passes the socket to the object with the assertion's expiry in `x-pecia-expires-at`, which replaces any the browser sent.
+- Every write the object does is wrapped in `thenTell`, which tells the sockets after it, whether it succeeded or not: a failure can follow a push that went through. A new method that changes main or a comment needs it too, or open pages miss the change until the reader comes back. A person's edit tells both: its rename, re-pins and resolves change threads as well as main.
+- The pings are answered by `setWebSocketAutoResponse`, without waking the object. A `webSocketMessage` that did anything would bill every ping.
+
 ### Crossing the Durable Object
 
 - Arguments and results are structured-cloned. A `Redacted`, a `DateTime` or any other class instance does not arrive as itself. That is why a session key and the minted tokens cross as `string`, and a time as a `Timestamp`.

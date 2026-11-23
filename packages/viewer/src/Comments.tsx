@@ -3,6 +3,7 @@ import type {
   AnchorRequest,
   Author,
   Comment,
+  CommitSha,
   Located,
   Thread,
   ThreadId,
@@ -45,7 +46,14 @@ interface Placed {
 /** What a new comment is on. */
 type Draft =
   | { readonly _tag: "Page" }
-  | { readonly _tag: "Passage"; readonly start: number; readonly end: number; readonly quote: string };
+  | {
+      readonly _tag: "Passage";
+      /** The commit of the text `start` and `end` count in, which the anchor names. */
+      readonly at: CommitSha;
+      readonly start: number;
+      readonly end: number;
+      readonly quote: string;
+    };
 
 const escapeRegExp = (text: string): string => text.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 
@@ -133,7 +141,12 @@ const passageOf = (article: HTMLElement, text: string, located: Located, exact: 
  * selected text where it occurs once in the source of the element that holds
  * the selection, otherwise that whole element.
  */
-const selectedPassage = (article: HTMLElement, text: string, selection: Selection | null): Draft | undefined => {
+const selectedPassage = (
+  article: HTMLElement,
+  text: string,
+  at: CommitSha,
+  selection: Selection | null,
+): Draft | undefined => {
   if (selection === null || selection.rangeCount === 0 || selection.isCollapsed) {
     return undefined;
   }
@@ -150,6 +163,7 @@ const selectedPassage = (article: HTMLElement, text: string, selection: Selectio
   const end = only === undefined ? to : from + only.end;
   return {
     _tag: "Passage",
+    at,
     start: codePointIndex(text, start),
     end: codePointIndex(text, end),
     quote: text.slice(start, end),
@@ -399,6 +413,7 @@ export const Comments = ({
   text,
   article,
   unpublished,
+  live = 0,
   onThreads,
 }: {
   readonly page: Page;
@@ -412,12 +427,15 @@ export const Comments = ({
    */
   readonly unpublished?: boolean | undefined;
   /** The page's threads each time they are read, for the editor to show where their passages are. */
+  /** Goes up each time a comment of the wiki may have changed (live.ts): the threads are then read again in place. */
+  readonly live?: number;
   readonly onThreads?: ((threads: ThreadList) => void) | undefined;
 }) => {
   const [threads, setThreads] = useState<ThreadList | undefined>();
   const [problem, setProblem] = useState<Failure | undefined>();
   const [show, setShow] = useState<"open" | "resolved">("open");
   const [active, setActive] = useState<ThreadId | undefined>();
+  const [lastActive, setLastActive] = useState<Placed | undefined>();
   const [selected, setSelected] = useState<Draft | undefined>();
   const [draft, setDraft] = useState<Draft | undefined>();
   const passages = useRef(new Map<ThreadId, Range>());
@@ -477,11 +495,12 @@ export const Comments = ({
     setDraft(undefined);
   }
 
-  // Someone, or an agent, may have answered while the reader was elsewhere.
+  // Someone, or an agent, answered now or while the reader was elsewhere. A reply being written stays.
   useEffect(() => {
-    globalThis.addEventListener("focus", refresh);
-    return () => globalThis.removeEventListener("focus", refresh);
-  }, [refresh]);
+    if (live > 0) {
+      refresh();
+    }
+  }, [live, refresh]);
 
   useEffect(() => {
     if (text === undefined) {
@@ -489,12 +508,12 @@ export const Comments = ({
     }
     const changed = () => {
       if (article !== null) {
-        setSelected(selectedPassage(article, text, document.getSelection()));
+        setSelected(selectedPassage(article, text, page.sha, document.getSelection()));
       }
     };
     document.addEventListener("selectionchange", changed);
     return () => document.removeEventListener("selectionchange", changed);
-  }, [text, article]);
+  }, [text, article, page.sha]);
 
   const placed = useMemo(
     (): ReadonlyArray<Placed> =>
@@ -578,7 +597,14 @@ export const Comments = ({
       : { _tag: "Range", ref: page.sha, start: item.located.start, end: item.located.end };
 
   const offered = unpublished === true ? undefined : selected;
-  const shown = placed.filter((item) => item.thread.state === show);
+  // The open thread stays in the list while a live update resolves, reopens or moves it, so a reply
+  // being written in it is not lost (docs/viewer.md, "Live updates").
+  const activeNow = placed.find((item) => item.thread.id === active);
+  if (activeNow !== undefined && activeNow !== lastActive) {
+    setLastActive(activeNow);
+  }
+  const gone = active !== undefined && activeNow === undefined && lastActive?.thread.id === active ? [lastActive] : [];
+  const shown = [...placed.filter((item) => item.thread.state === show || item.thread.id === active), ...gone];
   const sorted = shown.toSorted((a, b) => order(a) - order(b));
   const count = (state: "open" | "resolved") => placed.filter((item) => item.thread.state === state).length;
 
@@ -644,7 +670,7 @@ export const Comments = ({
             onSubmit={async (body) => {
               const anchor: AnchorRequest | undefined =
                 draft._tag === "Passage"
-                  ? { _tag: "Range", ref: page.sha, start: draft.start, end: draft.end }
+                  ? { _tag: "Range", ref: draft.at, start: draft.start, end: draft.end }
                   : undefined;
               const ok = await mutate(
                 createThread(page.ws, { path: page.path, body, ...(anchor === undefined ? {} : { anchor }) }),

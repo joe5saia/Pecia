@@ -1,5 +1,5 @@
 import * as Effect from "effect/Effect";
-import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { decodeJwt, exportJWK, generateKeyPair, SignJWT } from "jose";
 import type { JWTPayload } from "jose";
 
 // A stand-in for Cloudflare Access, the only place the scenarios know how
@@ -33,7 +33,7 @@ export interface Access {
   /** The headers an orchestrator or script sends: the orchestrator token. */
   readonly orchestrator: Headers;
   /** What a browser of a person Access signed in sends: the `CF_Authorization` cookie, whose value is an assertion. */
-  readonly person: (email: string) => Effect.Effect<Headers>;
+  readonly person: (email: string, options?: { readonly expiresIn?: string }) => Effect.Effect<Headers>;
   /**
    * The assertion header Access adds for a caller with these claims, signed
    * with another key when `forged`. Sent as it is, it reaches the Worker
@@ -43,9 +43,10 @@ export interface Access {
   /**
    * What Access does to a request's headers on the way in: a known service
    * token's headers, or a person's cookie, become the assertion. Anything else
-   * passes as it is.
+   * passes as it is. A person whose cookie has expired is not let through:
+   * `"expired"` says so, and the edge answers as Access does.
    */
-  readonly edge: (headers: globalThis.Headers) => Promise<void>;
+  readonly edge: (headers: globalThis.Headers) => Promise<"expired" | undefined>;
 }
 
 export const makeAccess: Effect.Effect<Access> = Effect.promise(async () => {
@@ -55,11 +56,11 @@ export const makeAccess: Effect.Effect<Access> = Effect.promise(async () => {
   // What Access signs for a service token: its client ID as `common_name`, and an empty subject.
   const orchestratorToken = { clientId: "orchestrator.access", clientSecret: "e2e-orchestrator-secret" };
   const sandboxToken = { clientId: "sandbox.access", clientSecret: "e2e-sandbox-secret" };
-  const sign = (claims: JWTPayload, forged = false) =>
+  const sign = (claims: JWTPayload, forged = false, expiresIn = "1h") =>
     new SignJWT({ iss: accessTeam, aud: audience, ...claims })
       .setProtectedHeader({ alg: "RS256", kid: "e2e" })
       .setIssuedAt()
-      .setExpirationTime("1h")
+      .setExpirationTime(expiresIn)
       .sign(forged ? forger.privateKey : signing.privateKey);
   const forToken = new Map([
     [`${orchestratorToken.clientId}:${orchestratorToken.clientSecret}`, orchestratorToken.clientId],
@@ -75,20 +76,28 @@ export const makeAccess: Effect.Effect<Access> = Effect.promise(async () => {
       "cf-access-client-id": orchestratorToken.clientId,
       "cf-access-client-secret": orchestratorToken.clientSecret,
     },
-    person: (email) =>
-      Effect.promise(async () => ({ cookie: `CF_Authorization=${await sign({ email, sub: `user-${email}` })}` })),
+    person: (email, options) =>
+      Effect.promise(async () => ({
+        cookie: `CF_Authorization=${await sign({ email, sub: `user-${email}` }, false, options?.expiresIn)}`,
+      })),
     assertion: (claims, options) =>
       Effect.promise(async () => ({ "cf-access-jwt-assertion": await sign(claims, options?.forged === true) })),
     edge: async (headers) => {
       const token = forToken.get(`${headers.get("cf-access-client-id")}:${headers.get("cf-access-client-secret")}`);
       if (token !== undefined) {
         headers.set("cf-access-jwt-assertion", await sign({ common_name: token, sub: "" }));
-        return;
+        return undefined;
       }
       const cookie = /(?:^|;\s*)CF_Authorization=([^;]+)/.exec(headers.get("cookie") ?? "")?.[1];
-      if (cookie !== undefined) {
-        headers.set("cf-access-jwt-assertion", cookie);
+      if (cookie === undefined) {
+        return undefined;
       }
+      const { exp } = decodeJwt(cookie);
+      if (exp !== undefined && exp * 1000 <= Date.now()) {
+        return "expired";
+      }
+      headers.set("cf-access-jwt-assertion", cookie);
+      return undefined;
     },
   };
 });

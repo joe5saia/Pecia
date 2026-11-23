@@ -52,13 +52,14 @@ const launch: Effect.Effect<Browser, never, Scope.Scope> = Effect.acquireRelease
   (browser) => Effect.promise(() => browser.close()),
 );
 
-/** A page of the viewer whose browser Access has signed in as `email`. */
+/** A page of the viewer whose browser Access has signed in as `email`, for an hour unless `expiresIn` says otherwise. */
 export const signedIn = Effect.fnUntraced(function* (
   email: string,
+  options?: { readonly expiresIn?: string },
 ): Effect.fn.Return<Page, never, Server | Scope.Scope> {
   const server = yield* Server;
   const browser = yield* launch;
-  const { cookie } = yield* server.access.person(email);
+  const { cookie } = yield* server.access.person(email, options);
   return yield* Effect.promise(async () => {
     const context = await browser.newContext();
     const [name = "", value = ""] = (cookie ?? "").split(/=(.*)/s);
