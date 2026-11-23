@@ -2,12 +2,12 @@ import { Client, StreamableHTTPClientTransport, UnauthorizedError } from "@model
 import type { OAuthClientProvider } from "@modelcontextprotocol/client";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
-import { execFile } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Server } from "./Server.ts";
+import { runCommand } from "./Wiki.ts";
 import type { CommandResult } from "./Wiki.ts";
 
 // A real MCP client (`@modelcontextprotocol/client`) against the stage's /mcp,
@@ -243,19 +243,7 @@ export const openMcpSandbox = Effect.fnUntraced(function* (setup: ReadonlyArray<
   };
   const evidence = (line: string) => appendFileSync(join(server.evidence, "sandboxes.log"), `${line}\n`);
   const exec = (command: string, args: ReadonlyArray<string>) =>
-    Effect.promise(
-      () =>
-        new Promise<CommandResult>((resolve) => {
-          execFile(command, [...args], { cwd: home, env, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
-            let exitCode = 0;
-            if (error !== null) {
-              exitCode = typeof error.code === "number" ? error.code : 1;
-            }
-            evidence(`mcp$ ${command} ${args.join(" ").slice(0, 200)} -> ${exitCode}\n${stderr}`);
-            resolve({ exitCode, stdout, stderr });
-          });
-        }),
-    );
+    runCommand(command, args, { cwd: home, env, log: (line) => evidence(`mcp$ ${line}`) });
   // Before the setup there is no session-wide helper: a global one stays, and the checkout's must win over it.
   yield* exec("git", ["config", "--global", "credential.helper", "!echo password=from-global-helper; :"]);
   const ran = yield* exec("bash", ["-euo", "pipefail", "-c", setup.join("\n")]);

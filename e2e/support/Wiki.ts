@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -130,6 +130,61 @@ export interface CommandResult {
   readonly stderr: string;
 }
 
+/**
+ * Run a command in a sandbox, logging it with `log`. A non-zero exit is an
+ * answer, not a failure. Interrupting it kills the command with everything it
+ * started, such as git's remote helper and `wiki-credential`, and waits until
+ * they are gone, so that nothing still writes into the sandbox when its scope
+ * deletes it.
+ */
+export const runCommand = (
+  command: string,
+  args: ReadonlyArray<string>,
+  options: {
+    readonly cwd: string;
+    readonly env: Readonly<Record<string, string>>;
+    readonly log: (line: string) => void;
+  },
+) =>
+  Effect.callback<CommandResult>((resume) => {
+    // Its own process group, so that one signal reaches the processes it starts.
+    // `spawn`, not `execFile`: `execFile` leaves out `detached`.
+    const child = spawn(command, [...args], { cwd: options.cwd, env: { ...options.env }, detached: true });
+    const stdout: Array<Buffer> = [];
+    const stderr: Array<Buffer> = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    // A command that could not start reports it here, and `close` follows.
+    child.on("error", (error) => stderr.push(Buffer.from(`${String(error)}\n`)));
+    // `close` comes once every process holding the command's output has exited.
+    const closed = new Promise<void>((resolve) => {
+      child.once("close", (code) => {
+        // A command that could not start, or was killed, has no exit code of its own.
+        const exitCode = code !== null && code >= 0 ? code : 1;
+        const result = {
+          exitCode,
+          stdout: Buffer.concat(stdout).toString(),
+          stderr: Buffer.concat(stderr).toString(),
+        };
+        options.log(`${command} ${args.join(" ").slice(0, 200)} -> ${exitCode}\n${result.stderr}`);
+        resume(Effect.succeed(result));
+        resolve();
+      });
+    });
+    return Effect.promise(async () => {
+      // The command itself may have exited while what it started has not.
+      if (child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch (error) {
+          // ESRCH: the whole group is gone and only `close` is still to come.
+          options.log(`${command}: ${String(error)}`);
+        }
+      }
+      await closed;
+    });
+  });
+
 /** What a sandbox sends: the sandbox token its session came with, and the session key. */
 export const asSandbox = (session: CreateSessionResponse, key = session.sessionKey): Headers => ({
   "cf-access-client-id": session.accessClientId,
@@ -179,25 +234,11 @@ export const openSandbox = Effect.fnUntraced(function* (
 
   /** Run a command in the sandbox's home. A non-zero exit is an answer, not a failure. */
   const exec = (command: string, args: ReadonlyArray<string>, extra: Readonly<Record<string, string>> = {}) =>
-    Effect.promise(
-      () =>
-        new Promise<CommandResult>((resolve) => {
-          execFile(
-            command,
-            [...args],
-            { cwd: home, env: { ...env, ...extra }, maxBuffer: 64 * 1024 * 1024 },
-            (error, stdout, stderr) => {
-              // A command that could not start, or was killed, has no exit code of its own.
-              let exitCode = 0;
-              if (error !== null) {
-                exitCode = typeof error.code === "number" ? error.code : 1;
-              }
-              evidence(`${session.sessionId}$ ${command} ${args.join(" ").slice(0, 200)} -> ${exitCode}\n${stderr}`);
-              resolve({ exitCode, stdout, stderr });
-            },
-          );
-        }),
-    );
+    runCommand(command, args, {
+      cwd: home,
+      env: { ...env, ...extra },
+      log: (line) => evidence(`${session.sessionId}$ ${line}`),
+    });
   /** `git -C docs ...`, failing the scenario when git fails. */
   const git = Effect.fnUntraced(function* (...args: ReadonlyArray<string>) {
     const result = yield* exec("git", ["-C", docs, ...args]);
