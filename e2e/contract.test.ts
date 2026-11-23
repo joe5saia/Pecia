@@ -2,6 +2,7 @@ import { expect, layer } from "@effect/vitest";
 import { CreateSessionResponse, HistoryResponse, WikiApi } from "@pecia/wiki-api";
 import * as Effect from "effect/Effect";
 import * as OpenApi from "effect/http-api/OpenApi";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { Server, ServerLive } from "./support/Server.ts";
 import { api, createWorkspace, eventually, openSandbox } from "./support/Wiki.ts";
@@ -18,7 +19,7 @@ layer(ServerLive("contract"), { excludeTestServices: true })("the running contra
     Effect.sync(() => {
       const declared = Object.entries(OpenApi.fromApi(WikiApi).paths).flatMap(([path, operations]) =>
         Object.entries(operations).flatMap(([method, operation]) =>
-          "responses" in operation
+          !Predicate.isString(operation) && "responses" in operation
             ? [[`${method.toUpperCase()} ${path}`, Object.keys(operation.responses).join(" ")]]
             : [],
         ),
